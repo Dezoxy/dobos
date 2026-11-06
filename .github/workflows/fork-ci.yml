@@ -241,29 +241,39 @@ jobs:
             org.opencontainers.image.title=Tiramisu (Dezoxy fork)
             org.opencontainers.image.licenses=GPL-3.0
 
-      - name: Build and push
+      # Pushed by digest only: no tag points at it until the scan below passes.
+      - name: Build and push by digest
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: docker/Dockerfile
           platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: APP_VERSION=${{ github.ref_name }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           provenance: mode=max
           sbom: true
           # No cache: a release never restores layers another run could have written.
           no-cache: true
 
-      - name: Scan the published image
+      - name: Scan the pushed digest
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE }}@${{ steps.push.outputs.digest }}
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+
+      - name: Tag the scanned digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          set -eu
+          args=()
+          while IFS= read -r tag; do [ -n "$tag" ] && args+=(-t "$tag"); done <<< "$TAGS"
+          docker buildx imagetools create "${args[@]}" "${IMAGE}@${DIGEST}"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
