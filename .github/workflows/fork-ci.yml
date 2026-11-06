@@ -1,0 +1,272 @@
+# CI for the Dezoxy/tiramisu fork: test every change, publish images only from release tags.
+# Upstream's workflows (ci, docker-publish) are removed on this branch: they target upstream's
+# branches and Docker Hub secrets. The build and test steps below keep upstream's own checks.
+name: Fork CI
+
+on:
+  push:
+    branches: [homelab]
+    tags: ["v*-homelab.*"]
+  pull_request:
+    branches: [homelab]
+  # upstream-sync.yml dispatches this for its pull requests: a pull request opened with
+  # GITHUB_TOKEN starts no workflow, and these runs report on the same commit.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  # Never cancel a tag build halfway through publishing
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  IMAGE: ghcr.io/dezoxy/tiramisu
+
+jobs:
+  build-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false # no shared cache in a workflow that also publishes releases
+      - name: FUSE headers for the cgo build
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libfuse3-dev pkg-config
+      # The vendored anacrolix fork keeps upstream formatting, as in upstream's CI.
+      - name: Check formatting
+        run: |
+          set -eu
+          unformatted=$(gofmt -l . | grep -v '^internal/anacrolix-torrent/' || true)
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go build ./...
+      - name: Vet
+        run: go list ./... | grep -v 'internal/anacrolix-torrent' | xargs -r go vet
+      - name: Check the module files are tidy
+        run: go mod tidy -diff
+      # Upstream keeps its full suite private; run what is here and say how much that is.
+      - name: Test
+        run: |
+          set -eu
+          count=$(find . -name '*_test.go' -not -path './.git/*' -not -path './internal/anacrolix-torrent/*' | wc -l | tr -d ' ')
+          echo "### Tests: $count test file(s) outside the vendored engine" >> "$GITHUB_STEP_SUMMARY"
+          go list ./... | grep -v 'internal/anacrolix-torrent' | xargs -r go test -race -count=1
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # scan the full history, not just the last commit
+          persist-credentials: false
+      - name: gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo" \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
+            ghcr.io/gitleaks/gitleaks@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git /repo --redact --no-banner --exit-code 1
+
+  workflow-lint:
+    name: Workflow lint (actionlint, zizmor)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        run: |
+          docker run --rm -v "$PWD:/repo" --workdir /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
+      - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        with:
+          version: "1.31.1"
+          advanced-security: false # fail this job on findings instead of only uploading them
+
+  dependency-scan:
+    name: Dependency scan (Trivy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write # upload results to the Security tab
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Report HIGH and CRITICAL to code scanning
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-fs.sarif
+      - name: Upload to code scanning
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: trivy-fs.sarif
+          category: trivy-dependencies
+      - name: Fail on fixable CRITICAL
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-setup-trivy: true
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # A dispatched run (an upstream sync) has no pull request event, so name both ends.
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: high
+          base-ref: ${{ github.event_name == 'workflow_dispatch' && 'homelab' || '' }}
+          head-ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || '' }}
+
+  image:
+    name: Image (build, smoke test, scan, publish on tag)
+    # Nothing is published unless every test and security check passed
+    needs: [build-test, secret-scan, workflow-lint, dependency-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write # push the image to GHCR (tag builds only)
+      id-token: write # sign the provenance attestation
+      attestations: write # store the attestation
+    env:
+      PUBLISH: ${{ startsWith(github.ref, 'refs/tags/') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Application version
+        id: version
+        run: |
+          if [ "$REF_TYPE" = tag ]; then echo "value=$REF_NAME"; else echo "value=dev-${SHA::12}"; fi >> "$GITHUB_OUTPUT"
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=ref,event=tag
+            type=sha,format=long
+          labels: |
+            org.opencontainers.image.title=Tiramisu (Dezoxy fork)
+            org.opencontainers.image.licenses=GPL-3.0
+
+      # Build once into the local Docker engine so the exact image is tested before it is pushed
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: tiramisu:ci
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: APP_VERSION=${{ steps.version.outputs.value }}
+          # Release builds never restore the shared Actions cache (cache poisoning).
+          cache-from: ${{ env.PUBLISH != 'true' && 'type=gha' || '' }}
+          cache-to: ${{ env.PUBLISH != 'true' && 'type=gha,mode=max' || '' }}
+
+      # The FUSE mount needs the same privileges as on the host; the Control Panel answering
+      # proves the engine, the FUSE layer and the HTTP server all started.
+      - name: Smoke test
+        run: |
+          echo '{"telemetry": false, "telemetry_url": "", "scheduler": {"enabled": false}}' > config.json
+          docker run -d --name tiramisu-smoke -p 9080:9080 \
+            --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
+            -v "$PWD/config.json:/config.json" tiramisu:ci
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null http://127.0.0.1:9080/control; then
+              docker exec tiramisu-smoke mountpoint -q /mnt/tiramisu-mkv-virtual && exit 0
+            fi
+            sleep 2
+          done
+          docker logs tiramisu-smoke
+          exit 1
+
+      - name: Vulnerability scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: tiramisu:ci
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish
+        id: push
+        if: env.PUBLISH == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: APP_VERSION=${{ steps.version.outputs.value }}
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest build provenance
+        if: env.PUBLISH == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        if: env.PUBLISH == 'true'
+        run: |
+          {
+            echo "### Published"
+            echo '```'
+            echo "${IMAGE}:${GITHUB_REF_NAME}@${DIGEST}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}

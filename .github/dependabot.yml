@@ -1,0 +1,14 @@
+# Go modules are left to upstream: diverging from its go.mod makes every sync conflict.
+# Security alerts for them still arrive through Dependabot security updates.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: homelab
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /docker
+    target-branch: homelab
+    schedule:
+      interval: weekly

@@ -1,0 +1,56 @@
+# Dezoxy/tiramisu fork
+
+A fork of [MrRobotoGit/tiramisu](https://github.com/MrRobotoGit/tiramisu) for one homelab
+(toom-macmini-homelab, ADRs 15 and 16): Tiramisu streams nCore and other indexers' torrents
+as files for Plex, and this fork carries the homelab's own code on top of upstream releases.
+
+## Branches
+
+| Branch | Contents |
+| --- | --- |
+| `homelab` (default) | Upstream's latest reviewed release + the fork's changes + fork CI. Images come from here. |
+| `main` | Untouched mirror of upstream. |
+| `sync/vX.Y.Z` | Opened by the upstream sync workflow; one per upstream release. |
+
+## Upstream updates
+
+Upstream releases often (several a week in October 2026) and keeps its full test suite in a
+private repository, so a passing build says little about a change. Every update is read.
+
+1. **Upstream sync** (`.github/workflows/upstream-sync.yml`) runs on Mondays or on demand. When
+   upstream's latest release is not in `homelab`, it merges it into `sync/vX.Y.Z` and opens a pull
+   request listing the commits, the changed files and every added line that touches the network,
+   trackers, telemetry, processes or files. A conflict opens an issue instead.
+2. Review the pull request. Read every flagged line and any change to `docker/`, `go.mod` and the
+   code the fork changes. Check the defaults the homelab relies on: telemetry stays switchable
+   off, private torrents get no extra trackers, DHT and PEX stay switchable off, the APIs stay
+   unauthenticated (so the deployment keeps them on loopback).
+3. Merge it with a **merge commit**, never squash: the merge keeps upstream's history, so the next
+   sync contains only what is new. The fork's own pull requests are squash-merged.
+4. Tag a release (below). Nothing reaches the homelab until its image pin is bumped there.
+
+## Releasing an image
+
+CI (`.github/workflows/fork-ci.yml`) builds and tests every change. A tag
+`v<upstream version>-homelab.<n>` on `homelab` also publishes `ghcr.io/dezoxy/tiramisu:<tag>` with
+an SBOM and a provenance attestation; the run summary shows the digest to pin.
+
+```bash
+git tag v1.11.8-homelab.1 homelab
+git push origin v1.11.8-homelab.1
+gh attestation verify oci://ghcr.io/dezoxy/tiramisu:v1.11.8-homelab.1 --repo Dezoxy/tiramisu
+```
+
+Release tags cannot be moved or deleted: confirm the tag commit contains the merged change first.
+
+## Contributing and security
+
+- `homelab` and `main` accept changes only through pull requests, after every check passes. Nobody,
+  including the owner, can push to them, force-push or delete them.
+- Checks: build, vet, module tidiness and tests; gitleaks over the full history; actionlint and
+  zizmor; Trivy dependency and image scans; dependency review; CodeQL; the image smoke test.
+- Actions are pinned to commit SHAs; Dependabot keeps the pins and the Docker base images
+  current. Go modules follow upstream.
+- Report vulnerabilities privately, see [SECURITY.md](SECURITY.md).
+
+Tiramisu is licensed under GPL-3.0; this fork's source is public to satisfy it.

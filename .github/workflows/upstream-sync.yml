@@ -1,0 +1,128 @@
+# Opens a pull request that merges upstream's latest release into homelab, with a review guide.
+# It never merges: every upstream change is read before it reaches an image. See FORK.md.
+name: Upstream sync
+
+on:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Propose the latest upstream release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # push the sync branch
+      pull-requests: write # open the review pull request
+      issues: write # report a merge conflict
+      actions: write # start Fork CI on the sync branch
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: homelab
+          fetch-depth: 0
+          persist-credentials: true # the sync branch is pushed with this job's token
+
+      - name: Find the latest upstream release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          git remote add upstream https://github.com/MrRobotoGit/tiramisu.git
+          git fetch --quiet upstream --tags
+          tag=$(gh api repos/MrRobotoGit/tiramisu/releases/latest --jq .tag_name)
+          # Only a plain version tag is used in refs and commands below.
+          if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+(\.[0-9]+){2}$'; then
+            echo "::error::unexpected upstream tag name"; exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "refs/tags/$tag" HEAD; then
+            echo "homelab already contains $tag" >> "$GITHUB_STEP_SUMMARY"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          elif gh pr list --state open --head "sync/$tag" --json number --jq 'length' | grep -qv '^0$'; then
+            echo "A pull request for $tag is already open" >> "$GITHUB_STEP_SUMMARY"
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge it into a sync branch
+        id: merge
+        if: steps.upstream.outputs.needed == 'true'
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "sync/$TAG"
+          if git merge --no-ff --no-edit -m "Merge upstream $TAG" "refs/tags/$TAG"; then
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U > conflicts.txt
+            git merge --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Upstream commit text only ever lands in this file, never in a command line.
+      - name: Write the review guide
+        if: steps.upstream.outputs.needed == 'true' && steps.merge.outputs.conflict == 'false'
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -eu
+          base=$(git merge-base HEAD^1 "refs/tags/$TAG")
+          {
+            echo "Merges upstream **$TAG** into homelab. Review before merging; nothing is published until a fork tag."
+            echo
+            echo "### Commits"
+            echo '```'
+            git log --no-merges --format='%h %s' "$base..refs/tags/$TAG" | head -200
+            echo '```'
+            echo
+            echo "### Files"
+            echo '```'
+            git diff --stat "$base" "refs/tags/$TAG" | tail -60
+            echo '```'
+            echo
+            echo "### Needs a careful read"
+            echo "Lines added upstream that touch the network, trackers, telemetry, processes or the container:"
+            echo '```'
+            git diff "$base" "refs/tags/$TAG" -- . ':!internal/anacrolix-torrent' \
+              | grep -E '^\+[^+].*(http\.(Post|Get|NewRequest)|telemetry|Telemetry|[Rr]etracker|DHT|PEX|tracker|exec\.Command|net\.Listen|0\.0\.0\.0|os\.Remove|RemoveAll|Setenv)' \
+              | head -80 || echo "(none)"
+            echo '```'
+            echo
+            echo "Also check Dockerfile, docker-entrypoint.sh and go.mod in the file list above."
+          } > review.md
+
+      - name: Open the pull request
+        if: steps.upstream.outputs.needed == 'true' && steps.merge.outputs.conflict == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -eu
+          git push --quiet origin "sync/$TAG"
+          gh pr create --base homelab --head "sync/$TAG" --title "Merge upstream $TAG" --body-file review.md
+          # A pull request opened with this token starts no workflow; run CI on its commit.
+          gh workflow run fork-ci.yml --ref "sync/$TAG"
+
+      - name: Report a conflict
+        if: steps.upstream.outputs.needed == 'true' && steps.merge.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          set -eu
+          { echo "Merging upstream $TAG into homelab conflicts in:"; echo '```'; cat conflicts.txt; echo '```'; } > issue.md
+          gh issue create --title "Upstream $TAG conflicts with homelab" --body-file issue.md
