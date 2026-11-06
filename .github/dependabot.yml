@@ -7,8 +7,14 @@ updates:
     target-branch: homelab
     schedule:
       interval: weekly
+    # A new release waits a week before it is proposed: time for a compromised one to be pulled.
+    cooldown:
+      default-days: 7
   - package-ecosystem: docker
     directory: /docker
     target-branch: homelab
     schedule:
       interval: weekly
+    # A new release waits a week before it is proposed: time for a compromised one to be pulled.
+    cooldown:
+      default-days: 7

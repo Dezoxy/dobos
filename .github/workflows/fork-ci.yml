@@ -121,6 +121,9 @@ jobs:
         with:
           sarif_file: trivy-fs.sarif
           category: trivy-dependencies
+      # The vendored engine's own go.mod lists modules the main build never links (in Nov 2026,
+      # grpc v1.56.3: "main module does not need module google.golang.org/grpc"). It is still
+      # reported above; the image scan of the compiled binary is the gate for what ships.
       - name: Fail on fixable CRITICAL
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -130,6 +133,7 @@ jobs:
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: "1"
+          skip-dirs: internal/anacrolix-torrent
           skip-setup-trivy: true
 
   dependency-review:
