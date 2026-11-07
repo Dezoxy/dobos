@@ -9,6 +9,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -117,6 +119,13 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 	if torrstor.IsResponsive() {
 		reader.SetResponsive()
 	}
+	// A bounded range (FetchBlock, FetchAhead) needs no read-ahead past its end; the pump
+	// asks for an open-ended one and keeps the full window (Dezoxy fork).
+	if torrstor.BoundedReadahead {
+		if end, ok := boundedRangeEnd(req.Header.Get("Range"), file.Length()); ok {
+			reader.SetRangeEnd(end)
+		}
+	}
 	// Log connection
 	host, port, clerr := net.SplitHostPort(req.RemoteAddr)
 
@@ -179,4 +188,27 @@ func (t *Torrent) Stream(fileID int, req *http.Request, resp http.ResponseWriter
 		}
 	}
 	return nil
+}
+
+// boundedRangeEnd returns the exclusive end of a single "bytes=a-b" range, clamped to the
+// file. Open-ended, suffix and multi-part ranges are not bounded.
+func boundedRangeEnd(header string, length int64) (int64, bool) {
+	spec, ok := strings.CutPrefix(strings.TrimSpace(header), "bytes=")
+	if !ok || strings.Contains(spec, ",") {
+		return 0, false
+	}
+	a, b, ok := strings.Cut(spec, "-")
+	if !ok || a == "" || b == "" {
+		return 0, false
+	}
+	start, err1 := strconv.ParseInt(strings.TrimSpace(a), 10, 64)
+	last, err2 := strconv.ParseInt(strings.TrimSpace(b), 10, 64)
+	if err1 != nil || err2 != nil || start < 0 || last < start {
+		return 0, false
+	}
+	end := last + 1
+	if length > 0 && end > length {
+		end = length
+	}
+	return end, true
 }

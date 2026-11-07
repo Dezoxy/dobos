@@ -308,9 +308,16 @@ type Config struct {
 
 	// --- Disk Warmup ---
 	DiskWarmupQuotaGB int64 `json:"disk_warmup_quota_gb"` // Total SSD quota for warmup cache (default: 32)
-	// Deprecated: warmupFileSize is now hardcoded at 64MB. Field kept for
-	// backward-compatible JSON unmarshal of existing config.json files.
+	// WarmupDir turns the warmup into an index cache (Dezoxy fork): set, the head and
+	// tail copies live there whether or not GoStorm stores pieces on disk (UseDisk),
+	// tail coverage survives restarts, and the head is capped at WarmupHeadSizeMB
+	// with no boundary chunk past it. Empty keeps upstream's behaviour: warmup only
+	// with UseDisk, under TorrentsSavePath, at a fixed 64 MB head.
+	WarmupDir string `json:"warmup_dir"`
+	// WarmupHeadSizeMB and WarmupTailSizeMB size the per-file windows. Used only with
+	// WarmupDir; upstream keeps 64 MB and 16 MB.
 	WarmupHeadSizeMB int64 `json:"warmup_head_size_mb"`
+	WarmupTailSizeMB int64 `json:"warmup_tail_size_mb"`
 
 	// --- NAT-PMP (V228) ---
 	NatPMP NatPMPConfig `json:"natpmp"`
@@ -418,6 +425,7 @@ func LoadConfig() Config {
 		MaxCacheEntries:         10000,
 		DiskWarmupQuotaGB:       15,
 		WarmupHeadSizeMB:        64,
+		WarmupTailSizeMB:        16,
 
 		Language: LanguageConfig{
 			PreferredTerms: []string{"ita", "multi", "dual"},

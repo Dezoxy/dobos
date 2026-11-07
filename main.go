@@ -200,6 +200,39 @@ func startPumpAtOpen(pumpOnOpen, confirmedPlayback bool) bool {
 }
 
 // playbackConfirmed reports a webhook-confirmed (healthy) playback for path.
+// isScanRead reports whether a handle is being probed, not played (Dezoxy fork): no pump
+// is attached and nothing says playback, neither a webhook nor the read pattern. Scan
+// reads fetch only what they need and fill the index windows. With pump_on_open every
+// open gets a pump, so upstream's behaviour is unchanged.
+func isScanRead(h *MkvHandle) bool {
+	if gc().PumpOnOpen || h.hasSlot.Load() {
+		return false
+	}
+	if val, ok := playbackRegistry.Load(h.path); ok {
+		if ps, ok := val.(*PlaybackState); ok && (ps.GetStatus() || ps.IsInferredPlayback()) {
+			return false
+		}
+	}
+	return true
+}
+
+// scanFetchSize sizes a scan read's network fetch: the rest of the head window when the
+// read lands in it, so one fetch fills it, otherwise only the bytes asked for. Never more
+// than the normal read-ahead.
+func scanFetchSize(off, target, headSize, readAhead int64) int64 {
+	size := target
+	if off < headSize && headSize-off > size {
+		size = headSize - off
+	}
+	if size > readAhead {
+		size = readAhead
+	}
+	if size < target {
+		size = target
+	}
+	return size
+}
+
 func playbackConfirmed(path string) bool {
 	if val, ok := playbackRegistry.Load(path); ok {
 		if ps, ok := val.(*PlaybackState); ok {
@@ -2615,7 +2648,8 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 
 			// WarmLanding on new handle: pre-fetch chunk at resume position while pump catches
 			// up. Fires only for new handles (prevOff==-1) since V286b covers existing handles.
-			if prevOff == -1 && h.hash != "" {
+			// A scanner's first read past the head is a probe, not a resume (Dezoxy fork).
+			if prevOff == -1 && h.hash != "" && !isScanRead(h) {
 				warmChunk := raCache.ChunkSize(h.path)
 				warmStart := (off / warmChunk) * warmChunk
 				// Unified with predictive-prefetch key format to avoid double-fetching the same chunk.
@@ -2736,7 +2770,9 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 	}
 
 	// Serve warmup zone from SSD (up to 80MB with boundary chunk); stateWarmup gate skips SSD on resume/seek.
-	if h.usesWarmup && warmup.DiskWarmup != nil && h.hash != "" && h.state.Load() == stateWarmup {
+	// A scan read takes it in any state: a probe that went to the tail and back to the head
+	// is still a probe (Dezoxy fork).
+	if h.usesWarmup && warmup.DiskWarmup != nil && h.hash != "" && (h.state.Load() == stateWarmup || isScanRead(h)) {
 		warmupCoverage := warmup.DiskWarmup.GetAvailableRange(h.hash, h.fileID)
 		if off < warmupCoverage {
 			n, _ := warmup.DiskWarmup.ReadAt(h.hash, h.fileID, dest, off)
@@ -2781,6 +2817,11 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 		if err == nil && nFetch > 0 {
 			if h.usesWarmup && warmup.DiskWarmup != nil {
 				warmup.DiskWarmup.WriteTail(h.hash, h.fileID, dest[:nFetch], off, h.size)
+				// The tail pieces are in memory now: complete the window so the next scan of
+				// this file never reaches the swarm (index cache, Dezoxy fork).
+				if gc().WarmupDir != "" && isScanRead(h) {
+					warmup.DiskWarmup.EnsureTail(h.hash, h.fileID, h.size)
+				}
 			}
 
 			timing.UsedCache = false
@@ -2806,7 +2847,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 		chunkSize := raCache.ChunkSize(h.path)
 		nextChunkStart := (off/chunkSize + 1) * chunkSize
 
-		if (!h.hasSlot.Load() || (nextChunkStart-off < chunkSize/4)) && !raCache.Exists(h.path, nextChunkStart) {
+		if !isScanRead(h) && (!h.hasSlot.Load() || (nextChunkStart-off < chunkSize/4)) && !raCache.Exists(h.path, nextChunkStart) {
 			prefetchKey := fmt.Sprintf("%s:%d", h.path, nextChunkStart)
 			if _, loaded := inFlightPrefetches.LoadOrStore(prefetchKey, true); !loaded {
 				goStart, goKey, goHash, goFileID := nextChunkStart, prefetchKey, h.hash, h.fileID
@@ -2870,6 +2911,9 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 
 		if isFirstBlock {
 			raSize = int64(gc().ReadAheadInitial)
+		}
+		if isScanRead(h) {
+			raSize = scanFetchSize(off, int64(target), warmup.FileSize, raSize)
 		}
 
 		fetchEnd = off + raSize - 1
@@ -4641,6 +4685,8 @@ func main() {
 	}
 	torrutils.SetBlockListEnabled(gc().BlockListEnabled)
 
+	// Before the engine starts serving streams (Dezoxy fork, see torrstor.BoundedReadahead).
+	torrstor.BoundedReadahead = !gc().PumpOnOpen
 	go func() {
 		logger.Println("Starting Embedded GoStorm Engine...")
 		server.Start() // Starts Web Server on 8090 and Engine
@@ -4648,7 +4694,19 @@ func main() {
 	// Give engine a moment to init (hash maps etc)
 	time.Sleep(2 * time.Second)
 
-	warmup.InitDiskWarmup(gc().DiskWarmupQuotaGB)
+	warmup.InitDiskWarmup(warmup.Options{
+		QuotaGB: gc().DiskWarmupQuotaGB,
+		Dir:     gc().WarmupDir,
+		HeadMB:  gc().WarmupHeadSizeMB,
+		TailMB:  gc().WarmupTailSizeMB,
+	})
+	// Index mode (Dezoxy fork): nothing reaches the SSD before its pieces pass their
+	// checksum, and scans fetch only the pieces they touch.
+	if gc().WarmupDir != "" {
+		warmup.RangeVerified = func(hash string, fileID int, off, n int64) bool {
+			return torr.PeekTorrent(hash).RangeVerified(fileID, off, n)
+		}
+	}
 	// Fires synchronously from DiskWarmup's single writeWorker goroutine at the exact moment a
 	// head warmup fetch starts/completes - avoids the race where a caller checking IsWarmingUp()
 	// right after WriteChunk() returns could read stale state, since WriteChunk only enqueues and
