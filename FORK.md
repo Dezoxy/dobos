@@ -4,6 +4,14 @@ A fork of [MrRobotoGit/tiramisu](https://github.com/MrRobotoGit/tiramisu) for on
 (toom-macmini-homelab, ADRs 15 and 16): Tiramisu streams nCore and other indexers' torrents
 as files for Plex, and this fork carries the homelab's own code on top of upstream releases.
 
+## What the fork changes
+
+Every change is opt-in: with the fork's settings unset, Tiramisu behaves exactly as upstream.
+
+| Setting | Default | Change |
+| --- | --- | --- |
+| `pump_on_open` | `true` (upstream) | `false`: opening a file no longer starts the read-ahead pump. A scanner (Plex, Sonarr and Radarr's ffprobe, Bazarr's hash) gets small on-demand fetches; the pump starts once a webhook confirms playback or the reads look like playback (`IsInferredPlayback`: three reads past 2 MB). Measured on the homelab, a scanner read ~0.4 MB of a file while the pump fetched ~500 MB. |
+
 ## Branches
 
 | Branch | Contents |

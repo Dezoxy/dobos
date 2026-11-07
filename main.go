@@ -194,6 +194,21 @@ func (ps *PlaybackState) GetStatus() bool {
 
 var playbackRegistry sync.Map // path -> *PlaybackState
 
+// startPumpAtOpen decides whether Open() starts the read-ahead pump (Dezoxy fork).
+func startPumpAtOpen(pumpOnOpen, confirmedPlayback bool) bool {
+	return pumpOnOpen || confirmedPlayback
+}
+
+// playbackConfirmed reports a webhook-confirmed (healthy) playback for path.
+func playbackConfirmed(path string) bool {
+	if val, ok := playbackRegistry.Load(path); ok {
+		if ps, ok := val.(*PlaybackState); ok {
+			return ps.GetStatus()
+		}
+	}
+	return false
+}
+
 // Global sync cache manager (FASE 4.13 - Sync Script Caches)
 var globalSyncCacheManager *syncercache.SyncCacheManager
 
@@ -1386,9 +1401,13 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 		}
 		// Gillian: proactive pump start at Open() — pump ready before first Read().
 		// pumpOnce ensures single start; late rescue path in Read() handles hash=='' case.
-		h.pumpOnce.Do(func() {
-			h.startNativePump(finalHash, fileIdx)
-		})
+		// Dezoxy fork: with pump_on_open off, only confirmed playback starts it here; a
+		// scanner's Open gets demand fetches and Read()'s pump upgrade handles playback.
+		if startPumpAtOpen(gc().PumpOnOpen, playbackConfirmed(n.vMeta.Path)) {
+			h.pumpOnce.Do(func() {
+				h.startNativePump(finalHash, fileIdx)
+			})
+		}
 		if usesWarmup && !headReady {
 			// Real cold start: no warmup data present yet. Signal warmupActive here, at Open(),
 			// rather than waiting for the first WriteChunk - that first-connection burst is

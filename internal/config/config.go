@@ -350,7 +350,13 @@ type Config struct {
 	// --- Telemetry (V1.4.7) ---
 	TelemetryID     string `json:"telemetry_id"`
 	EnableTelemetry bool   `json:"telemetry"`
-	TelemetryURL    string `json:"telemetry_url"`
+	// PumpOnOpen starts the read-ahead pump as soon as a file is opened (upstream's
+	// behaviour). Off, a file opened by a scanner (Plex, Sonarr/Radarr's ffprobe,
+	// Bazarr's hash) is served by small on-demand fetches, and the pump starts once a
+	// webhook confirms playback or the reads look like playback (IsInferredPlayback).
+	// Dezoxy fork: a library scan otherwise cost ~500 MB of read-ahead per file.
+	PumpOnOpen   bool   `json:"pump_on_open"`
+	TelemetryURL string `json:"telemetry_url"`
 
 	// --- State DB (V1.7.1) ---
 	EnableStateDB bool   `json:"enable_state_db"` // default: true
@@ -390,6 +396,7 @@ func LoadConfig() Config {
 		MetadataCacheSizeMB:    50, // Default 50MB for metadata
 		FuseBlockSize:          1048576,
 		StreamingThresholdKB:   128,
+		PumpOnOpen:             true,
 		LogLevel:               "INFO",
 		BlockListURL:           DefaultBlockListURL,
 		BlockListFilter:        DefaultBlockListFilter,
