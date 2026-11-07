@@ -43,6 +43,11 @@ gh attestation verify oci://ghcr.io/dezoxy/tiramisu:v1.11.8-homelab.1 --repo Dez
 
 Release tags cannot be moved or deleted: confirm the tag commit contains the merged change first.
 
+Only the `Publish` job can write packages, and only for a pushed `v*-homelab.*` tag: it runs in
+the `release` environment, which accepts deployments from those tags alone. Every other job,
+including the one that builds and runs unreviewed upstream code, has read-only permissions.
+The release is pushed by digest, scanned, and only then tagged.
+
 ## Contributing and security
 
 - `homelab` and `main` accept changes only through pull requests, after every check passes. Nobody,

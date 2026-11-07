@@ -1,0 +1,8 @@
+# Findings in upstream's history (MrRobotoGit/tiramisu), reviewed 2026-11-06. They are ignored by
+# fingerprint, so any other secret still fails the scan.
+# A test string that only looks like a key.
+f69b768a325f2f3222cb4a223e9557c784ee7c1e:internal/library/audio_test.go:generic-api-key:391
+# Upstream's author committed their own Prowlarr API key in a script since deleted upstream; it is
+# theirs to rotate. Rewriting upstream history in the fork would break every later sync.
+8d5bb22e447144bac32d61542a2a2cefb1b4fb5e:scripts/prowlarr_client.py:generic-api-key:18
+5d51de693a406b2a3d92dfcf37e958b0610464d3:scripts/prowlarr_client.py:generic-api-key:14
