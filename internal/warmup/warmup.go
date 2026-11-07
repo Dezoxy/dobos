@@ -200,6 +200,8 @@ type DiskWarmupCache struct {
 	tailFills     sync.Map     // path -> true while a sequential tail fill is running
 	pendingVerify sync.Map     // block key -> true while it waits for its pieces to verify
 	tailMu        sync.Mutex   // serializes tail writes with each other and with removals
+	tailQueue     chan tailJob // index-mode tail fills, one worker
+	tailQueueOnce sync.Once
 	removals      atomic.Int64 // bumped by every removal; a waiter older than one drops its block
 	warmupStarts  sync.Map     // path -> time.Time (STARTING timestamp, for duration histogram)
 	writeCh       chan warmupWrite
@@ -912,6 +914,10 @@ func (d *DiskWarmupCache) EnsureTail(hash string, fileID int, fileSize int64) {
 	if _, busy := d.tailFills.LoadOrStore(path, true); busy {
 		return
 	}
+	if persistTails {
+		d.queueIndexTail(path, hash, fileID, fileSize)
+		return
+	}
 
 	go func() {
 		defer d.tailFills.Delete(path)
@@ -1107,4 +1113,81 @@ func (d *DiskWarmupCache) loadCoverage(path string) bool {
 	}
 	d.tailCoverage.Store(path, tr)
 	return true
+}
+
+// Index-mode tail fills (Dezoxy fork). A library scan opens hundreds of files in
+// seconds; filling every tail at once pulls more pieces than the engine's RAM cache
+// holds, and a piece evicted before it verifies leaves a hole. One worker fills one
+// window at a time: request its whole pieces, wait until they verify, write it whole.
+
+type tailJob struct {
+	path, hash string
+	fileID     int
+	fileSize   int64
+}
+
+const tailQueueLen = 8192
+
+func (d *DiskWarmupCache) queueIndexTail(path, hash string, fileID int, fileSize int64) {
+	d.tailQueueOnce.Do(func() {
+		d.tailQueue = make(chan tailJob, tailQueueLen)
+		go d.indexTailWorker()
+	})
+	select {
+	case d.tailQueue <- tailJob{path, hash, fileID, fileSize}:
+	default:
+		d.tailFills.Delete(path) // full: the next scan of the file queues it again
+	}
+}
+
+func (d *DiskWarmupCache) indexTailWorker() {
+	for job := range d.tailQueue {
+		d.fillIndexTail(job)
+		d.tailFills.Delete(job.path)
+	}
+}
+
+// fillIndexTail writes one whole tail window once every piece under it has verified.
+func (d *DiskWarmupCache) fillIndexTail(job tailJob) {
+	defer func() {
+		if r := recover(); r != nil {
+			logf.Printf("[DiskWarmup] index tail fill panicked for %s: %v", filepath.Base(job.path), r)
+		}
+	}()
+	if d.TailReady(job.hash, job.fileID) || TailFetch == nil {
+		return
+	}
+	tailStart := job.fileSize - TailWarmupSize
+	if tailStart < 0 {
+		tailStart = 0
+	}
+	tailLen := job.fileSize - tailStart
+	if RangeVerified != nil {
+		if RequestPieces != nil {
+			RequestPieces(job.hash, job.fileID, tailStart, tailLen)
+		}
+		deadline := time.Now().Add(verifyWaitMax)
+		for !RangeVerified(job.hash, job.fileID, tailStart, tailLen) {
+			if time.Now().After(deadline) {
+				atomic.AddInt64(&unverifiedDrops, 1)
+				logf.Printf("[DiskWarmup] Tail of %s did not verify in %s", filepath.Base(job.path), verifyWaitMax)
+				return
+			}
+			time.Sleep(verifyPollInterval)
+		}
+	}
+	buf := make([]byte, tailLen)
+	n, err := TailFetch(job.hash, job.fileID, tailStart, buf)
+	if err != nil || int64(n) != tailLen {
+		logf.Printf("[DiskWarmup] Tail fill of %s failed: %d/%d bytes, %v", filepath.Base(job.path), n, tailLen, err)
+		return
+	}
+	// Verified before and after the read: the bytes come from hashed pieces.
+	if RangeVerified != nil && !RangeVerified(job.hash, job.fileID, tailStart, tailLen) {
+		return
+	}
+	d.writeTail(job.hash, job.fileID, buf, tailStart, job.fileSize)
+	if d.TailReady(job.hash, job.fileID) {
+		logf.Printf("[DiskWarmup] TAIL COMPLETE %s (index, %.1fMB)", filepath.Base(job.path), float64(tailLen)/(1<<20))
+	}
 }

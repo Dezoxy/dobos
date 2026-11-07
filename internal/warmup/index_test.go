@@ -189,3 +189,38 @@ func TestBlocksThatNeverVerifyAreDropped(t *testing.T) {
 		t.Fatal("unverified tail reached the SSD")
 	}
 }
+
+func TestIndexTailFillWaitsAndWritesTheWholeWindow(t *testing.T) {
+	d := indexCache(t, t.TempDir())
+	oldPoll := verifyPollInterval
+	defer func() { verifyPollInterval = oldPoll; RequestPieces = nil }()
+	verifyPollInterval = 5 * time.Millisecond
+
+	const fileSize = 10 << 20
+	var ok atomic.Bool
+	var reqOff, reqLen atomic.Int64
+	RangeVerified = func(string, int, int64, int64) bool { return ok.Load() }
+	RequestPieces = func(_ string, _ int, off, n int64) { reqOff.Store(off); reqLen.Store(n) }
+	TailFetch = func(_ string, _ int, _ int64, buf []byte) (int, error) {
+		for i := range buf {
+			buf[i] = 3
+		}
+		return len(buf), nil
+	}
+	d.EnsureTail("h", 7, fileSize)
+	waitFor(t, "piece request", func() bool { return reqLen.Load() > 0 })
+	if reqOff.Load() != fileSize-(1<<20) || reqLen.Load() != 1<<20 {
+		t.Fatalf("requested %d+%d, want the whole tail window", reqOff.Load(), reqLen.Load())
+	}
+	time.Sleep(30 * time.Millisecond)
+	if d.TailReady("h", 7) {
+		t.Fatal("tail written before its pieces verified")
+	}
+	ok.Store(true)
+	waitFor(t, "tail ready", func() bool { return d.TailReady("h", 7) })
+	waitFor(t, "fill finished", func() bool { return !d.tailFillRunning("h", 7) })
+	buf := make([]byte, 8)
+	if n, _ := d.ReadTail("h", 7, buf, fileSize-8, fileSize); n != 8 || buf[0] != 3 {
+		t.Fatalf("tail read n=%d first=%d", n, buf[0])
+	}
+}
