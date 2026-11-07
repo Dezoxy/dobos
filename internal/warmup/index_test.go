@@ -125,8 +125,10 @@ func TestUnverifiedBlocksWaitForTheirPieces(t *testing.T) {
 	defer func() { verifyPollInterval, verifyWaitMax = oldPoll, oldMax }()
 	verifyPollInterval, verifyWaitMax = 10*time.Millisecond, time.Second
 
-	var ok atomic.Bool
+	var ok, requested atomic.Bool
 	RangeVerified = func(string, int, int64, int64) bool { return ok.Load() }
+	RequestPieces = func(string, int, int64, int64) { requested.Store(true) }
+	defer func() { RequestPieces = nil }()
 	// The piece is re-downloaded after a failed hash: the verified bytes are 2s, the
 	// copy the read handed out was 1s. The cache must hold the verified bytes.
 	TailFetch = func(_ string, _ int, _ int64, buf []byte) (int, error) {
@@ -140,6 +142,7 @@ func TestUnverifiedBlocksWaitForTheirPieces(t *testing.T) {
 	if d.GetAvailableRange("h", 4) != 0 {
 		t.Fatal("unverified head written to SSD")
 	}
+	waitFor(t, "whole pieces requested", requested.Load)
 	ok.Store(true)
 	waitFor(t, "verified head write", func() bool {
 		d.sizeCache.Delete(d.filePath("h", 4))

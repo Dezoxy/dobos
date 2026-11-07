@@ -4706,6 +4706,9 @@ func main() {
 		warmup.RangeVerified = func(hash string, fileID int, off, n int64) bool {
 			return torr.PeekTorrent(hash).RangeVerified(fileID, off, n)
 		}
+		warmup.RequestPieces = func(hash string, fileID int, off, n int64) {
+			torr.PeekTorrent(hash).RequestRange(fileID, off, n)
+		}
 	}
 	// Fires synchronously from DiskWarmup's single writeWorker goroutine at the exact moment a
 	// head warmup fetch starts/completes - avoids the race where a caller checking IsWarmingUp()

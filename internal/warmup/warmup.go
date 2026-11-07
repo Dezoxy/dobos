@@ -34,6 +34,10 @@ var persistTails = false
 // is written to SSD until this says so. Wired at startup; nil skips the check.
 var RangeVerified func(hash string, fileID int, off, n int64) bool
 
+// RequestPieces asks for the whole pieces under a block that waits for verification, so
+// they complete and get hashed. Wired at startup; nil leaves it to the readers.
+var RequestPieces func(hash string, fileID int, off, n int64)
+
 // Options configures InitDiskWarmup. An empty Dir keeps upstream's behaviour.
 type Options struct {
 	QuotaGB int64
@@ -959,7 +963,9 @@ func (d *DiskWarmupCache) tailFillRunning(hash string, fileID int) bool {
 // hashed; a block written to SSD before that could be a corrupt copy served on every
 // later open. A block whose pieces are not verified yet waits in the background and is
 // written once they are, or dropped.
-const verifyWaiters = 64
+// A waiter holds no data (it re-reads the range once verified), so a scan burst of a
+// few hundred files fits.
+const verifyWaiters = 1024
 
 var verifySlots = make(chan struct{}, verifyWaiters)
 
@@ -992,7 +998,7 @@ func (d *DiskWarmupCache) verified(hash string, fileID int, off int64, data []by
 		return false // a scan burst: the next open fetches it again
 	}
 	gen := d.removals.Load()
-	fetch, poll, wait := TailFetch, verifyPollInterval, verifyWaitMax
+	fetch, poll, wait, request := TailFetch, verifyPollInterval, verifyWaitMax, RequestPieces
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -1001,6 +1007,9 @@ func (d *DiskWarmupCache) verified(hash string, fileID int, off int64, data []by
 			<-verifySlots
 			d.pendingVerify.Delete(key)
 		}()
+		if request != nil { // off the read path: it takes the client lock
+			request(hash, fileID, off, n)
+		}
 		deadline := time.Now().Add(wait)
 		for time.Now().Before(deadline) {
 			time.Sleep(poll)
