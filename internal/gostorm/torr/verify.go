@@ -30,12 +30,25 @@ func (t *Torrent) RequestRange(fileID int, off, n int64) {
 
 // rangePieces resolves a file range to its pieces on one snapshot of the torrent.
 func (t *Torrent) rangePieces(fileID int, off, n int64) (*torrent.Torrent, int, int, bool) {
-	if t == nil || n <= 0 || off < 0 {
+	if n <= 0 || off < 0 {
 		return nil, 0, 0, false
+	}
+	tt, f, ok := t.fileByID(fileID)
+	if !ok || off+n > f.Length() {
+		return nil, 0, 0, false
+	}
+	first, last, ok := pieceSpan(f.Offset()+off, n, tt.Info().PieceLength)
+	return tt, first, last, ok
+}
+
+// fileByID resolves a Status() file id on one snapshot of the torrent.
+func (t *Torrent) fileByID(fileID int) (*torrent.Torrent, *torrent.File, bool) {
+	if t == nil {
+		return nil, nil, false
 	}
 	tt := t.Torrent // drop() may nil the field; use one snapshot throughout
 	if tt == nil || tt.Info() == nil {
-		return nil, 0, 0, false
+		return nil, nil, false
 	}
 	// Resolve the id through Status() and match by path, exactly as Stream does: ids
 	// come from Status()'s cached order, which a fresh sort need not reproduce.
@@ -47,20 +60,14 @@ func (t *Torrent) rangePieces(fileID int, off, n int64) (*torrent.Torrent, int, 
 		}
 	}
 	if path == "" {
-		return nil, 0, 0, false
+		return nil, nil, false
 	}
-	var f *torrent.File
 	for _, tf := range tt.Files() {
 		if tf.Path() == path {
-			f = tf
-			break
+			return tt, tf, true
 		}
 	}
-	if f == nil || off+n > f.Length() {
-		return nil, 0, 0, false
-	}
-	first, last, ok := pieceSpan(f.Offset()+off, n, tt.Info().PieceLength)
-	return tt, first, last, ok
+	return nil, nil, false
 }
 
 // pieceSpan returns the first and last piece covering n bytes at torrent offset off.

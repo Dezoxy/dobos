@@ -5419,6 +5419,7 @@ func main() {
 	)
 	dashHandler := dashboard.New(monCollector, logsDir)
 	http.HandleFunc("/dashboard", dashHandler.Dashboard)
+	http.HandleFunc("/api/index/seed", handleIndexSeed) // Dezoxy fork; off unless configured
 	http.HandleFunc("/api/health", dashHandler.Health)
 	http.HandleFunc("/api/torrents", dashHandler.Torrents)
 	http.HandleFunc("/api/speed-history", dashHandler.SpeedHistory)

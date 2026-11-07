@@ -318,6 +318,10 @@ type Config struct {
 	// WarmupDir; upstream keeps 64 MB and 16 MB.
 	WarmupHeadSizeMB int64 `json:"warmup_head_size_mb"`
 	WarmupTailSizeMB int64 `json:"warmup_tail_size_mb"`
+	// IndexSeedRoot enables POST /api/index/seed (Dezoxy fork): a local copy under this
+	// directory, proven identical to a torrent's file by its piece hashes, fills that
+	// file's index windows without the swarm. Empty disables the endpoint.
+	IndexSeedRoot string `json:"index_seed_root"`
 
 	// --- NAT-PMP (V228) ---
 	NatPMP NatPMPConfig `json:"natpmp"`
