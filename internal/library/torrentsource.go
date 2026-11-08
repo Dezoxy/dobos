@@ -101,14 +101,16 @@ type torrentUploader interface {
 }
 
 // uploadReleaseFile hands the .torrent to the engine just before the add, which then
-// finds the metadata and the file's trackers in place. A failed upload only costs the
-// head start: the add proceeds from the magnet.
-func (m *Manager) uploadReleaseFile(ctx context.Context, src TorrentSource, title string) {
+// finds the metadata and the file's trackers in place. A failed upload fails the add:
+// from a bare magnet the engine would not know a private torrent is private until its
+// metadata arrived, and would put it on the DHT meanwhile.
+func (m *Manager) uploadReleaseFile(ctx context.Context, src TorrentSource, title string) error {
 	up, ok := m.cfg.GoStorm.(torrentUploader)
 	if len(src.File) == 0 || !ok {
-		return
+		return nil
 	}
-	if _, err := up.UploadTorrent(ctx, src.File, title); err != nil && m.cfg.Logger != nil {
-		m.cfg.Logger.Printf("[LibraryAPI] WARNING: .torrent upload for %s failed, adding by magnet: %v", src.Hash, err)
+	if _, err := up.UploadTorrent(ctx, src.File, title); err != nil {
+		return errf(http.StatusBadGateway, ".torrent upload for %s failed: %v", src.Hash, err)
 	}
+	return nil
 }

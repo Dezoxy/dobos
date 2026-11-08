@@ -2374,7 +2374,7 @@ func (t *Torrent) deletePeerConn(c *PeerConn) (ret bool) {
 	// Avoid adding a drop event more than once. Probably we should track whether we've generated
 	// the drop event against the PexConnState instead.
 	if ret {
-		if !t.cl.config.DisablePEX {
+		if !t.cl.config.DisablePEX && !t.isPrivate() {
 			t.pex.Drop(c)
 		}
 	}
@@ -2711,6 +2711,12 @@ func (t *Torrent) timeboxedAnnounceToDht(s DhtServer) error {
 	return nil
 }
 
+// isPrivate reports a private torrent (BEP 27): one whose metadata says so. Before
+// the metadata arrives a torrent is taken as public.
+func (t *Torrent) isPrivate() bool {
+	return t.info != nil && t.info.Private != nil && *t.info.Private
+}
+
 func (t *Torrent) dhtAnnouncer(s DhtServer) {
 	cl := t.cl
 	cl.lock()
@@ -2723,7 +2729,10 @@ func (t *Torrent) dhtAnnouncer(s DhtServer) {
 			// We're also announcing ourselves as a listener, so we don't just want peer addresses.
 			// TODO: We can include the announce_peer step depending on whether we can receive
 			// inbound connections. We should probably only announce once every 15 mins too.
-			if !t.wantAnyConns() {
+			// A private torrent never goes on the DHT (BEP 27); its tracker is its
+			// only source of peers. Known once its metadata is: the homelab adds
+			// private torrents with their .torrent, so that is at the add.
+			if t.isPrivate() || !t.wantAnyConns() {
 				goto wait
 			}
 			// TODO: Determine if there's a listener on the port we're announcing.
@@ -2861,7 +2870,7 @@ func (t *Torrent) addPeerConn(c *PeerConn) (err error) {
 	t.conns[c] = struct{}{}
 	t.cl.event.Broadcast()
 	// We'll never receive the "p" extended handshake parameter.
-	if !t.cl.config.DisablePEX && !c.PeerExtensionBytes.SupportsExtended() {
+	if !t.cl.config.DisablePEX && !t.isPrivate() && !c.PeerExtensionBytes.SupportsExtended() {
 		t.pex.Add(c)
 	}
 	return nil

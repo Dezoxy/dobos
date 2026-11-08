@@ -14,6 +14,16 @@ Every change is opt-in: with the fork's settings unset, Tiramisu behaves exactly
 | `warmup_dir` | empty (upstream) | Set, the disk warmup becomes an **index cache** in that directory, whether or not GoStorm stores pieces on disk (`UseDisk`). The head and tail windows are `warmup_head_size_mb` and `warmup_tail_size_mb` (upstream: fixed 64 and 16), with no boundary chunk past the head. Tail coverage is saved beside each tail file (`.cover`, written after the data is synced) and survives restarts; a cover file for another window size is dropped. A scan read that misses the tail queues the window for one background worker, which requests its whole pieces, waits until they verify and writes it whole: a scan burst filling hundreds of tails at once evicted pieces from the RAM cache before they verified. Nothing is written before every piece it covers has passed its checksum: responsive streaming hands out bytes before the hash check, so a block waits up to 60 s for its pieces, asking the swarm for the whole pieces under it (a scan reads part of a piece, and the rest would otherwise never be requested), then writes a fresh copy of the verified bytes or is dropped. Once a file's head and tail are both on SSD, `Open` returns at once (the torrent wakes in the background, peers only) and a scan's reads are served from SSD, so a rescan downloads no pieces. |
 | `index_seed_root` | empty (off) | With `warmup_dir`, enables `POST /api/index/seed` `{"files": [{"virtual": "<path under the mount>", "local": "<copy under this root>"}, ...]}` for files of one torrent. Every piece a head or tail window touches is assembled from the local copies of all the files it spans, hashed against the torrent, and only those hashed bytes are written; a piece reaching into a file without a usable copy is left for the swarm. A hash mismatch reports the file as `different` (another release, or a copy edited in place). Pass every file of a season pack: pieces straddle neighbouring episodes. Local paths are opened once through an `os.Root` at the root, which refuses any path, `..` or symlink included, that leaves it. |
 
+Two fixes are not settings, and change nothing while DHT and PEX are off, as upstream ships
+them:
+
+- **Private torrents stay private (BEP 27).** A torrent whose metadata is marked private is
+  never announced to the DHT, is not offered `ut_pex` and exchanges no PEX, so DHT and PEX
+  can be on for public torrents. Before its metadata arrives a torrent counts as public.
+- **No bare-magnet fallback for a `.torrent`.** An add that comes with a `.torrent` fails
+  when handing it to the engine fails, instead of continuing from the magnet: from a magnet
+  the engine would not know a private torrent is private until its metadata arrived.
+
 ## Branches
 
 | Branch | Contents |

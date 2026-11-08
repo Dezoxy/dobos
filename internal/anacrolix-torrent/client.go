@@ -94,6 +94,8 @@ type Client struct {
 	clientHolepunchAddrSets
 
 	defaultLocalLtepProtocolMap LocalLtepProtocolMap
+	// Without ut_pex, for private torrents (BEP 27) when PEX is on for the rest.
+	privateLocalLtepProtocolMap LocalLtepProtocolMap
 }
 
 type ipStr string
@@ -220,6 +222,7 @@ func (cl *Client) init(cfg *ClientConfig) {
 		}
 	}
 	cl.defaultLocalLtepProtocolMap = makeBuiltinLtepProtocols(!cfg.DisablePEX)
+	cl.privateLocalLtepProtocolMap = makeBuiltinLtepProtocols(false)
 }
 
 func NewClient(cfg *ClientConfig) (cl *Client, err error) {

@@ -40,7 +40,7 @@ func (s *pexConnState) IsEnabled() bool {
 // Init is called from the reader goroutine upon the extended handshake completion
 func (s *pexConnState) Init(c *PeerConn) {
 	xid, ok := c.PeerExtensionIDs[pp.ExtensionNamePex]
-	if !ok || xid == 0 || c.t.cl.config.DisablePEX {
+	if !ok || xid == 0 || c.t.cl.config.DisablePEX || c.t.isPrivate() {
 		return
 	}
 	s.xid = xid

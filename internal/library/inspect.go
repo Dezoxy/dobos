@@ -80,7 +80,9 @@ func (m *Manager) Inspect(ctx context.Context, req InspectRequest) (*InspectResp
 	}
 	preexisting := known[lockKey]
 
-	m.uploadReleaseFile(ctx, file, title)
+	if err := m.uploadReleaseFile(ctx, file, title); err != nil {
+		return nil, err
+	}
 	addedHash, err := m.cfg.GoStorm.AddTorrent(ctx, magnet, title)
 	if err != nil || addedHash == "" {
 		// An interrupted request may still have been taken, and the engine saves it.

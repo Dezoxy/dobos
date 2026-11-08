@@ -1006,7 +1006,7 @@ func (c *PeerConn) onReadExtendedMsg(id pp.ExtensionNumber, payload []byte) (err
 			}
 		}
 		c.requestPendingMetadata()
-		if !t.cl.config.DisablePEX {
+		if !t.cl.config.DisablePEX && !t.isPrivate() {
 			t.pex.Add(c) // we learnt enough now
 			// This checks the extension is supported internally.
 			c.pex.Init(c)
@@ -1269,6 +1269,11 @@ func makeBuiltinLtepProtocols(pex bool) LocalLtepProtocolMap {
 }
 
 func (c *PeerConn) addBuiltinLtepProtocols(pex bool) {
+	if !pex || c.t.isPrivate() {
+		// A private torrent's peers must not be offered ut_pex (BEP 27).
+		c.LocalLtepProtocolMap = &c.t.cl.privateLocalLtepProtocolMap
+		return
+	}
 	c.LocalLtepProtocolMap = &c.t.cl.defaultLocalLtepProtocolMap
 }
 

@@ -360,7 +360,9 @@ func (m *Manager) Add(ctx context.Context, req AddRequest) (*AddResponse, error)
 	}
 
 	requestedHash := hash
-	m.uploadReleaseFile(ctx, file, req.Title)
+	if err := m.uploadReleaseFile(ctx, file, req.Title); err != nil {
+		return nil, err
+	}
 	addedHash, err := m.cfg.GoStorm.AddTorrent(ctx, magnet, req.Title)
 	if err != nil || addedHash == "" {
 		// An interrupted request may still have been taken, and the engine saves it;
