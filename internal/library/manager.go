@@ -581,7 +581,7 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 			if !IsVideoFile(f.Path) {
 				continue
 			}
-			season, episode := ParseSeasonEpisode(filepath.Base(f.Path))
+			season, episode := PackEpisode(f.Path, req.Season)
 			if episode == 0 {
 				continue
 			}

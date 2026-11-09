@@ -151,6 +151,46 @@ func ParseSeasonEpisode(filename string) (int, int) {
 	return 0, 0
 }
 
+// Dezoxy fork: scene packs number an episode 806 (season 8, episode 6), or keep S05E01
+// only in the episode's folder name.
+var reNameSeparators = regexp.MustCompile(`[._ -]+`)
+
+// PackEpisode names a file of a season pack: from its own name, then from its folder's,
+// then from a scene number whose leading digits are the pack's season. A name with two
+// different such numbers is left unnamed.
+func PackEpisode(path string, packSeason int) (int, int) {
+	if season, episode := ParseSeasonEpisode(filepath.Base(path)); episode > 0 {
+		return season, episode
+	}
+	if dir := filepath.Base(filepath.Dir(path)); dir != "." && dir != string(filepath.Separator) {
+		if season, episode := ParseSeasonEpisode(dir); episode > 0 {
+			return season, episode
+		}
+	}
+	if packSeason <= 0 {
+		return 0, 0
+	}
+	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	found := 0
+	for _, token := range reNameSeparators.Split(name, -1) {
+		if len(token) < 3 || len(token) > 4 || strings.Trim(token, "0123456789") != "" {
+			continue
+		}
+		n, _ := strconv.Atoi(token)
+		if n/100 != packSeason || n%100 == 0 {
+			continue
+		}
+		if found != 0 && found != n%100 {
+			return 0, 0
+		}
+		found = n % 100
+	}
+	if found == 0 {
+		return 0, 0
+	}
+	return packSeason, found
+}
+
 func IsVideoFile(path string) bool {
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".mkv", ".mp4", ".avi", ".mov", ".m4v":
