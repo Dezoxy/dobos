@@ -30,7 +30,7 @@ var (
 	reShowUnsafe  = regexp.MustCompile(`[<>:"/\\|?*'"&]`)
 	reSpaces      = regexp.MustCompile(`\s+`)
 	reNonWord     = regexp.MustCompile(`[^a-z0-9]`)
-	reEpSxxExx    = regexp.MustCompile(`[Ss](\d+)[Ee](\d+)`)
+	reEpSxxExx    = regexp.MustCompile(`[Ss](\d+)[ ._-]?[Ee](\d+)`) // Dezoxy fork: also s04.e01
 	reEpNxN       = regexp.MustCompile(`(\d+)x(\d+)`)
 )
 
@@ -138,8 +138,8 @@ func EpisodeKey(show string, season, episode int) string {
 	return fmt.Sprintf("%s_s%02de%02d", reNonWord.ReplaceAllString(strings.ToLower(show), ""), season, episode)
 }
 
-// ParseSeasonEpisode reads S01E05 or 1x05 out of a filename, returning 0,0 when the
-// name carries neither.
+// ParseSeasonEpisode reads S01E05 (also s01.e05) or 1x05 out of a filename, returning
+// 0,0 when the name carries neither.
 func ParseSeasonEpisode(filename string) (int, int) {
 	for _, re := range []*regexp.Regexp{reEpSxxExx, reEpNxN} {
 		if m := re.FindStringSubmatch(filename); len(m) >= 3 {
