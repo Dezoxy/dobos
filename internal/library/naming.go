@@ -151,9 +151,17 @@ func ParseSeasonEpisode(filename string) (int, int) {
 	return 0, 0
 }
 
-// Dezoxy fork: scene packs number an episode 806 (season 8, episode 6), or keep S05E01
-// only in the episode's folder name.
-var reNameSeparators = regexp.MustCompile(`[._ -]+`)
+// Dezoxy fork: scene packs number an episode 806 (season 8, episode 6), glue that number
+// to the show's abbreviation (ttscc109), write 01e02 without the S, or keep S05E01 only in
+// the episode's folder name.
+var (
+	reNameSeparators = regexp.MustCompile(`[._ -]+`)
+	// 01e02: the season without its S (FULCRUM).
+	reBareSeasonEpisode = regexp.MustCompile(`(?i)(?:^|[._ -])(\d{1,2})e(\d{1,3})(?:[._ -]|$)`)
+	// ttscc109: a scene number glued to the show's abbreviation (NoScEnE).
+	reGluedSceneNumber = regexp.MustCompile(`(?i)^[a-z]{2,8}(\d{3,4})$`)
+	reCodecToken       = regexp.MustCompile(`(?i)^(x|h)26[45]$`)
+)
 
 // PackEpisode names a file of a season pack: from its own name, then from its folder's,
 // then from a scene number whose leading digits are the pack's season. A name with two
@@ -171,8 +179,18 @@ func PackEpisode(path string, packSeason int) (int, int) {
 		return 0, 0
 	}
 	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if m := reBareSeasonEpisode.FindStringSubmatch(name); m != nil {
+		season, _ := strconv.Atoi(m[1])
+		episode, _ := strconv.Atoi(m[2])
+		if season == packSeason && episode > 0 {
+			return season, episode
+		}
+	}
 	found := 0
 	for _, token := range reNameSeparators.Split(name, -1) {
+		if m := reGluedSceneNumber.FindStringSubmatch(token); m != nil && !reCodecToken.MatchString(token) {
+			token = m[1]
+		}
 		if len(token) < 3 || len(token) > 4 || strings.Trim(token, "0123456789") != "" {
 			continue
 		}

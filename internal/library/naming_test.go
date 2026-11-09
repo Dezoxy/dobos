@@ -40,6 +40,12 @@ func TestPackEpisode(t *testing.T) {
 		{"pack/show.805.806.mkv", 8, [2]int{0, 0}},
 		{"pack/sln-ahs.502.mkv", 0, [2]int{0, 0}},
 		{"pack/Season 5/extras.mkv", 5, [2]int{0, 0}},
+		{"pack/fulcrum-the.gardener.01e02.720p.web.mkv", 1, [2]int{1, 2}},
+		{"pack/fulcrum-the.gardener.01e02.720p.web.mkv", 2, [2]int{0, 0}},
+		{"pack/noscnene-ttscc109-720p.mkv", 1, [2]int{1, 9}},
+		{"pack/noscnene-ttscc1012-720p.mkv", 10, [2]int{10, 12}},
+		{"pack/show.complete.x264-group.mkv", 2, [2]int{0, 0}},
+		{"pack/show.complete.h265-group.mkv", 2, [2]int{0, 0}},
 	} {
 		s, e := PackEpisode(c.path, c.season)
 		if s != c.want[0] || e != c.want[1] {
