@@ -1415,6 +1415,7 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 	h := &MkvHandle{
 		url:              n.vMeta.URL,
 		magnet:           magnetCandidate, // Store for potential re-wake
+		wake:             wake,
 		size:             n.vMeta.Size,
 		path:             n.vMeta.Path,
 		lastTime:         now,
@@ -1497,6 +1498,7 @@ type MkvHandle struct {
 	hash         string
 	magnet       string
 	fileID       int
+	wake         func(context.Context, string, int) error // re-activates an idle-closed torrent
 	mu           sync.Mutex
 	pumpCancel   context.CancelFunc
 	hasSlot      atomic.Bool
@@ -3093,6 +3095,11 @@ pumpSlotResolved:
 	}
 
 	if h.hash != "" {
+		if woke, err := rewake(fuseCtx, h.hash, h.magnet, h.fileID, torrentLive, h.wake); err != nil {
+			logger.Printf("[VFS] Re-activation failed for %s: %v", filepath.Base(h.path), err)
+		} else if woke {
+			logger.Printf("[VFS] Re-activated %s after the engine closed it as idle", filepath.Base(h.path))
+		}
 		// V753: the very first read of a session can miss raCache/warmup even when
 		// headReady was already true at Open() (partial coverage from a prior open),
 		// which skips forceTorrentWarmupActive there (main.go ~916, gated on
@@ -3243,6 +3250,28 @@ DATA_READY:
 	}
 
 	return fuse.ReadResultData(dest[:0]), 0
+}
+
+// torrentLive reports whether the engine holds the torrent in RAM; a closed one is only
+// a database record without an engine torrent.
+var torrentLive = func(hash string) bool {
+	return torr.PeekTorrent(hash).UnderlyingTorrent() != nil
+}
+
+// rewake re-activates a handle's torrent that the engine closed while the handle stayed
+// open, and reports whether it did. The engine closes a torrent TorrentDisconnectTimeout
+// after its last engine reader goes, and a handle without a pump holds none between
+// reads: Plex's transcoder buffers a minute ahead and then pauses, and its next read
+// found no torrent and failed with EIO, which killed the transcode (Dezoxy fork).
+func rewake(ctx context.Context, hash, magnet string, fileID int, live func(string) bool,
+	wake func(context.Context, string, int) error) (bool, error) {
+	if hash == "" || magnet == "" || wake == nil || live(hash) {
+		return false, nil
+	}
+	if err := wake(ctx, magnet, fileID); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ownsPumpState reports whether a releasing handle still owns the pump registered
