@@ -46,13 +46,13 @@ type FileMetadata struct {
 
 // Validation constants
 const (
-	MinFileSize = 100 * 1024 * 1024        // 100 MB minimum
+	MinFileSize = 20 * 1024 * 1024         // Dezoxy fork: 20 MiB; short SD episodes run under 100 MiB
 	MaxFileSize = 100 * 1024 * 1024 * 1024 // 100 GB maximum
 )
 
 // Error definitions
 var (
-	ErrInvalidSize   = errors.New("file size outside valid range (100MB-100GB)")
+	ErrInvalidSize   = errors.New("file size outside valid range (20MiB-100GB)")
 	ErrInvalidFormat = errors.New("invalid .mkv file format")
 	ErrMissingURL    = errors.New("missing stream URL on line 1")
 	ErrMissingSize   = errors.New("missing file size on line 2")
