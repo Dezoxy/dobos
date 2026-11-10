@@ -2,7 +2,7 @@
 
 ## System
 
-Dobos
+Flodni
 
 ## Purpose
 
@@ -19,13 +19,13 @@ to a media server.
 
 | View | Question it answers |
 |---|---|
-| SystemContext | What does Dobos depend on, and who depends on it? |
+| SystemContext | What does Flodni depend on, and who depends on it? |
 | Containers | What runs, and which stores does it own? |
 | Daemon | What are the parts of the single process? |
 
 ## Key decisions
 
-- [0001 Hard-fork Tiramisu as Dobos](decisions/0001-hard-fork-tiramisu.md)
+- [0001 Hard-fork Tiramisu as Flodni](decisions/0001-hard-fork-tiramisu.md)
 
 New ADR: copy [templates/adr.md](templates/adr.md) to
 `decisions/NNNN-short-title.md`. Keep this index up to date; there is
@@ -36,7 +36,7 @@ every `.md` file in that folder.
 
 | Area | Documents |
 |---|---|
-| Narrative (opens the tab and the PDF) | [01 overview](overview/01-dobos.md) |
+| Narrative (opens the tab and the PDF) | [01 overview](overview/01-flodni.md) |
 
 Only `overview/` is imported into the model by `!docs`.
 

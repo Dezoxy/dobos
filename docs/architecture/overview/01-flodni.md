@@ -2,26 +2,26 @@
 
 ### Purpose
 
-Dobos presents torrents as ordinary media files. A media server scans and
+Flodni presents torrents as ordinary media files. A media server scans and
 plays them like any other library, and the bytes are fetched from the swarm
 when they are read. Nothing is downloaded to disk in full.
 
 ### Context
 
-A media server (Plex or Jellyfin) reads files from a FUSE mount that Dobos
+A media server (Plex or Jellyfin) reads files from a FUSE mount that Flodni
 provides. Each file is backed by a small stub on the host that names a
-torrent and a file inside it. When the media server reads a byte range, Dobos
+torrent and a file inside it. When the media server reads a byte range, Flodni
 asks its torrent engine for the pieces that hold it.
 
 Titles are added, replaced and removed through the control API, by the
 operator or by automation outside this repository. Choosing which release to
-add is not Dobos's job.
+add is not Flodni's job.
 
-![System context view: what Dobos depends on, and who depends on it](embed:SystemContext)
+![System context view: what Flodni depends on, and who depends on it](embed:SystemContext)
 
 ### What runs
 
-Dobos is one Go process. It owns three kinds of state on the host: the stub
+Flodni is one Go process. It owns three kinds of state on the host: the stub
 library, the engine's stores and one configuration file.
 
 ![Container view: the daemon and the stores it owns](embed:Containers)

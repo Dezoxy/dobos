@@ -24,7 +24,7 @@ venv/
 
 # Compiled binary
 /tiramisu
-/dobos
+/flodni
 
 # Architecture model: generated output and the local viewer's state
 docs/architecture/workspace.json

@@ -1,4 +1,4 @@
-# CI for Dobos: test every change, publish images only from release tags.
+# CI for Flodni: test every change, publish images only from release tags.
 name: CI
 
 on:
@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
-  IMAGE: ghcr.io/dezoxy/dobos
+  IMAGE: ghcr.io/dezoxy/flodni
 
 jobs:
   build-test:
@@ -152,7 +152,7 @@ jobs:
           file: docker/Dockerfile
           platforms: linux/amd64
           load: true
-          tags: dobos:ci
+          tags: flodni:ci
           build-args: APP_VERSION=dev-${{ github.sha }}
           # Never shared with the publish job, which builds without any cache.
           cache-from: type=gha
@@ -163,22 +163,22 @@ jobs:
       - name: Smoke test
         run: |
           echo '{"telemetry": false, "telemetry_url": "", "scheduler": {"enabled": false}}' > config.json
-          docker run -d --name dobos-smoke -p 9080:9080 \
+          docker run -d --name flodni-smoke -p 9080:9080 \
             --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
-            -v "$PWD/config.json:/config.json" dobos:ci
+            -v "$PWD/config.json:/config.json" flodni:ci
           for _ in $(seq 1 60); do
             if curl -fsS -o /dev/null http://127.0.0.1:9080/control; then
-              docker exec dobos-smoke mountpoint -q /mnt/tiramisu-mkv-virtual && exit 0
+              docker exec flodni-smoke mountpoint -q /mnt/tiramisu-mkv-virtual && exit 0
             fi
             sleep 2
           done
-          docker logs dobos-smoke
+          docker logs flodni-smoke
           exit 1
 
       - name: Vulnerability scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: dobos:ci
+          image-ref: flodni:ci
           severity: CRITICAL
           ignore-unfixed: true
           exit-code: "1"
@@ -222,7 +222,7 @@ jobs:
             type=ref,event=tag
             type=sha,format=long
           labels: |
-            org.opencontainers.image.title=Dobos
+            org.opencontainers.image.title=Flodni
             org.opencontainers.image.licenses=GPL-3.0
 
       # Pushed by digest only: no tag points at it until the scan below passes.
