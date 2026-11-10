@@ -119,7 +119,8 @@ A change that violates one is wrong even if it works.
   `security-reviewer`, `silent-failure-hunter`, `infra-reviewer`,
   `refactor-cleaner`, `tdd-guide`, `go-build-resolver` and
   `build-error-resolver`. `implementer` takes delegated coding against a
-  written contract.
+  written contract. `scout` searches and looks things up; `advisor` gives a
+  second opinion. Both are read-only.
 - Project skills: `architecture-views`, `architecture-docs`, `docs-sync`,
   `golang-patterns`, `golang-testing`, `tdd-workflow`, `error-handling`,
   `api-design`, `docker-patterns`, `security-review`, `verification-loop`,
@@ -136,17 +137,35 @@ A change that violates one is wrong even if it works.
 
 ## Model and effort routing
 
-Set in `.claude/settings.json` and in each agent's frontmatter.
+Four roles, each pinned to a model in `.claude/settings.json` or in the
+agent's frontmatter. This section overrides the model advice in
+`.claude/rules/common/performance.md`.
 
-- **Main session: Opus at high effort.** It orchestrates: reads, plans,
-  delegates, reviews results.
-- **Subagents: Sonnet at high effort** (`model: sonnet`, `effort: high` in
-  every `.claude/agents/*.md`). Coding goes to `implementer` and reviews to
-  the reviewers; a built-in agent such as `general-purpose` carries no such
-  frontmatter, so it is not used for coding. Broad searches go to Explore.
+- **Orchestrator: Opus at high effort** (the main session). Reads, plans,
+  writes the contract for each delegated change, reviews what comes back,
+  and owns git, pull requests and GitHub settings. It writes code itself
+  only for a one-line fix.
 - **Advisor: Fable.** Consulted before committing to an approach, when an
-  error recurs, and before declaring a task done. Each consultation
-  re-reads the whole transcript, so `/compact` before long stretches.
+  error recurs, and before declaring a task done. Use the built-in advisor
+  (`advisorModel`) when the session offers it; it re-reads the whole
+  transcript, so `/compact` before long stretches. Otherwise brief the
+  `advisor` agent: it sees only the brief, so include the goal, the
+  options, the evidence and the constraints.
+- **Builder: Sonnet at high effort.** All code and test writing goes to
+  `implementer` against a written contract, and so do mechanical edits that
+  span more than a couple of files. Reviews go to the reviewers, build
+  failures to `go-build-resolver` or `build-error-resolver`.
+- **Scout: Haiku.** Searches, reading files and saved logs, inventories
+  and summaries go to `scout`. It returns paths, line numbers and quotes.
+  It has no shell: the `allow` list approves `git push` and `gh api`
+  without asking, so read-only is enforced by its tools, not its prompt.
+  Git history, CI and GitHub lookups stay with the orchestrator.
+- The built-in Explore and `general-purpose` agents carry no model pin from
+  this repository, so they are not used; route their work to `scout` or
+  `implementer`.
+- Run independent delegations in parallel. The orchestrator verifies every
+  result before relying on it: a subagent's report is evidence to check,
+  not a fact.
 - Never suggest a more expensive main model or a larger context window
   unless the owner asks; they burn the usage window.
 

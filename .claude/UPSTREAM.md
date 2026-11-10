@@ -109,6 +109,9 @@ development-base ships: rules `rules/golang/`, skills `golang-patterns` and
 agents gained `effort: high` in their frontmatter, to match the routing in
 `CLAUDE.md`; nothing else was edited.
 
+Written here, with no upstream: agents `scout` (Haiku) and `advisor`
+(Fable), the read-only roles in the model routing of `CLAUDE.md`.
+
 ## Checking upstream drift
 
 After `agent-base` has synced, list what upstream changed since the pin in the
