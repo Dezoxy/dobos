@@ -2,7 +2,7 @@
 name: advisor
 description: Second opinion for the orchestrating session on an approach, a recurring failure or a finished change. Use when the built-in advisor is not offered in the session. Reads the repository, weighs the options in the brief and returns a recommendation with its risks; never edits or runs commands.
 tools: Read, Grep, Glob
-model: fable
+model: claude-fable-5-2
 effort: high
 ---
 

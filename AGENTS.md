@@ -145,7 +145,9 @@ agent's frontmatter. This section overrides the model advice in
   writes the contract for each delegated change, reviews what comes back,
   and owns git, pull requests and GitHub settings. It writes code itself
   only for a one-line fix.
-- **Advisor: Fable.** Consulted before committing to an approach, when an
+- **Advisor: Fable 5.2**, pinned as `claude-fable-5-2` in `advisorModel`
+  and in the `advisor` agent, because the `fable` alias resolves to an
+  older version. Bump both together. Consulted before committing to an approach, when an
   error recurs, and before declaring a task done. Use the built-in advisor
   (`advisorModel`) when the session offers it; it re-reads the whole
   transcript, so `/compact` before long stretches. Otherwise brief the
