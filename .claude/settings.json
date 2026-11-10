@@ -86,7 +86,6 @@
       "Bash(terraform apply*)",
       "Bash(terraform -chdir=* apply*)",
       "Bash(docker push*)",
-      "Bash(gh pr merge*)",
       "Bash(helm upgrade*)",
       "Bash(helm install*)",
       "Bash(helm uninstall*)",
