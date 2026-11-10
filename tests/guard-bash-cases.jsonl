@@ -1,0 +1,307 @@
+{"expect": "deny", "command": "terraform -chdir=infra/terraform/azure/envs/demo destroy -auto-approve"}
+{"expect": "none", "command": "cat > docs/runbook.md <<'EOF'\nNever run terraform destroy without a plan.\nEOF\nmake docs"}
+{"expect": "deny", "command": "bash <<'EOF'\nterraform destroy -auto-approve\nEOF"}
+{"expect": "deny", "command": "cat <<'EOF' | bash\nterraform destroy\nEOF"}
+{"expect": "deny", "command": "cat > run.sh <<'EOF'\nterraform destroy\nEOF\nbash run.sh"}
+{"expect": "ask", "command": "kubectl apply -f infra/kind/bootstrap.yaml"}
+{"expect": "none", "command": "ls -la && git status"}
+{"expect": "deny", "command": "git push --force-with-lease origin main"}
+{"expect": "deny", "command": "az keyvault secret show --vault-name kv-x --name provider-key"}
+{"expect": "none", "command": "az keyvault secret list --vault-name kv-x --query '[].name' -o tsv"}
+{"expect": "deny", "command": "kubectl get secret gateway-keys -o yaml"}
+{"expect": "ask", "command": "terraform -chdir=infra/terraform/azure/envs/demo apply"}
+{"expect": "none", "command": "python3 - <<'PY'\nprint('hello')\nPY"}
+{"expect": "deny", "command": "python3 - <<'PY'\nimport os; os.system('terraform destroy')\nPY"}
+{"expect": "none", "command": "cat > tests/guard-bash-cases.jsonl <<'EOF'\n{\"command\":\"terraform destroy\"}\nEOF"}
+{"expect": "none", "command": "cp a b && printf 'ok\\n' && jq -e '.env' settings.json"}
+{"expect": "deny", "command": "printf 'hi\\n' && cat config/.env"}
+{"expect": "deny", "command": "git status; head -5 infra/demo.tfvars"}
+{"expect": "none", "command": "cat config/.env.example"}
+{"expect": "deny", "command": "cat config/.env | grep KEY"}
+{"expect": "none", "command": "git commit -F - <<'EOF'\ndocs: record the release\nEOF\ngit push -q\ngh pr view 4 --json body | python3 - <<'PY'\nimport json, sys\nnew_ver = (old_ver + 1)\nPY"}
+{"expect": "none", "command": "git push -q; rm -f /tmp/x"}
+{"expect": "none", "command": "git push -q && python3 -c 'print(1 + 2)'"}
+{"expect": "none", "command": "git push -u origin s000-guard-push-segments"}
+{"expect": "deny", "command": "git push --force"}
+{"expect": "deny", "command": "git push -f origin main"}
+{"expect": "deny", "command": "git push -uf origin x"}
+{"expect": "deny", "command": "git push origin +main"}
+{"expect": "deny", "command": "git push --mirror"}
+{"expect": "deny", "command": "git push --prune origin"}
+{"expect": "deny", "command": "git fetch && git push --force-with-lease"}
+{"expect": "deny", "command": "git status; git push -f origin main"}
+{"expect": "deny", "command": "git push \\\n  --force-with-lease origin main"}
+{"expect": "deny", "command": "cat \\\n  config/.env"}
+{"expect": "deny", "command": "python3 - <<'PY'\nimport os; os.system('git push --force')\nPY"}
+{"expect": "none", "command": "make up"}
+{"expect": "none", "command": "make smoke"}
+{"expect": "none", "command": "make docs"}
+{"expect": "none", "command": "make downtime"}
+{"expect": "none", "command": "shellcheck infra/kind/down.sh"}
+{"expect": "ask", "command": "cd infra/terraform && ./foundation.sh apply"}
+{"expect": "none", "command": "make azure-plan"}
+{"expect": "none", "command": "make azure-smoke"}
+{"expect": "none", "command": "infra/terraform/foundation.sh plan"}
+{"expect": "none", "command": "infra/terraform/foundation.sh smoke"}
+{"expect": "none", "command": "shellcheck infra/terraform/state.sh infra/terraform/foundation.sh"}
+{"expect": "none", "command": "make azure-applyx"}
+{"expect": "ask", "command": "cd infra/terraform && bash foundation.sh apply"}
+{"expect": "none", "command": "AZURE_SUBSCRIPTION=x infra/terraform/foundation.sh plan"}
+{"expect": "none", "command": "make 'azure-plan'"}
+{"expect": "none", "command": "bash infra/terraform/foundation.sh smoke"}
+{"expect": "none", "command": "bash -c 'make azure-smoke'"}
+{"expect": "none", "command": "grep -n state.sh README.md"}
+{"expect": "none", "command": "cd infra/terraform && shellcheck state.sh"}
+{"expect": "none", "command": "make azure-state-of-the-art"}
+{"expect": "ask", "command": "az lock delete --name lock-tfstate --resource-group rg-meridian-tfstate"}
+{"expect": "ask", "command": "az storage account delete --name stmeridiantfabc123"}
+{"expect": "ask", "command": "az role assignment delete --ids /subscriptions/x"}
+{"expect": "ask", "command": "az keyvault purge --name kv-meridian-abc123"}
+{"expect": "ask", "command": "az lock delete --name x && echo done"}
+{"expect": "deny", "command": "az cognitiveservices account delete --name oai-x --resource-group rg-x"}
+{"expect": "deny", "command": "az group delete --name rg-x"}
+{"expect": "ask", "command": "terraform -chdir=infra/terraform/foundation state rm azurerm_key_vault.foundation"}
+{"expect": "ask", "command": "terraform state push terraform.tfstate"}
+{"expect": "ask", "command": "terraform state mv a.b c.d"}
+{"expect": "ask", "command": "terraform -chdir=infra/terraform/foundation force-unlock 1234"}
+{"expect": "ask", "command": "az account get-access-token --resource https://cognitiveservices.azure.com"}
+{"expect": "ask", "command": "TOKEN=$(az account get-access-token --query accessToken -o tsv)"}
+{"expect": "none", "command": "az cognitiveservices account list"}
+{"expect": "none", "command": "az account show --query name -o tsv"}
+{"expect": "none", "command": "az lock list --resource-group rg-meridian-tfstate"}
+{"expect": "none", "command": "terraform state list"}
+{"expect": "none", "command": "terraform -chdir=infra/terraform/foundation state list"}
+{"expect": "none", "command": "terraform -chdir=infra/terraform/foundation output -json"}
+{"expect": "none", "command": "az keyvault secret list --vault-name kv-x --query '[].name' -o tsv"}
+{"expect": "deny", "command": "az group delete --name rg-scratch --yes"}
+{"expect": "deny", "command": "az keyvault delete --name kv-scratch"}
+{"expect": "deny", "command": "az cognitiveservices account delete -n oai-scratch -g rg-scratch"}
+{"expect": "none", "command": "az keyvault show -n kv-scratch --query properties.softDeleteRetentionInDays"}
+{"expect": "none", "command": "az storage account blob-service-properties show -n st -g rg-meridian-tfstate --query deleteRetentionPolicy"}
+{"expect": "ask", "command": "az lock delete --name lock-tfstate --resource-group rg-meridian-tfstate"}
+{"expect": "ask", "command": "terraform -chdir=infra/terraform/foundation import azurerm_resource_group.foundation x"}
+{"expect": "ask", "command": "terraform -chdir=infra/terraform/foundation state pull"}
+{"expect": "ask", "command": "terraform taint azurerm_key_vault.foundation"}
+{"expect": "none", "command": "terraform -chdir=infra/terraform/foundation state list"}
+{"expect": "deny", "command": "git commit --no-verify -m x"}
+{"expect": "deny", "command": "git push --no-verify origin feat/x"}
+{"expect": "deny", "command": "git commit --no-veri -m x"}
+{"expect": "deny", "command": "git merge --no-verify feat"}
+{"expect": "deny", "command": "git commit -n -m x"}
+{"expect": "deny", "command": "git commit -anm \"x\""}
+{"expect": "deny", "command": "git -C repo commit -n -m x"}
+{"expect": "deny", "command": "cd sub && git commit -n -m wip"}
+{"expect": "deny", "command": "bash -c \"git commit --no-verify -m x\""}
+{"expect": "deny", "command": "git -c core.hooksPath=/dev/null commit -m x"}
+{"expect": "deny", "command": "git --config-env=core.hooksPath=HP push"}
+{"expect": "deny", "command": "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit -m x"}
+{"expect": "deny", "command": "git config core.hooksPath /dev/null"}
+{"expect": "deny", "command": "git config --unset core.hooksPath"}
+{"expect": "deny", "command": "git config --global core.hooksPath ~/hooks"}
+{"expect": "deny", "command": "SKIP=ruff git commit -m x"}
+{"expect": "deny", "command": "HUSKY=0 git commit -m x"}
+{"expect": "deny", "command": "export HUSKY=0 && git push"}
+{"expect": "deny", "command": "LEFTHOOK=0 git push"}
+{"expect": "deny", "command": "rm .githooks/pre-push"}
+{"expect": "deny", "command": "mv .git/hooks/pre-commit /tmp/x"}
+{"expect": "deny", "command": "chmod -x .githooks/pre-push"}
+{"expect": "none", "command": "git push -n origin main"}
+{"expect": "none", "command": "git log -n 5"}
+{"expect": "none", "command": "git config core.hooksPath .githooks"}
+{"expect": "none", "command": "git config --local core.hooksPath .githooks"}
+{"expect": "none", "command": "git config --get core.hooksPath"}
+{"expect": "none", "command": "git config core.hooksPath"}
+{"expect": "none", "command": "chmod +x .githooks/pre-push"}
+{"expect": "none", "command": "git commit -m \"fix nginx config\""}
+{"expect": "none", "command": "git commit --amend --no-edit"}
+{"expect": "none", "command": "SKIP_TESTS=1 make test"}
+{"expect": "none", "command": "cat > notes.md <<'EOF'\nnever use git commit --no-verify\nEOF"}
+{"expect": "deny", "command": "git commit -m \"fix; tidy\" --no-verify"}
+{"expect": "deny", "command": "git commit -m \"a && b\" -n"}
+{"expect": "deny", "command": "git commit -m 'left | right' --no-verify"}
+{"expect": "deny", "command": "git --no-pager commit -n -m x"}
+{"expect": "deny", "command": "git -C repo --no-pager commit -n -m x"}
+{"expect": "deny", "command": "git --git-dir .git --work-tree . commit -n -m x"}
+{"expect": "deny", "command": "git commit \"-n\" -m x"}
+{"expect": "deny", "command": "git commit '-n' -m x"}
+{"expect": "deny", "command": "git commit \"--no-verify\" -m x"}
+{"expect": "deny", "command": "export SKIP=ruff && git commit -m x"}
+{"expect": "deny", "command": "export SKIP=ruff; git push"}
+{"expect": "deny", "command": "export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null; git commit -m x"}
+{"expect": "deny", "command": "git commit -m \"$(git commit --no-verify -m inner)\""}
+{"expect": "deny", "command": "git commit -m \"docs\" -n"}
+{"expect": "none", "command": "git commit -m \"docs: never use --no-verify\""}
+{"expect": "none", "command": "git commit -m 'docs: git commit --no-verify is denied'"}
+{"expect": "none", "command": "git commit --message=\"explain why git push --no-verify is denied\""}
+{"expect": "none", "command": "gh pr create --title \"guard\" --body \"git commit --no-verify and SKIP=ruff git commit are denied\""}
+{"expect": "none", "command": "git commit -m \"docs: what core.hooksPath does\""}
+{"expect": "none", "command": "git grep core.hooksPath"}
+{"expect": "none", "command": "git log --grep=core.hooksPath --oneline"}
+{"expect": "none", "command": "git log --grep commit -n 5"}
+{"expect": "none", "command": "git --no-pager log -n 3"}
+{"expect": "none", "command": "git commit -m \"note the -n flag\""}
+{"expect": "none", "command": "SKIP=1 make test"}
+{"expect": "none", "command": "git commit -m \"x\" && git push -n origin main"}
+{"expect": "deny", "command": "bash -c \"git commit -m x -n\""}
+{"expect": "deny", "command": "git -c \"core.hooksPath=/dev/null\" commit -m x"}
+{"expect": "deny", "command": "git commit --message \"x; y\" -n"}
+{"expect": "deny", "command": "SKIP=ruff,mypy git commit -m \"x\""}
+{"expect": "deny", "command": "git commit -m \"it is; fine\" -n"}
+{"expect": "deny", "command": "git commit -m \"say \\\"hi\\\"; ok\" --no-verify"}
+{"expect": "deny", "command": "git commit -nm \"msg\""}
+{"expect": "deny", "command": "git commit -am \"x; y\" -n"}
+{"expect": "deny", "command": "git commit -m \"$(echo x)\" -n"}
+{"expect": "deny", "command": "git --no-pager config core.hooksPath /dev/null"}
+{"expect": "deny", "command": "git config --local --unset core.hooksPath"}
+{"expect": "none", "command": "git commit -am \"docs: never use --no-verify\""}
+{"expect": "none", "command": "git tag -a v1 -m \"no -n here; really\""}
+{"expect": "none", "command": "gh pr create --title \"x\" --body-file body.md"}
+{"expect": "ask", "command": "gh release create v1 --notes \"mentions git commit --no-verify\""}
+{"expect": "none", "command": "git --no-pager config --get core.hooksPath"}
+{"expect": "none", "command": "git commit -m \"$(cat msg.txt)\""}
+{"expect": "none", "command": "git commit -F msg.txt"}
+{"expect": "deny", "command": "echo 'use git commit -m' && git commit -n -m 'y'"}
+{"expect": "deny", "command": "echo \"pass -m\" ; git commit -n; echo \"x\""}
+{"expect": "deny", "command": "git log --grep='-m' ; git commit -n -m 'x'"}
+{"expect": "deny", "command": "echo \"x -m\" && git push --no-verify -m \"a\""}
+{"expect": "deny", "command": "git commit -m 'a' ; echo 'b -m' ; git commit -n ; echo 'c'"}
+{"expect": "deny", "command": "bash -c 'git commit -m \"a;b\" -n'"}
+{"expect": "deny", "command": "bash -c \"git commit -m 'a;b' -n\""}
+{"expect": "deny", "command": "git -C \"my dir\" config core.hooksPath /dev/null"}
+{"expect": "deny", "command": "git -c user.name=\"A B\" config core.hooksPath /dev/null"}
+{"expect": "deny", "command": "git -C \"my dir\" commit -n -m x"}
+{"expect": "deny", "command": "GIT_CONFIG_PARAMETERS=\"'core.hooksPath=/dev/null'\" git commit -m x"}
+{"expect": "none", "command": "grep -rn \"git commit -n\" docs/"}
+{"expect": "none", "command": "echo \"never use git commit -n\""}
+{"expect": "none", "command": "git log --grep=\"git commit -n\""}
+{"expect": "deny", "command": "bash -c \"cd x; git commit -n\""}
+{"expect": "deny", "command": "sh -c \"git add . && git commit -n\""}
+{"expect": "none", "command": "grep -c core.hooksPath README.md"}
+{"expect": "none", "command": "SKIP=1 pytest; git status"}
+{"expect": "deny", "command": "export SKIP=ruff; git merge feat"}
+{"expect": "deny", "command": "git commit -m \"$(cat <<'EOF'\nfix: one thing\n\nbody line\nEOF\n)\" --no-verify"}
+{"expect": "deny", "command": "git commit -m \"$(cat <<'EOF'\nfix: one thing\n\nbody line\nEOF\n)\" -n"}
+{"expect": "deny", "command": "git add -A && git commit -m \"$(cat <<'EOF'\nfix: one thing\n\nbody line\nEOF\n)\" -n"}
+{"expect": "none", "command": "git commit -m \"$(cat <<'EOF'\nfix: one thing\n\nbody line\nEOF\n)\""}
+{"expect": "none", "command": "git commit -m \"$(cat <<'EOF'\ndocs: --no-verify; core.hooksPath\nEOF\n)\""}
+{"expect": "deny", "command": "git commit -m \"$(date); x\" -n"}
+{"expect": "deny", "command": "git commit -m 'x'\"'\"'y;z' -n"}
+{"expect": "none", "command": "git commit -m \"docs: it's -m 'x' --no-verify\""}
+{"expect": "none", "command": "git commit -m 'x'\"'\"'y;z'"}
+{"expect": "none", "command": "git commit -m \"mention HUSKY=0 here\""}
+{"expect": "deny", "command": "mv .git/hooks .git/hooks.off"}
+{"expect": "deny", "command": "SKIP=ruff /usr/bin/git commit -m x"}
+{"expect": "deny", "command": "ssh host \"git commit -n\""}
+{"expect": "none", "command": "git commit -m 'bash -c \"git commit -n\" is denied'"}
+{"expect": "deny", "command": "kubectl -n demo get secret x -o yaml"}
+{"expect": "deny", "command": "kubectl --kubeconfig infra/kind/kubeconfig --context kind-demo -n demo get secret x -o json"}
+{"expect": "deny", "command": "$K get secret x -o yaml"}
+{"expect": "deny", "command": "\"$K\" get secret x -o yaml"}
+{"expect": "deny", "command": "k get secret x -o yaml"}
+{"expect": "deny", "command": "kctl -n observability get secret grafana-admin -o jsonpath='{.data.admin-password}' | base64 -d"}
+{"expect": "deny", "command": "kubectl get secret x -n demo -o=yaml"}
+{"expect": "deny", "command": "kubectl get secret x --output=yaml"}
+{"expect": "deny", "command": "kubectl get secret x --output yaml"}
+{"expect": "deny", "command": "kubectl get secret x -oyaml"}
+{"expect": "deny", "command": "kubectl get secret x -o jsonpath='{.data.password}'"}
+{"expect": "deny", "command": "kubectl get secret x -o go-template='{{.data.password | base64decode}}'"}
+{"expect": "deny", "command": "kubectl get secret x --template='{{.data.password}}'"}
+{"expect": "deny", "command": "kubectl get secret x -o custom-columns=P:.data.password"}
+{"expect": "deny", "command": "kubectl get secret x -o kyaml"}
+{"expect": "deny", "command": "kubectl get secrets -A -o yaml"}
+{"expect": "deny", "command": "kubectl get secrets -Ao yaml"}
+{"expect": "deny", "command": "kubectl get secret/gateway-keys -o yaml"}
+{"expect": "deny", "command": "kubectl get secrets/gateway-keys -n demo -o json"}
+{"expect": "deny", "command": "kubectl get configmap,secret -o yaml"}
+{"expect": "deny", "command": "kubectl get secret,configmap -n demo -o yaml"}
+{"expect": "deny", "command": "kubectl get -n demo -o yaml secret x"}
+{"expect": "deny", "command": "kubectl get -o yaml secret"}
+{"expect": "deny", "command": "kubectl get secret x \\\n  -n demo \\\n  -o yaml"}
+{"expect": "deny", "command": "password=\"$(kubectl -n demo get secret x -o jsonpath='{.data.password}')\""}
+{"expect": "deny", "command": "bash -c \"kubectl get secret x -o yaml\""}
+{"expect": "deny", "command": "kubectl get secret x -o \"$fmt\""}
+{"expect": "deny", "command": "kubectl get secret x -o yaml > /dev/null"}
+{"expect": "deny", "command": "echo ok && kubectl -n demo get secret x -o yaml"}
+{"expect": "deny", "command": "grep -rn 'kubectl get secret x -o yaml' docs/"}
+{"expect": "none", "command": "kubectl get secret x"}
+{"expect": "none", "command": "kubectl -n demo get secret x"}
+{"expect": "none", "command": "kubectl get secrets -A"}
+{"expect": "none", "command": "kubectl get secret x -o name"}
+{"expect": "none", "command": "kubectl get secret x -o wide"}
+{"expect": "none", "command": "kubectl get secrets -Ao wide"}
+{"expect": "none", "command": "kubectl get secret x -o=name"}
+{"expect": "none", "command": "kubectl get secret x --output=name"}
+{"expect": "none", "command": "kubectl get secret x -oname"}
+{"expect": "none", "command": "kubectl get secret x -o \"name\""}
+{"expect": "none", "command": "kctl -n demo get secret x >/dev/null 2>&1"}
+{"expect": "none", "command": "kubectl describe secret x -n demo"}
+{"expect": "none", "command": "kubectl get pods -o yaml"}
+{"expect": "none", "command": "kubectl -n demo get pods -o json"}
+{"expect": "none", "command": "kubectl get pods -l app=secret -o yaml"}
+{"expect": "none", "command": "kubectl get pod secret-reader -o yaml"}
+{"expect": "none", "command": "kubectl get externalsecret x -o yaml"}
+{"expect": "none", "command": "kubectl get sealedsecrets -o yaml"}
+{"expect": "none", "command": "kubectl get deploy x -o yaml | grep -i secret"}
+{"expect": "none", "command": "kubectl get events --field-selector involvedObject.kind=Secret -o yaml"}
+{"expect": "none", "command": "kubectl auth can-i get secrets -n demo --as system:serviceaccount:observability:grafana"}
+{"expect": "none", "command": "grep -o 'get secret' docs/runbook.md"}
+{"expect": "none", "command": "bash -o pipefail -c \"kubectl get secret x\""}
+{"expect": "none", "command": "set -o pipefail; kubectl get secret x"}
+{"expect": "none", "command": "git config --get secret -o yaml"}
+{"expect": "none", "command": "apt-get secret -o yaml"}
+{"expect": "none", "command": "kubectl get secret x -n observability"}
+{"expect": "ask", "command": "kubectl exec db-1 -- psql -c \"DROP TABLE audit.events\""}
+{"expect": "ask", "command": "kubectl -n demo exec db-1 -c postgres -- psql -U postgres -d demo -c 'SELECT 1'"}
+{"expect": "ask", "command": "$K exec -it db-1 -- psql"}
+{"expect": "ask", "command": "k exec db-1 -- /usr/bin/psql -f /tmp/x.sql"}
+{"expect": "ask", "command": "kubectl exec db-1 -- bash -c \"psql -c 'TRUNCATE audit.events'\""}
+{"expect": "ask", "command": "kubectl exec db-1 -- sh -c \"cd /tmp && psql -f x.sql\""}
+{"expect": "ask", "command": "kubectl exec db-1 -- env PGDATABASE=demo psql -c 'select 1'"}
+{"expect": "ask", "command": "echo \"DROP TABLE x\" | kubectl exec -i db-1 -- psql"}
+{"expect": "ask", "command": "kubectl exec -i db-1 -- psql <<'EOF'\nDROP TABLE audit.events;\nEOF"}
+{"expect": "none", "command": "kubectl exec db-1 -- ls /var/lib/postgresql"}
+{"expect": "none", "command": "kubectl exec db-1 -- pg_isready"}
+{"expect": "none", "command": "grep -rn 'exec .*psql' infra/kind"}
+{"expect": "none", "command": "docker exec test-db psql -U postgres -c 'select 1'"}
+{"expect": "none", "command": "psql -h 127.0.0.1 -d demo -c 'select 1'"}
+{"expect": "none", "command": "kubectl logs db-1 -- psql"}
+{"expect": "none", "command": "kubectl exec db-1 -- cat /tmp/psql.log"}
+{"expect": "deny", "command": "for s in $(kubectl get secrets -o name); do kubectl get $s -o yaml; done"}
+{"expect": "deny", "command": "kubectl get secrets -o name | xargs -n1 kubectl get -o yaml"}
+{"expect": "deny", "command": "kubectl get secrets -o name | while read s; do kubectl get $s -o json; done"}
+{"expect": "deny", "command": "kubectl get secrets -o name | xargs -n1 -I{} sh -c 'kubectl get {} -o yaml'"}
+{"expect": "deny", "command": "kubectl -n demo get secrets -o name | xargs -I{} kubectl -n demo get {} -o jsonpath='{.data}'"}
+{"expect": "none", "command": "kubectl get secrets -o name | xargs -n1 kubectl describe"}
+{"expect": "none", "command": "$K get secret x >/dev/null && $K get pods -o yaml"}
+{"expect": "none", "command": "kubectl get pod \"$POD\" -o yaml"}
+{"expect": "none", "command": "kubectl get pods -o name | xargs -n1 kubectl get -o yaml"}
+{"expect": "none", "command": "git commit -m \"fix(guard): deny get secret with -o, ask on exec -- psql\""}
+{"expect": "none", "command": "git commit -m \"docs: runbook for get secret -o yaml\""}
+{"expect": "none", "command": "git commit -am \"hook: deny get secret x -o custom-columns\""}
+{"expect": "none", "command": "gh pr create --title \"x\" --body \"get secret -o go-template is now denied\""}
+{"expect": "none", "command": "git commit -m \"docs: kubectl exec db-1 -- psql runbook\""}
+{"expect": "deny", "command": "git commit -m \"x\" && kubectl get secret x -o yaml"}
+{"expect": "deny", "command": "git commit -m \"$(kubectl get secret x -o yaml)\""}
+{"expect": "deny", "command": "kubectl get \"secret\" x -o yaml"}
+{"expect": "deny", "command": "kubectl get 'secret/x' -o yaml"}
+{"expect": "deny", "command": "kubectl get secret x -wo yaml"}
+{"expect": "deny", "command": "kubectl get secret x -o 'yaml'"}
+{"expect": "deny", "command": "kubectl get secrets.v1 -A -o yaml"}
+{"expect": "deny", "command": "kubectl get secret x --template '{{.data.password}}'"}
+{"expect": "deny", "command": "kubectl get --template='{{.data}}' secret x"}
+{"expect": "deny", "command": "echo \"$(kubectl get -o json secret)\""}
+{"expect": "deny", "command": "kubectl exec db-1 -- psql -c x && az keyvault secret show --name y"}
+{"expect": "ask", "command": "kubectl exec -it db-1 -- sh -c 'echo \"select 1\"|psql'"}
+{"expect": "ask", "command": "kubectl exec db-1 -- sh -c 'cat q.sql|psql'"}
+{"expect": "ask", "command": "kubectl exec db-1 -- sh -c 'psql<q.sql'"}
+{"expect": "ask", "command": "kubectl exec db-1 -- sh -c '(psql -c \"x\")'"}
+{"expect": "ask", "command": "kubectl exec db-1 -- sh -c 'psql;'"}
+{"expect": "ask", "command": "kubectl exec db-1 -- sh -c \"psql\""}
+{"expect": "ask", "command": "kubectl exec db-1 -- sh -c 'psql'"}
+{"expect": "ask", "command": "kubectl exec db-1 -- which psql"}
+{"expect": "none", "command": "find . -type f -exec grep -l -- psql {} +"}
+{"expect": "none", "command": "docker exec -i --user postgres test-db psql -c 'select 1'"}
+{"expect": "none", "command": "kubectl exec db-1 -- pg_dump --schema-only demo"}
+{"expect": "none", "command": "gh pr create --title \"x\" --body \"kubectl exec db-1 -- psql asks\""}
+{"expect": "deny", "command": "kubectl get secrets -o name | parallel kubectl get {} -o yaml"}
+{"expect": "none", "command": "kubectl get secrets -o name | xargs -n1 kubectl get --show-labels"}

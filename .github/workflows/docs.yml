@@ -1,0 +1,103 @@
+name: Docs / Consistency
+
+# The base is the source every consumer copies from, so its own documentation
+# gate has to run here, on every pull request. It did not, which is how a
+# template teaching "every section is an `#` heading" reached five repositories:
+# nothing in this repository checked what its examples looked like rendered.
+#
+# A new repository copies this file unchanged (docs/bootstrap.md, step 3).
+# Each job name is meant to be a required status check on the default branch
+# (templates/github/protect-main.json); rename a job and the ruleset entry in
+# the same change. There are no path filters: a required check that a filter
+# skips never reports, and GitHub then blocks the pull request waiting for it.
+#
+# `docs consistency`: `make docs` is the consistency checker, including
+# check_heading_visibility; `make test` is the checker's own regression suite
+# and the guard-bash case table.
+#
+# `architecture model` parses and inspects the Structurizr workspace with the
+# image pinned in the Makefile.
+#
+# `derived diagrams` regenerates every view-derived Mermaid block from the
+# model and fails when a committed block differs. `make docs` cannot do that
+# on a fresh checkout: the generated views are gitignored, so its comparison
+# is skipped there.
+#
+# `secret scan` runs gitleaks over every commit, not only the tree.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: docs consistency
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check documentation against the tree
+        run: make docs
+      - name: Checker and guard regression tests
+        run: make test
+
+  model:
+    name: architecture model
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # Same pinned Structurizr image as local runs (Makefile).
+      - name: Validate and inspect the Structurizr workspace
+        run: make check
+
+  diagrams:
+    name: derived diagrams
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      # Same pinned Structurizr image as local runs (Makefile).
+      - name: Regenerate derived Mermaid blocks
+        run: make mermaid-views
+      - name: Derived blocks are current
+        run: git diff --exit-code -- '*.md'
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    # The action lists the pull request's commits through the API. A public
+    # repository answers that without a permission; a private one answers
+    # 403 ("Resource not accessible by integration") unless the job may read
+    # pull requests.
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      # Full history: gitleaks scans every commit, not only the tree.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # Pinned to the version used locally, so a finding here is one
+      # `gitleaks git --redact` shows on a laptop too.
+      - name: Scan for committed secrets
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # renovate: datasource=github-releases depName=gitleaks/gitleaks extractVersion=^v(?<version>.+)$
+          GITLEAKS_VERSION: "8.30.1"

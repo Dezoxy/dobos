@@ -1,0 +1,4 @@
+# ubuntu-26.04 is a GitHub-hosted runner the pinned actionlint does not know yet.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04

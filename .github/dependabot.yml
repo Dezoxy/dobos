@@ -1,10 +1,10 @@
-# Go modules are left to upstream: diverging from its go.mod makes every sync conflict.
-# Security alerts for them still arrive through Dependabot security updates.
+# Version updates open as pull requests against main. Security alerts arrive separately through
+# Dependabot security updates. The vendored engine (internal/anacrolix-torrent) has its own
+# go.mod and is not updated here: it is patched in-tree.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
-    target-branch: homelab
     schedule:
       interval: weekly
     # A new release waits a week before it is proposed: time for a compromised one to be pulled.
@@ -12,9 +12,17 @@ updates:
       default-days: 7
   - package-ecosystem: docker
     directory: /docker
-    target-branch: homelab
     schedule:
       interval: weekly
-    # A new release waits a week before it is proposed: time for a compromised one to be pulled.
     cooldown:
       default-days: 7
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      go-modules:
+        patterns: ["*"]
+        update-types: [minor, patch]

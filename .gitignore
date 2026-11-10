@@ -1,7 +1,5 @@
 # Real config with credentials — use config.json.example as template
 config.json
-AGENTS.md
-CLAUDE.md
 GEMINI.md
 
 # PGO profile (machine-specific, can be 100MB+)
@@ -26,6 +24,16 @@ venv/
 
 # Compiled binary
 /tiramisu
+/dobos
+
+# Architecture model: generated output and the local viewer's state
+docs/architecture/workspace.json
+docs/architecture/.structurizr/
+docs/architecture/generated/
+
+# Private notes and local agent state
+.context/
+.claude/settings.local.json
 
 .gemini/
 gha-creds-*.json
