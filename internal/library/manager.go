@@ -787,18 +787,25 @@ func (m *Manager) dropTorrentIfUnused(ctx context.Context, hash string) bool {
 
 // pickFileForEpisode prefers the file whose name carries the requested episode number;
 // a single-episode torrent that does not name it falls back to the largest video file.
+// Of several files that name it, the largest wins: a release's Sample/ clip names the
+// episode too, and when the torrent listed it first it was filed as the episode
+// (Dezoxy fork). Season packs already keep the largest file per episode.
 func (m *Manager) pickFileForEpisode(req AddRequest, files []FileStat) (*FileStat, error) {
 	if req.FileIndex > 0 {
 		return m.pickFile(req.FileIndex, files)
 	}
+	var best *FileStat
 	for i := range files {
 		if !IsVideoFile(files[i].Path) {
 			continue
 		}
 		if season, episode := ParseSeasonEpisode(filepath.Base(files[i].Path)); episode == req.Episode &&
-			(season == req.Season || season == 0) {
-			return &files[i], nil
+			(season == req.Season || season == 0) && (best == nil || files[i].Length > best.Length) {
+			best = &files[i]
 		}
+	}
+	if best != nil {
+		return best, nil
 	}
 	return m.pickFile(0, files)
 }
