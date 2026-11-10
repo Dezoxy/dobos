@@ -112,6 +112,9 @@ agents gained `effort: high` in their frontmatter, to match the routing in
 Written here, with no upstream: agents `scout` (Haiku) and `advisor`
 (Fable), the read-only roles in the model routing of `CLAUDE.md`.
 
+`settings.json` drops `Bash(gh pr merge*)` from `ask`: the orchestrator
+merges its own pull requests once the required checks pass.
+
 ## Checking upstream drift
 
 After `agent-base` has synced, list what upstream changed since the pin in the

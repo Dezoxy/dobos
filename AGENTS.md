@@ -79,8 +79,13 @@ A change that violates one is wrong even if it works.
 - **This file and `AGENTS.md` are twins**, byte-identical. Edit `CLAUDE.md`,
   then `cp CLAUDE.md AGENTS.md`. `make docs` enforces it.
 - **Merge discipline** (`.claude/rules/common/merge-discipline.md`): never
-  stack pull requests; after a merge, verify the content landed. Pull
-  requests are squash-merged by the owner once the required checks pass.
+  stack pull requests; after a merge, verify the content landed. The
+  orchestrator squash-merges its own pull requests once every required
+  check passes, without waiting to be asked:
+  `gh pr merge N --squash --delete-branch --match-head-commit <sha>`, so a
+  push that never reached the pull request cannot be merged by mistake.
+  `gh pr merge` is not on the `ask` list for that reason; the ruleset
+  still blocks any merge with a failing or missing check.
 - **Releases** are `v*` tags. A tag publishes `ghcr.io/dezoxy/flodni` by
   digest with provenance; tags are never moved or deleted.
 - **Version pins:** Dependabot updates GitHub Actions, the Docker base
