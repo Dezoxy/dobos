@@ -1,6 +1,6 @@
 # Ideas
 
-Things that would make Dobos more reliable or easier to maintain, not yet
+Things that would make Flodni more reliable or easier to maintain, not yet
 planned. An idea moves to [roadmap.md](roadmap.md) when it is chosen; until
 then nothing here is a commitment. Line numbers are as of 2026-11-10.
 
@@ -8,7 +8,7 @@ then nothing here is a commitment. Line numbers are as of 2026-11-10.
 
 The order matters: each step makes the next one safe.
 
-1. **End-to-end test first.** A local tracker seeds a small torrent, Dobos
+1. **End-to-end test first.** A local tracker seeds a small torrent, Flodni
    mounts it through FUSE, the test reads the file and compares hashes. It
    pins the one behaviour that must not break, before any code moves.
 2. **Delete unused subsystems.** About 16,800 lines: catalogue sync, music

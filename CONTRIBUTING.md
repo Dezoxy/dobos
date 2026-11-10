@@ -1,6 +1,6 @@
 # Contributing
 
-Dobos is maintained by one person for their own use.
+Flodni is maintained by one person for their own use.
 
 - **Issues are welcome**: bug reports with logs and the steps that led
   there, and ideas.

@@ -1,6 +1,6 @@
 # Security policy
 
-Dobos is a torrent engine behind a FUSE virtual filesystem, run by its
+Flodni is a torrent engine behind a FUSE virtual filesystem, run by its
 maintainer at home. Its configuration file holds tracker and API
 credentials; it holds no other personal data.
 

@@ -1,7 +1,7 @@
 // Entry point for the architecture model. Keep this file at docs/architecture/:
 // !docs and !adrs paths must be this directory or a subdirectory of it.
 // Model fragments live in model/ and are pulled in with !include (order matters).
-workspace "Dobos" "Architecture model for Dobos, a torrent engine behind a FUSE virtual filesystem." {
+workspace "Flodni" "Architecture model for Flodni, a torrent engine behind a FUSE virtual filesystem." {
 
     !identifiers hierarchical
 

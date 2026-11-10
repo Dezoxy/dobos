@@ -1,6 +1,6 @@
-# Dobos
+# Flodni
 
-Dobos presents torrents as ordinary media files. A media server such as Plex
+Flodni presents torrents as ordinary media files. A media server such as Plex
 or Jellyfin scans and plays them from a FUSE mount, and the bytes are fetched
 from the swarm when they are read. Nothing is downloaded to disk in full.
 
@@ -9,7 +9,7 @@ control API.
 
 ## Status
 
-Dobos is a hard fork of
+Flodni is a hard fork of
 [Tiramisu](https://github.com/MrRobotoGit/tiramisu) by Matteo Rancilio,
 started on 2026-11-10. It no longer follows upstream; the reasons are in
 [ADR 0001](docs/architecture/decisions/0001-hard-fork-tiramisu.md).
@@ -42,7 +42,7 @@ make go-test    # tests with the race detector
 The container image builds anywhere Docker runs:
 
 ```bash
-docker build -f docker/Dockerfile -t dobos:dev .
+docker build -f docker/Dockerfile -t flodni:dev .
 ```
 
 ## Viewing the model

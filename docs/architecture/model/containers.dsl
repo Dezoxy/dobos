@@ -1,10 +1,10 @@
-// Dobos is one Go process. The daemon is the only running container; the rest
+// Flodni is one Go process. The daemon is the only running container; the rest
 // are the stores it owns on the host. Its internal structure is modelled as
 // components, because nothing inside it deploys on its own.
 
-dobos = softwareSystem "Dobos" "Presents torrents as ordinary media files and streams their bytes on demand, without downloading whole files to disk." {
+flodni = softwareSystem "Flodni" "Presents torrents as ordinary media files and streams their bytes on demand, without downloading whole files to disk." {
 
-    daemon = container "Dobos Daemon" "Single Go binary: mounts the virtual library, runs the torrent engine and serves the control API." "Go 1.26, cgo FUSE" "Layer Runtime" {
+    daemon = container "Flodni Daemon" "Single Go binary: mounts the virtual library, runs the torrent engine and serves the control API." "Go 1.26, cgo FUSE" "Layer Runtime" {
         vfs = component "Virtual Filesystem" "Serves reads on stub files by asking the engine for the byte range. internal/vfs." "Go, libfuse3" "Layer Runtime"
         engine = component "Torrent Engine" "GoStorm on a vendored anacrolix/torrent: sessions, piece priority, read-ahead and the piece cache. internal/gostorm." "Go" "Layer Runtime"
         library = component "Library Manager" "Turns a torrent into named stub files, and replaces or removes them. internal/library." "Go" "Layer Runtime"
@@ -29,6 +29,6 @@ dobos = softwareSystem "Dobos" "Presents torrents as ordinary media files and st
     daemon.engine -> swarm "Exchanges pieces with peers and announces to trackers of" "BitTorrent, HTTP(S)/UDP" "Inbound across trust boundary"
 }
 
-mediaServer -> dobos.daemon.vfs "Scans and reads media files from" "FUSE mount"
-operator -> dobos.daemon.control "Configures and monitors through" "HTTP"
-automation -> dobos.daemon.control "Adds, replaces and removes titles through" "HTTP/JSON"
+mediaServer -> flodni.daemon.vfs "Scans and reads media files from" "FUSE mount"
+operator -> flodni.daemon.control "Configures and monitors through" "HTTP"
+automation -> flodni.daemon.control "Adds, replaces and removes titles through" "HTTP/JSON"

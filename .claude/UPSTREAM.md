@@ -101,7 +101,7 @@ A "see also" mention of an ECC skill that does not ship here is left
 verbatim: it costs a failed lookup at worst, and editing it would make every
 upstream diff noisier.
 
-## Added for Dobos
+## Added for Flodni
 
 Copied from `agent-base` (ECC) at the same pin, on top of what
 development-base ships: rules `rules/golang/`, skills `golang-patterns` and

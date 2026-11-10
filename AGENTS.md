@@ -1,6 +1,6 @@
-# Dobos
+# Flodni
 
-Dobos presents torrents as ordinary media files: a Go torrent engine behind
+Flodni presents torrents as ordinary media files: a Go torrent engine behind
 a FUSE virtual filesystem, read by a media server, for one maintainer's own
 use. It is a hard fork of Tiramisu. See [README.md](README.md) for what
 exists today, and
@@ -81,7 +81,7 @@ A change that violates one is wrong even if it works.
 - **Merge discipline** (`.claude/rules/common/merge-discipline.md`): never
   stack pull requests; after a merge, verify the content landed. Pull
   requests are squash-merged by the owner once the required checks pass.
-- **Releases** are `v*` tags. A tag publishes `ghcr.io/dezoxy/dobos` by
+- **Releases** are `v*` tags. A tag publishes `ghcr.io/dezoxy/flodni` by
   digest with provenance; tags are never moved or deleted.
 - **Version pins:** Dependabot updates GitHub Actions, the Docker base
   images and Go modules, weekly, after a seven-day cooldown. The image pins

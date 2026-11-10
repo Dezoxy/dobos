@@ -1,4 +1,4 @@
-# 1. Hard-fork Tiramisu as Dobos
+# 1. Hard-fork Tiramisu as Flodni
 
 Date: 2026-11-10
 
@@ -8,7 +8,7 @@ Accepted
 
 ## Context
 
-Dobos started as a fork of [Tiramisu](https://github.com/MrRobotoGit/tiramisu)
+Flodni started as a fork of [Tiramisu](https://github.com/MrRobotoGit/tiramisu)
 that tracked upstream and carried a growing set of its own changes: pumping
 on open, an on-disk index cache, index seeding, a guard for private torrents
 and stricter file naming.
@@ -33,7 +33,7 @@ review of code with no tests behind it.
 
 ## Decision
 
-Option 3. Dobos keeps Tiramisu's history and licence (GPL-3.0) and the
+Option 3. Flodni keeps Tiramisu's history and licence (GPL-3.0) and the
 original copyright notice, stops merging from upstream, and is free to delete
 and restructure code.
 
