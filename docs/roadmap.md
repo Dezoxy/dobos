@@ -186,3 +186,6 @@ Releases and deployment are scheduled separately.
   by concern (FUSE nodes, handle, pump, read-ahead cache, playback, webhook,
   profiling, inode map, wiring); a line-multiset check proves no code
   changed.
+- 2026-11-11, reliability step 5: the read path reaches the engine through an
+  interface, and tests with a fake engine cover fetch, singleflight, prefetch
+  and the pump; handle.go and pump.go coverage went from 32% to 80%.

@@ -21,11 +21,11 @@ Bugs and data-loss risks. None open.
   pump, the webhook and the cleanup manager share seven package-level maps
   (`activeHandles`, `activePumps`, `playbackRegistry`, `pumpTimers`,
   `priorityTimers`, `inFlightFetches`, `inFlightPrefetches`). Moving them
-  behind one struct was gated on unit tests of the read path; those now cover
-  the decision helpers, the cache hit, short-read repair and `Release`. The
-  branches that fetch through the native bridge (`FetchAhead`, `FetchBlock`,
-  the pump goroutine) are still covered only by the end-to-end test;
-  Reliability step 5 in the roadmap closes that gap.
+  behind one struct was gated on unit tests of the read path. Those now cover
+  the decision helpers, the cache hit, short-read repair, `Release`, and the
+  fetch, prefetch and pump branches through a fake engine behind the
+  `engineBridge` interface. The prerequisites are met; the move itself is not
+  planned yet.
 
 ## Nice to have
 
