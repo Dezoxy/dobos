@@ -50,11 +50,6 @@ Bugs and data-loss risks. None open.
   sequential read ended in EIO. Real swarms have such peers; check the
   leecher's request timeouts against them.
 
-- **End-to-end coverage for replacement.** `make e2e` files a movie, so the
-  readability check before a replacement (`ReadFileHead`) runs only against
-  a fake engine. A second fixture filed over the first as the same TV
-  episode would exercise it against the real engine.
-
 - **Timeouts on the engine's HTTP server.** GoStorm's gin server on port
   8090 runs with no read, write or idle timeouts (`internal/gostorm/web`).
   `/stream` responses are long-lived, so a write timeout does not fit; read

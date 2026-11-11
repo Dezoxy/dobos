@@ -60,6 +60,20 @@ a switch or calls out to third parties.
 
 Releases and deployment are scheduled separately.
 
+## Maintainability
+
+1. **Clear the dependency backlog.** Merge or supersede the open Dependabot
+   pull requests, align the vendored engine's `go.mod` with patched versions,
+   and run the engine's private-torrent tests in CI.
+2. **End-to-end coverage for replacement.** A second fixture filed over the
+   first as the same TV episode, so the readability check before a
+   replacement runs against the real engine.
+3. **Break up `main.go`.** Move the FUSE nodes, the read pump, the HTTP
+   routes and the startup wiring into packages behind an `App` struct with
+   its own HTTP mux, replacing the package-level singletons.
+4. **Make failures visible.** Structured logging with `slog`, no discarded
+   errors, and per-file session results through the API.
+
 ## Done
 
 - 2026-11-11, own identity step 3: stub and config writes are atomic, and
@@ -95,3 +109,7 @@ Releases and deployment are scheduled separately.
   environment variables are named Flodni; old names still work.
 - 2026-11-11, own identity step 2: a release that replaces existing stubs
   must deliver data first; if it does not, the existing files stay.
+- 2026-11-11, maintainability step 1: the vendored engine's `go.mod` is
+  aligned with patched versions (gRPC, OpenTelemetry, x/crypto, websocket),
+  its private-torrent tests run in `make go-test` and CI, and the Dependabot
+  backlog is merged or superseded.
