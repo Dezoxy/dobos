@@ -186,3 +186,6 @@ Releases and deployment are scheduled separately.
   by concern (FUSE nodes, handle, pump, read-ahead cache, playback, webhook,
   profiling, inode map, wiring); a line-multiset check proves no code
   changed.
+- 2026-11-11, reliability step 4: characterization tests pin stub naming,
+  stub contents, movie, episode and season-pack filing, replacement and
+  removal; internal/library coverage went from 48.1% to 68.9%.
