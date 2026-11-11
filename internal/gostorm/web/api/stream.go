@@ -137,7 +137,9 @@ func stream(c *gin.Context) {
 
 	// return play if query
 	if play {
-		tor.Stream(index, c.Request, c.Writer)
+		if err := tor.Stream(index, c.Request, c.Writer); err != nil {
+			log.TLogln("Error stream:", err)
+		}
 		return
 	}
 }
@@ -245,7 +247,9 @@ func streamNoAuth(c *gin.Context) {
 
 	// return play if query
 	if play {
-		tor.Stream(index, c.Request, c.Writer)
+		if err := tor.Stream(index, c.Request, c.Writer); err != nil {
+			log.TLogln("Error stream:", err)
+		}
 		return
 	}
 	c.Header("WWW-Authenticate", "Basic realm=Authorization Required")

@@ -80,7 +80,7 @@ func MigrateTorrents() {
 		}
 		return nil
 	})
-	db.Close()
+	_ = db.Close() // opened to read; the read error is checked below
 	if err == nil && len(torrs) > 0 {
 		for _, torr := range torrs {
 			spec, err := utils.ParseLink(torr.Magnet)
@@ -101,7 +101,9 @@ func MigrateTorrents() {
 			})
 		}
 	}
-	os.Remove(filepath.Join(Path, "torrserver.db"))
+	if err := os.Remove(filepath.Join(Path, "torrserver.db")); err != nil {
+		log.TLogln("Migrate torrents: could not remove torrserver.db:", err)
+	}
 }
 
 // MigrateSettingsToJson migrates Settings from BBolt to JSON

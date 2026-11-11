@@ -1,0 +1,8 @@
+(*io.PipeReader).Close
+(*io.PipeWriter).Close
+(io.ReadCloser).Close
+(*database/sql.Rows).Close
+(*database/sql.Stmt).Close
+(*database/sql.Tx).Rollback
+(*github.com/gin-gonic/gin.Context).AbortWithError
+(*github.com/gin-gonic/gin.Context).Error

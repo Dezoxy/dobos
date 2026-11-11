@@ -73,7 +73,7 @@ func moveFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }() // read-only
 
 	tmp := dst + ".tmp"
 	out, err := os.Create(tmp)
@@ -81,18 +81,20 @@ func moveFile(src, dst string) error {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		os.Remove(tmp)
+		_ = out.Close() // the copy error is the one reported
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := out.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := os.Rename(tmp, dst); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
-	os.Remove(src)
+	if err := os.Remove(src); err != nil {
+		log.TLogln("Migrate state: could not remove", src, "after the copy:", err)
+	}
 	return nil
 }

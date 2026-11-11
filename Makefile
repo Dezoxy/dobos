@@ -22,7 +22,7 @@ PORT      ?= 8080
 
 STRUCTURIZR := docker run --rm -v "$(CURDIR)/$(ARCH_DIR):/w:ro"
 
-.PHONY: help go-check go-test e2e validate inspect check docs test view export mermaid-views mermaid-render mermaid pdf clean
+.PHONY: help go-check errcheck go-test e2e validate inspect check docs test view export mermaid-views mermaid-render mermaid pdf clean
 .DEFAULT_GOAL := help
 
 ## help            list the targets
@@ -32,12 +32,20 @@ help:
 # The vendored engine keeps its own formatting and is not vetted or tested here.
 GO_PKGS = $$(go list ./... | grep -v 'internal/anacrolix-torrent')
 
-## go-check        gofmt, build and vet the Go code (Linux, libfuse3-dev)
+# Pinned: a new errcheck release can add findings, so bump it by hand.
+ERRCHECK = github.com/kisielk/errcheck@v1.9.0
+
+## errcheck        fail on an unchecked error outside .errcheck-excludes (Linux, libfuse3-dev)
+errcheck:
+	go run $(ERRCHECK) -ignoretests -exclude .errcheck-excludes $(GO_PKGS)
+
+## go-check        gofmt, build, vet and errcheck the Go code (Linux, libfuse3-dev)
 go-check:
 	@out=$$(gofmt -l . | grep -v '^internal/anacrolix-torrent/' || true); \
 	if [ -n "$$out" ]; then echo "not gofmt clean:"; echo "$$out"; exit 1; fi
 	go build ./...
 	go vet $(GO_PKGS)
+	$(MAKE) errcheck
 
 ## go-test         Go tests with the race detector (Linux, libfuse3-dev)
 go-test:

@@ -326,7 +326,7 @@ func RemTorrent(hashHex string) {
 			if _, err := os.Stat(name); err == nil {
 				ff, _ := os.ReadDir(name)
 				for _, f := range ff {
-					os.Remove(filepath.Join(name, f.Name()))
+					_ = os.Remove(filepath.Join(name, f.Name())) // the Remove(name) below reports what is left
 				}
 				if err := os.Remove(name); err != nil {
 					log.TLogln("Error remove cache:", err)

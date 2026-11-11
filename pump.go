@@ -361,7 +361,7 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader *native.NativeRea
 		}
 
 		// The master slot is released by the defer installed at the top of nativePump.
-		pumpReader.Close()
+		_ = pumpReader.Close() // read-only reader
 		h.mu.Unlock()
 		logger.Printf("[V239] Native Pump Goroutine Ended: %s", filepath.Base(h.path))
 	}()

@@ -125,7 +125,7 @@ func mimeTypeByContent(path string) (ret mimeType, err error) {
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }() // read-only
 	var data [512]byte
 	if n, err := file.Read(data[:]); err == nil {
 		ret = mimeType(http.DetectContentType(data[:n]))

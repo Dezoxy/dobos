@@ -238,7 +238,9 @@ func (c *Cache) Close() error {
 	if settings.BTsets.RemoveCacheOnDrop {
 		name := filepath.Join(settings.BTsets.TorrentsSavePath, c.hash.HexString())
 		if name != "" && name != "/" {
-			os.Remove(name)
+			if err := os.Remove(name); err != nil && !os.IsNotExist(err) {
+				log.TLogln("Error remove cache dir:", name, err)
+			}
 		}
 	}
 

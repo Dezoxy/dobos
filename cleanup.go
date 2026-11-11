@@ -236,7 +236,9 @@ func (cm *CleanupManager) runCleanup() {
 			stats.PlaybackRegistryPruned++
 			// V750: Also remove from SQLite
 			if stateDB != nil {
-				stateDB.DeletePlaybackState(path)
+				if err := stateDB.DeletePlaybackState(path); err != nil {
+					cm.logger.Printf("[Cleanup] WARNING: delete playback state for %s failed: %v", filepath.Base(path), err)
+				}
 			}
 			return true
 		}
@@ -274,7 +276,9 @@ func (cm *CleanupManager) runCleanup() {
 				stats.PlaybackRegistryPruned++
 				// V750: Also remove from SQLite
 				if stateDB != nil {
-					stateDB.DeletePlaybackState(path)
+					if err := stateDB.DeletePlaybackState(path); err != nil {
+						cm.logger.Printf("[Cleanup] WARNING: delete playback state for %s failed: %v", filepath.Base(path), err)
+					}
 				}
 				// F1 backstop: terminate any pump still registered for this path, otherwise it
 				// keeps its master slot and keeps fetching until the reader idle timeout.
@@ -296,7 +300,9 @@ func (cm *CleanupManager) runCleanup() {
 			stats.PlaybackRegistryPruned++
 			// V750: Also remove from SQLite
 			if stateDB != nil {
-				stateDB.DeletePlaybackState(path)
+				if err := stateDB.DeletePlaybackState(path); err != nil {
+					cm.logger.Printf("[Cleanup] WARNING: delete playback state for %s failed: %v", filepath.Base(path), err)
+				}
 			}
 		}
 		return true

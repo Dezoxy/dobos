@@ -246,7 +246,9 @@ func (tr *TorrentRemover) findFullHashBySuffix(suffix string) (string, string, e
 // removeTorrent calls GoStorm API to remove a torrent
 func (tr *TorrentRemover) removeTorrent(hash string) (bool, error) {
 	// Use Native Bridge to remove torrent
-	tr.nativeBridge.RemoveTorrent(hash)
+	if err := tr.nativeBridge.RemoveTorrent(hash); err != nil {
+		return false, err
+	}
 
 	return true, nil
 }

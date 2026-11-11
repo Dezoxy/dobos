@@ -451,14 +451,17 @@ func (im *InodeMap) saveToJSON() error {
 	tmpPath := tmpFile.Name()
 
 	if _, err := tmpFile.Write(data); err != nil {
-		tmpFile.Close()
-		os.Remove(tmpPath)
+		_ = tmpFile.Close() // the write error is the one reported
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("write temp file: %w", err)
 	}
-	tmpFile.Close()
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close temp file: %w", err)
+	}
 
 	if err := os.Rename(tmpPath, im.savePath); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename temp file: %w", err)
 	}
 
@@ -475,11 +478,15 @@ func (im *InodeMap) StartBackgroundSaver() {
 			select {
 			case <-ticker.C:
 				if im.IsDirty() {
-					im.SaveToDisk()
+					if err := im.SaveToDisk(); err != nil {
+						im.logger.Printf("InodeMap: save failed: %v", err)
+					}
 				}
 			case <-im.stopChan:
 				if im.IsDirty() {
-					im.SaveToDisk()
+					if err := im.SaveToDisk(); err != nil {
+						im.logger.Printf("InodeMap: save failed: %v", err)
+					}
 				}
 				return
 			}
@@ -491,7 +498,9 @@ func (im *InodeMap) Stop() {
 	im.stopOnce.Do(func() {
 		close(im.stopChan)
 		if im.IsDirty() {
-			im.SaveToDisk()
+			if err := im.SaveToDisk(); err != nil {
+				im.logger.Printf("InodeMap: save failed: %v", err)
+			}
 		}
 	})
 }

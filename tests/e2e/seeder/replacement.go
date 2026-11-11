@@ -51,13 +51,13 @@ func runReplacement(out, flodni string, peerPort, trackerPort int) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(dataDir)
+	defer func() { _ = os.RemoveAll(dataDir) }() // scratch space
 	// C's file is written here only to hash it into a .torrent, then deleted.
 	scratch, err := os.MkdirTemp("", "seeder-unseeded")
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(scratch)
+	defer func() { _ = os.RemoveAll(scratch) }() // scratch space
 
 	rels := []*episodeRelease{
 		{name: releaseA, seed: 11, seeded: true},

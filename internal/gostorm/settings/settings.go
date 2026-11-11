@@ -207,13 +207,18 @@ func safeMigrate(source, target GoStormDB, xpath, name, targetName string, clear
 func setupDatabaseRouting(bboltDB, jsonDB GoStormDB, settingsInJson bool) {
 	dbRouter := NewXPathDBRouter()
 
+	settingsDB := bboltDB
 	if settingsInJson {
-		dbRouter.RegisterRoute(jsonDB, "Settings")
-	} else {
-		dbRouter.RegisterRoute(bboltDB, "Settings")
+		settingsDB = jsonDB
 	}
-
-	dbRouter.RegisterRoute(bboltDB, "Torrents")
+	for _, r := range []struct {
+		db    GoStormDB
+		xpath string
+	}{{settingsDB, "Settings"}, {bboltDB, "Torrents"}} {
+		if err := dbRouter.RegisterRoute(r.db, r.xpath); err != nil {
+			log.TLogln("Error register db route", r.xpath, err)
+		}
+	}
 	tdb = NewDBReadCache(dbRouter)
 }
 

@@ -36,7 +36,9 @@ func NewTDB() GoStormDB {
 
 func (v *TDB) CloseDB() {
 	if v.db != nil {
-		v.db.Close()
+		if err := v.db.Close(); err != nil {
+			log.TLogln("Error close db:", err)
+		}
 		v.db = nil
 	}
 }
@@ -129,14 +131,12 @@ func (v *TDB) List(xpath string) []string {
 			}
 		}
 
-		buckt.ForEach(func(k, _ []byte) error {
+		return buckt.ForEach(func(k, _ []byte) error {
 			if len(k) > 0 {
 				ret = append(ret, string(k))
 			}
 			return nil
 		})
-
-		return nil
 	})
 	if err != nil {
 		log.TLogln("Error list sets", xpath, ", error:", err)

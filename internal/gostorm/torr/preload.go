@@ -122,7 +122,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 		log.TLogln("End preload: null reader")
 		return
 	}
-	defer readerStart.Close()
+	defer func() { _ = readerStart.Close() }() // read-only
 
 	readerStart.SetResponsive()
 	readerStart.SetReadahead(0)
@@ -164,7 +164,7 @@ func (t *Torrent) Preload(ctx context.Context, index int, size int64) {
 				preloadErr = fmt.Errorf("null reader for end range")
 				return
 			}
-			defer readerEnd.Close() // Ensure reader is always closed
+			defer func() { _ = readerEnd.Close() }() // Ensure reader is always closed
 
 			readerEnd.SetResponsive()
 			readerEnd.SetReadahead(0)

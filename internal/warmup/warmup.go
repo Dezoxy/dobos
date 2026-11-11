@@ -210,6 +210,14 @@ type DiskWarmupCache struct {
 // InitDiskWarmup creates the global warmup cache if UseDisk is enabled.
 var logf = log.New(os.Stdout, "[DiskWarmup] ", log.LstdFlags)
 
+// removeFile deletes a cache or coverage file. A file that stays behind is no
+// longer counted by the size accounting, so a failure is logged.
+func removeFile(path string) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		logf.Printf("[DiskWarmup] remove %s failed: %v", filepath.Base(path), err)
+	}
+}
+
 func InitDiskWarmup(opts Options) {
 	diskQuotaGB = opts.QuotaGB
 	FileSize = 64 * 1024 * 1024
@@ -268,7 +276,7 @@ func InitDiskWarmup(opts Options) {
 
 	if dropHeads {
 		if f, err := os.Create(migrated); err == nil {
-			f.Close()
+			_ = f.Close() // an empty marker file
 			logf.Printf("[DiskWarmup] Head cache rebuilt for the write-density invariant (one-shot)")
 		}
 	}
@@ -297,7 +305,7 @@ func (d *DiskWarmupCache) scanExisting(dropHeads bool) (total int64, dropped, re
 		full := filepath.Join(dir, name)
 		if strings.HasSuffix(name, coverSuffix) {
 			if _, serr := os.Stat(strings.TrimSuffix(full, coverSuffix)); serr != nil {
-				os.Remove(full) // coverage without its tail file
+				removeFile(full) // coverage without its tail file
 			}
 			continue
 		}
@@ -309,7 +317,7 @@ func (d *DiskWarmupCache) scanExisting(dropHeads bool) (total int64, dropped, re
 				continue
 			}
 			if os.Remove(full) == nil {
-				os.Remove(full + coverSuffix)
+				removeFile(full + coverSuffix)
 				dropped++
 			}
 			continue
@@ -366,7 +374,7 @@ func (d *DiskWarmupCache) reapIdle(max time.Duration) {
 				return true
 			}
 			ac.closed.Store(true)
-			ac.f.Close()
+			_ = ac.f.Close() // never written through this handle
 			d.warmupStarts.Delete(path)
 			d.dropResidue(path)
 		}
@@ -414,7 +422,7 @@ func (d *DiskWarmupCache) getHandle(path string) (*cachedHandle, error) {
 	ch := &cachedHandle{f: f}
 	ch.lastUsedNano.Store(time.Now().UnixNano())
 	if actual, loaded := d.handles.LoadOrStore(path, ch); loaded {
-		f.Close()
+		_ = f.Close() // lost the race; nothing was written through it
 		existing := actual.(*cachedHandle)
 		existing.lastUsedNano.Store(time.Now().UnixNano())
 		return existing, nil
@@ -426,7 +434,9 @@ func (d *DiskWarmupCache) closeHandle(path string) {
 	if val, ok := d.handles.LoadAndDelete(path); ok {
 		ch := val.(*cachedHandle)
 		ch.closed.Store(true) // mark before Close so writeWorker can detect stale handle
-		ch.f.Close()
+		if err := ch.f.Close(); err != nil {
+			logf.Printf("[DiskWarmup] close %s failed: %v", filepath.Base(path), err)
+		}
 	}
 	// Aborted warmups (eviction, hash removal, idle close) never reach the
 	// completion branch in processWrite that LoadAndDeletes warmupStarts —
@@ -509,7 +519,9 @@ func (d *DiskWarmupCache) processWrite(hash string, fileID int, data []byte, off
 	}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		os.MkdirAll(d.dir, 0755)
+		if err := os.MkdirAll(d.dir, 0755); err != nil {
+			logf.Printf("[DiskWarmup] mkdir %s failed: %v", d.dir, err)
+		}
 
 		d.mu.Lock()
 		d.enforceQuotaLocked(FileSize)
@@ -615,7 +627,7 @@ func (d *DiskWarmupCache) GetAvailableRange(hash string, fileID int) int64 {
 		logf.Printf("[DiskWarmup] CORRUPT CACHE detected (Size: %.1fMB > 128MB) for %s. Removing.", float64(fi.Size())/(1<<20), hash[:8])
 		d.closeHandle(path)
 		d.sizeCache.Delete(path)
-		os.Remove(path)
+		removeFile(path)
 		d.missing.Store(path, time.Now())
 		return 0
 	}
@@ -731,7 +743,9 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 	}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		os.MkdirAll(d.dir, 0755)
+		if err := os.MkdirAll(d.dir, 0755); err != nil {
+			logf.Printf("[DiskWarmup] mkdir %s failed: %v", d.dir, err)
+		}
 		d.missing.Delete(path)
 
 		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
@@ -741,14 +755,16 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 		// A new file holds nothing yet: coverage from a removed predecessor must not
 		// carry over, in memory or on disk.
 		d.tailCoverage.Delete(path)
-		os.Remove(path + coverSuffix)
+		removeFile(path + coverSuffix)
 		tr = d.tailRangeFor(path)
 		tailCh := &cachedHandle{f: f}
 		tailCh.lastUsedNano.Store(time.Now().UnixNano())
 		if old, loaded := d.handles.Swap(path, tailCh); loaded {
 			oc := old.(*cachedHandle)
 			oc.closed.Store(true)
-			oc.f.Close()
+			if err := oc.f.Close(); err != nil {
+				logf.Printf("[DiskWarmup] close replaced handle %s failed: %v", filepath.Base(path), err)
+			}
 		}
 		logf.Printf("[DiskWarmup] TAIL STARTING %s at relOffset %d", filepath.Base(path), relOffset)
 	}
@@ -827,8 +843,8 @@ func (d *DiskWarmupCache) RemoveHash(hash string) {
 			d.closeHandle(fullPath)
 			d.sizeCache.Delete(fullPath)
 			d.tailCoverage.Delete(fullPath)
-			os.Remove(fullPath)
-			os.Remove(fullPath + coverSuffix)
+			removeFile(fullPath)
+			removeFile(fullPath + coverSuffix)
 		}
 	}
 }
@@ -879,8 +895,8 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64) {
 		d.closeHandle(fi.path)
 		d.sizeCache.Delete(fi.path)
 		d.tailCoverage.Delete(fi.path)
-		os.Remove(fi.path)
-		os.Remove(fi.path + coverSuffix)
+		removeFile(fi.path)
+		removeFile(fi.path + coverSuffix)
 		diskTotal -= fi.size
 	}
 	atomic.StoreInt64(&d.totalSize, diskTotal)
@@ -1079,7 +1095,7 @@ func (d *DiskWarmupCache) saveCoverage(f *os.File, path string, tailStart, tailL
 		return
 	}
 	if os.Rename(tmp, path+coverSuffix) != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp) // the rename failure leaves the old coverage in place
 	}
 }
 
