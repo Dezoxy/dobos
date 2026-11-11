@@ -11,7 +11,9 @@
 # E2E_KILL_SEEDER_AFTER_ADD=1 kills the seeder once the add is done (the read must
 # fail within its timeout instead of hanging); E2E_REPLACEMENT_EXPECT_SUCCESS_FOR_C=1
 # expects the undeliverable release to be accepted (the replacement variant must
-# fail); E2E_ONLY=<variant> runs just that variant.
+# fail); E2E_ONLY=<variant> runs just that variant. The index-cache variant runs
+# with a random FLODNI_API_TOKEN: the seeder must see 401 without the bearer
+# header before its authorised add; the other variants run with auth off.
 set -euo pipefail
 
 FLODNI_IMAGE=${1:-flodni:ci}
@@ -80,6 +82,10 @@ start_stack() {
   mkdir -p "$dir/state" "$dir/out" "$dir/cache"
   chmod 777 "$dir/out" "$dir/cache"
   write_config "$variant" "$dir/config.json"
+  local -a envargs=()
+  if [ "$variant" = index-cache ]; then
+    envargs=(-e "FLODNI_API_TOKEN=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')")
+  fi
 
   echo "=== variant: $variant ===" >&2
   network="e2e-$variant-$$"
@@ -90,9 +96,9 @@ start_stack() {
   docker run -d --name "$flodni" --network "$network" --network-alias flodni \
     --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
     -v "$dir/config.json:/config.json:ro" -v "$dir/state:/state" \
-    -v "$dir/cache:/cache" "$FLODNI_IMAGE" >/dev/null
+    -v "$dir/cache:/cache" ${envargs[@]+"${envargs[@]}"} "$FLODNI_IMAGE" >/dev/null
   docker run -d --name "$seeder" --network "$network" --network-alias seeder \
-    -v "$dir/out:/e2e" "$SEEDER_IMAGE" -out /e2e "$@" >/dev/null
+    -v "$dir/out:/e2e" ${envargs[@]+"${envargs[@]}"} "$SEEDER_IMAGE" -out /e2e "$@" >/dev/null
 }
 
 stop_stack() {
@@ -174,6 +180,14 @@ run_variant() {
     echo "FAIL ($variant): sha256 mismatch: got $actual, want $expected" >&2
     dump_diagnostics
     return 1
+  fi
+  if [ "$variant" = index-cache ]; then
+    if ! docker logs "$seeder" 2>&1 | grep -q 'unauthenticated library add refused: status 401'; then
+      echo "FAIL ($variant): the seeder did not see a 401 for the add without a token" >&2
+      dump_diagnostics
+      return 1
+    fi
+    echo "ok ($variant): add without token refused with 401, with token accepted" >&2
   fi
   echo "PASS ($variant): sha256 $actual" >&2
 

@@ -826,6 +826,25 @@
     </div>
 
     <script>
+        // --- API auth: every call goes through api() ---
+        // Sends the token kept in localStorage as a bearer header. On a 401 it asks
+        // once for the token, stores it and retries once. With auth off the header is
+        // ignored and nothing is ever asked.
+        const TOKEN_KEY = 'flodniApiToken';
+        let tokenDeclined = false;
+        async function api(url, opts = {}) {
+            const send = () => fetch(url, {
+                ...opts,
+                headers: { ...(opts.headers || {}), 'Authorization': 'Bearer ' + (localStorage.getItem(TOKEN_KEY) || '') }
+            });
+            let res = await send();
+            if (res.status !== 401 || tokenDeclined) return res;
+            const entered = prompt('This flodni requires an API token (api_token / FLODNI_API_TOKEN):');
+            if (!entered) { tokenDeclined = true; return res; }
+            localStorage.setItem(TOKEN_KEY, entered.trim());
+            return send();
+        }
+
         // --- Restart ---
         async function restartFlodni() {
             const btn = document.getElementById('btn-restart');
@@ -833,12 +852,12 @@
             btn.disabled = true;
             btn.textContent = 'Restarting…';
             try {
-                await fetch('/api/restart', { method: 'POST' });
+                await api('/api/restart', { method: 'POST' });
             } catch (_) { /* expected: connection drops on restart */ }
             // Poll until back up
             const poll = setInterval(async () => {
                 try {
-                    const r = await fetch('/api/config', { signal: AbortSignal.timeout(2000) });
+                    const r = await api('/api/config', { signal: AbortSignal.timeout(2000) });
                     if (r.ok) {
                         clearInterval(poll);
                         btn.disabled = false;
@@ -975,7 +994,7 @@
 
         async function loadEngine() {
             try {
-                const res = await fetch('/api/config');
+                const res = await api('/api/config');
                 originalEngine = await res.json();
                 const form = document.getElementById('flodni-form');
                 ENGINE_ROOT_KEYS.forEach(k => {
@@ -1039,7 +1058,7 @@
                 tv_library_id: parseInt(formData.get('plex_tv_library_id')) || oldPlex.tv_library_id || oldPlex.TVLibraryID || 0
             };
 
-            const res = await fetch('/api/config', {
+            const res = await api('/api/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
@@ -1055,7 +1074,7 @@
 
         async function loadCore() {
             try {
-                const res = await fetch('/api/gostorm/settings', {
+                const res = await api('/api/gostorm/settings', {
                     method: 'POST',
                     body: JSON.stringify({ action: 'get' }),
                     headers: { 'Content-Type': 'application/json' }
@@ -1107,7 +1126,7 @@
                 const isUIOn = formData.has(formKey);
                 sets[k] = NEGATIVE_KEYS.includes(k) ? !isUIOn : isUIOn;
             });
-            const res = await fetch('/api/gostorm/settings', {
+            const res = await api('/api/gostorm/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ action: 'set', sets: sets })

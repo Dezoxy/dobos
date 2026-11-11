@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"flodni/internal/apiauth"
 	"flodni/internal/atomicfile"
 	"flodni/internal/cache"
 	"flodni/internal/catalog"
@@ -518,7 +519,7 @@ func main() {
 	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(gc())
+			_ = json.NewEncoder(w).Encode(gc().Redacted())
 			return
 		}
 		if r.Method == "POST" {
@@ -527,6 +528,8 @@ func main() {
 				http.Error(w, err.Error(), 400)
 				return
 			}
+			// The panel never sees the token; an empty post keeps the one in the file.
+			newCfg.APIToken = gc().ResolveAPIToken(newCfg.APIToken)
 			// Update file
 			data, _ := json.MarshalIndent(newCfg, "", "  ")
 			if err := atomicfile.WriteFile(gc().ConfigPath, data, 0644); err != nil {
@@ -677,9 +680,12 @@ func main() {
 	// about 17 KB/s. No route streams (checked: no Flush loop, SSE or log tail).
 	// A failed listen is logged, not fatal: the FUSE mount and the engine do not
 	// depend on this port, and the process has always run on without it.
+	if gc().APIToken != "" {
+		logger.Printf("[Control] bearer-token auth enabled")
+	}
 	controlSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", gc().MetricsPort),
-		Handler:           mux,
+		Handler:           apiauth.Middleware(gc().APIToken, logger, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      600 * time.Second,

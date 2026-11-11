@@ -16,8 +16,20 @@ anything that could leak a secret. Issues in the vendored
 
 ## Known limits
 
-The control panel and its APIs have no authentication. Bind them to loopback
-or a private network, never to an address other people can reach.
+Authentication on the control server (`metrics_port`, default 9080) is
+opt-in. Set `api_token` in `config.json` or `FLODNI_API_TOKEN` and every
+route except the static panel page (`GET /control`) needs
+`Authorization: Bearer <token>`; the two webhook routes also accept
+`?token=<token>`, because Plex and Jellyfin cannot send headers. Unset, the
+API is open: bind it to loopback or a private network, never to an address
+other people can reach.
+
+Not covered: GoStorm's own server on port 8090 (torrent control and
+shutdown) has no authentication yet; keep it off any network others can
+reach. Flodni does not provide TLS, so the token travels in clear text:
+put the control port behind a TLS proxy on any untrusted network. The token
+is compared in constant time and never logged, but there is no rate limiting
+or lockout.
 
 ## Secrets
 

@@ -56,6 +56,17 @@ paths with `FLODNI_ROOT_PATH`, `FLODNI_SOURCE_PATH`, `FLODNI_MOUNT_PATH`,
 `FLODNI_*` ones. Existing state carries over: the database is still
 `tiramisu.db` and the log file `tiramisu.log`.
 
+The control server on `metrics_port` (default 9080) is open unless you set a
+token. Set `api_token` in `config.json` or `FLODNI_API_TOKEN` (the variable
+wins) and every route except the panel page needs
+`Authorization: Bearer <token>`. The Plex or Jellyfin webhook cannot send
+headers, so `/plex/webhook` and `/webhook` also accept the token in the URL,
+for example `http://host:9080/plex/webhook?token=<token>`; no other route
+does. `/control` loads without it and asks for the token on its first call,
+then keeps it in the browser's local storage. `GET /api/config` never
+returns the token, and saving from the panel leaves it unchanged. GoStorm's
+port 8090 is not covered, and there is no TLS: see `SECURITY.md`.
+
 ## Viewing the model
 
 `make check` validates the architecture model and `make view` serves it at
