@@ -57,8 +57,10 @@ Bugs and data-loss risks. None open.
   pump, the webhook and the cleanup manager share seven package-level maps
   (`activeHandles`, `activePumps`, `playbackRegistry`, `pumpTimers`,
   `priorityTimers`, `inFlightFetches`, `inFlightPrefetches`). Moving them
-  behind one struct needs unit tests on the read path first; today only the
-  end-to-end test covers `readInner` (about 690 lines in `handle.go`).
+  behind one struct was gated on unit tests of the read path; those now cover
+  the decision helpers, the cache hit, short-read repair and `Release`. The
+  branches that fetch through the native bridge (`FetchAhead`, `FetchBlock`,
+  the pump goroutine) are still covered only by the end-to-end test.
 
 ## Nice to have
 

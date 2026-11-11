@@ -97,6 +97,10 @@ Releases and deployment are scheduled separately.
 
 ## Done
 
+- 2026-11-11, hardening step 2: table tests pin the pump and handle decision
+  helpers, and unit tests cover the read path's cache hit, short-read repair
+  and release; handle.go and pump.go coverage went from 0.6% to 32.0%.
+
 - 2026-11-11, hardening step 1: opt-in bearer-token auth on the control API;
   the panel asks for the token, webhooks may pass it in the URL.
 

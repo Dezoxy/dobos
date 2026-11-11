@@ -88,13 +88,16 @@ func shortAwayFromEOF(n, want int, off, size int64) bool {
 	return n < want && off+int64(n) < size
 }
 
+// readInnerCall is a test seam: Read's short-read repair is driven by a fake in tests.
+var readInnerCall = (*MkvHandle).readInner
+
 // Read never hands the kernel a short read away from EOF. FUSE here runs on the kernel page
 // cache (no direct_io), and Linux zero-fills the tail of a short read and marks the page
 // uptodate — that region would then serve zeros for the life of the mount. Missing bytes are
 // refetched; if they still cannot be produced, EIO is returned, which the kernel does not
 // cache, so the read is retried instead of a hole being made permanent.
 func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
-	res, errno := h.readInner(fuseCtx, dest, off)
+	res, errno := readInnerCall(h, fuseCtx, dest, off)
 	if errno != 0 || res == nil {
 		return res, errno
 	}
@@ -116,7 +119,7 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 		if time.Now().After(deadline) {
 			break // a blocked FUSE read puts smbd in D-state; bail out rather than hang
 		}
-		sub, subErrno := h.readInner(fuseCtx, dest[total:], off+int64(total))
+		sub, subErrno := readInnerCall(h, fuseCtx, dest[total:], off+int64(total))
 		if subErrno != 0 || sub == nil {
 			break
 		}
