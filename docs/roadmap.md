@@ -95,6 +95,25 @@ Releases and deployment are scheduled separately.
    port 8090, and the same opt-in token, since it exposes torrent control
    and shutdown.
 
+## Reliability
+
+1. **A health endpoint.** `GET /api/health` reports the mount, the engine and
+   the state database, each with a status and a reason, and the container
+   health check uses it instead of `mountpoint` alone.
+2. **A shutdown deadline.** Shutdown saves state and unmounts within a
+   bounded time and exits even when the unmount hangs, so a restart cannot
+   block forever.
+3. **Reads against slow seeders.** Reproduce in the end-to-end test the
+   stalls seen against a seeder with a shallow request pipeline, then fix the
+   leecher's request timeouts so a sequential read completes.
+4. **Characterization tests for the library.** Pin stub naming, stub
+   contents and one-stub-per-episode filing for movies, episodes and season
+   packs, so later restructuring cannot change them unnoticed.
+5. **An interface for the native bridge.** The read path calls the engine
+   through an interface instead of the concrete client, and tests cover the
+   fetch, prefetch and pump branches that only the end-to-end test reaches
+   today. This is the last prerequisite for the `App` struct.
+
 ## Done
 
 - 2026-11-11, hardening step 4: GoStorm's server on 8090 has read-header and
