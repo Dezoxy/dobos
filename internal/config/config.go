@@ -11,16 +11,6 @@ import (
 	"tiramisu/internal/prowlarr"
 )
 
-// NatPMPConfig holds the configuration for NAT-PMP port forwarding.
-type NatPMPConfig struct {
-	Enabled      bool   `json:"enabled"`
-	Gateway      string `json:"gateway"`
-	LocalPort    int    `json:"local_port"`
-	VPNInterface string `json:"vpn_interface"`
-	Lifetime     int    `json:"lifetime"`
-	Refresh      int    `json:"refresh"`
-}
-
 // DailyJobConfig: task that can run on specific days of the week.
 // DaysOfWeek uses JS convention: 0=Sunday … 6=Saturday.
 type DailyJobConfig struct {
@@ -118,12 +108,6 @@ type SchedulerConfig struct {
 	TVSync        DailyJobConfig      `json:"tv_sync"`
 	MusicSync     DailyJobConfig      `json:"music_sync"`
 	WatchlistSync WatchlistSyncConfig `json:"watchlist_sync"`
-}
-
-// EngineConfig holds per-engine paths for subprocess sync.
-type EngineConfig struct {
-	ScriptPath string
-	LogsDir    string
 }
 
 // MovieWeights holds the scoring weights and size gates used by the movie engine
@@ -254,30 +238,16 @@ type Config struct {
 	FuseMaxInflightMB int64 `json:"fuse_max_inflight_mb"`
 
 	// --- HTTP Resilience ---
-	MaxRetryAttempts         int `json:"max_retry_attempts"`
-	RetryDelayMS             int `json:"retry_delay_ms"`
-	RescueGracePeriodSeconds int `json:"rescue_grace_period_seconds"`
-	RescueCooldownHours      int `json:"rescue_cooldown_hours"`
+	MaxRetryAttempts int `json:"max_retry_attempts"`
+	RetryDelayMS     int `json:"retry_delay_ms"`
 
 	// --- Preload Engine ---
-	PreloadWorkersCount   int `json:"preload_workers_count"`
-	PreloadInitialDelayMS int `json:"preload_initial_delay_ms"`
-	WarmStartIdleSeconds  int `json:"warm_start_idle_seconds"`
-	MaxConcurrentPrefetch int `json:"max_concurrent_prefetch"`
-
-	// --- Cache Management ---
-	CacheCleanupIntervalMin int `json:"cache_cleanup_interval_min"`
-	MaxCacheEntries         int `json:"max_cache_entries"`
+	PreloadWorkersCount  int `json:"preload_workers_count"`
+	WarmStartIdleSeconds int `json:"warm_start_idle_seconds"`
 
 	// --- Connectivity ---
-	GoStormBaseURL   string `json:"gostorm_url"`
-	ProxyListenPort  int    `json:"proxy_listen_port"`
-	MetricsPort      int    `json:"metrics_port"`
-	BlockListEnabled bool   `json:"blocklist_enabled"`
-	BlockListURL     string `json:"blocklist_url"`
-	// BlockListFilter keeps only the ranges whose description matches this regexp.
-	// Empty keeps the whole list. See blockedIP.go for why published lists need it.
-	BlockListFilter string `json:"blocklist_filter"`
+	GoStormBaseURL string `json:"gostorm_url"`
+	MetricsPort    int    `json:"metrics_port"`
 
 	// --- FUSE Paths ---
 	// Fallback when CLI args are omitted. CLI args always take precedence.
@@ -316,13 +286,6 @@ type Config struct {
 	// WarmupDir; upstream keeps 64 MB and 16 MB.
 	WarmupHeadSizeMB int64 `json:"warmup_head_size_mb"`
 	WarmupTailSizeMB int64 `json:"warmup_tail_size_mb"`
-	// IndexSeedRoot enables POST /api/index/seed (Dezoxy fork): a local copy under this
-	// directory, proven identical to a torrent's file by its piece hashes, fills that
-	// file's index windows without the swarm. Empty disables the endpoint.
-	IndexSeedRoot string `json:"index_seed_root"`
-
-	// --- NAT-PMP (V228) ---
-	NatPMP NatPMPConfig `json:"natpmp"`
 
 	// --- External Services (V1.4.6) ---
 	Plex struct {
@@ -353,9 +316,6 @@ type Config struct {
 	// --- Language Matching ---
 	Language LanguageConfig `json:"language"`
 
-	// --- Engine Scripts (populated in LoadConfig, not from JSON) ---
-	EngineScripts map[string]EngineConfig `json:"-"`
-
 	// PumpOnOpen starts the read-ahead pump as soon as a file is opened (upstream's
 	// behaviour). Off, a file opened by a scanner (Plex, Sonarr/Radarr's ffprobe,
 	// Bazarr's hash) is served by small on-demand fetches, and the pump starts once a
@@ -380,18 +340,6 @@ func (c *Config) Save() error {
 	return os.WriteFile(c.ConfigPath, data, 0644)
 }
 
-// DefaultBlockListURL is the list the filter below is written for. It is a real default,
-// not just an example in config.json.example: a configuration without the key showed an
-// empty field in the Control Panel, and an empty field is skipped on save, so enabling the
-// blocklist downloaded nothing and there was no way to fix it from the panel.
-const DefaultBlockListURL = "https://list.iblocklist.com/?list=ydxerpxkpcfqjaybcssw&fileformat=p2p&archiveformat=gz"
-
-// DefaultBlockListFilter keeps only the anti-P2P section of a published blocklist. It is a
-// real default, not a hint: without it Level 1 loads whole - 17% of IPv4, nearly all of it
-// 1990s whois records - and rejects ordinary peers on netblocks that changed hands years
-// ago. Set the key to an empty string in config.json to load a list unfiltered.
-const DefaultBlockListFilter = `(?i)\bap2p\b|anti-?p2p`
-
 // LoadConfig loads configuration from environment variables with defaults
 func LoadConfig() Config {
 	// 1. Initial Defaults (V138 Gold Standard)
@@ -403,8 +351,6 @@ func LoadConfig() Config {
 		StreamingThresholdKB:   128,
 		PumpOnOpen:             true,
 		LogLevel:               "INFO",
-		BlockListURL:           DefaultBlockListURL,
-		BlockListFilter:        DefaultBlockListFilter,
 
 		AttrTimeoutSeconds:     1.0,
 		EntryTimeoutSeconds:    1.0,
@@ -414,16 +360,12 @@ func LoadConfig() Config {
 		MaxRetryAttempts: 6,
 		RetryDelayMS:     500,
 
-		PreloadWorkersCount:   4,
-		PreloadInitialDelayMS: 1000,
-		WarmStartIdleSeconds:  6,
-		MaxConcurrentPrefetch: 3,
+		PreloadWorkersCount:  4,
+		WarmStartIdleSeconds: 6,
 
-		CacheCleanupIntervalMin: 5,
-		MaxCacheEntries:         10000,
-		DiskWarmupQuotaGB:       15,
-		WarmupHeadSizeMB:        64,
-		WarmupTailSizeMB:        16,
+		DiskWarmupQuotaGB: 15,
+		WarmupHeadSizeMB:  64,
+		WarmupTailSizeMB:  16,
 
 		Language: LanguageConfig{
 			PreferredTerms: []string{"ita", "multi", "dual"},
@@ -444,11 +386,9 @@ func LoadConfig() Config {
 
 		MusicDiscovery: DefaultMusicDiscovery(),
 
-		TorrentioURL:     "https://torrentio.strem.fun",
-		GoStormBaseURL:   "http://127.0.0.1:8090",
-		ProxyListenPort:  8080,
-		MetricsPort:      9080,
-		BlockListEnabled: false,
+		TorrentioURL:   "https://torrentio.strem.fun",
+		GoStormBaseURL: "http://127.0.0.1:8090",
+		MetricsPort:    9080,
 
 		EnableStateDB: true,
 
@@ -510,17 +450,6 @@ func LoadConfig() Config {
 
 	if cfg.LogDir == "" {
 		cfg.LogDir = filepath.Join(filepath.Dir(cfg.ConfigPath), "logs")
-	}
-
-	// 5b. Populate engine script paths
-	exe, _ := os.Executable()
-	binDir := filepath.Dir(exe)
-	scriptsDir := filepath.Join(binDir, "scripts")
-	logsDir := filepath.Join(binDir, "logs")
-	cfg.EngineScripts = map[string]EngineConfig{
-		"movies":    {ScriptPath: filepath.Join(scriptsDir, "gostorm-sync-complete.py"), LogsDir: logsDir},
-		"tv":        {ScriptPath: filepath.Join(scriptsDir, "gostorm-tv-sync.py"), LogsDir: logsDir},
-		"watchlist": {ScriptPath: filepath.Join(scriptsDir, "plex-watchlist-sync.py"), LogsDir: logsDir},
 	}
 
 	return cfg
@@ -640,9 +569,6 @@ func (c *Config) finalize() {
 
 	c.StreamingThreshold = c.StreamingThresholdKB * 1024
 	c.PreloadWorkers = c.PreloadWorkersCount
-	if c.MaxConcurrentPrefetch <= 0 {
-		c.MaxConcurrentPrefetch = 3 // Safety fallback
-	}
 }
 
 // parseBytes parses byte size strings like "80MB", "128KB", "1GB"
@@ -682,9 +608,7 @@ func (c *Config) LogConfig(logger *log.Logger) {
 		logger.Printf("FUSE MaxInflightRequestBytes: unlimited")
 	}
 	logger.Printf("HTTP Retries: %d, Delay: %dms", c.MaxRetryAttempts, c.RetryDelayMS)
-	logger.Printf("Preload Engine: Workers=%d, Delay=%dms", c.PreloadWorkersCount, c.PreloadInitialDelayMS)
-
-	logger.Printf("Cache Management: Cleanup=%dm, MaxEntries=%d", c.CacheCleanupIntervalMin, c.MaxCacheEntries)
-	logger.Printf("Network: ProxyPort=%d, MetricsPort=%d", c.ProxyListenPort, c.MetricsPort)
+	logger.Printf("Preload Engine: Workers=%d", c.PreloadWorkersCount)
+	logger.Printf("Network: MetricsPort=%d", c.MetricsPort)
 	logger.Printf("=====================")
 }

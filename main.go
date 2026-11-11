@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
-	"compress/gzip"
 	"context"
 	_ "embed"
 	"encoding/json"
@@ -16,7 +14,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -38,15 +35,12 @@ import (
 	"tiramisu/internal/gostorm/settings"
 	"tiramisu/internal/gostorm/torr"
 	torrstor "tiramisu/internal/gostorm/torr/storage/torrstor"
-	torrutils "tiramisu/internal/gostorm/torr/utils"
 	tsutils "tiramisu/internal/gostorm/utils"
 	"tiramisu/internal/gostorm/web"
 	"tiramisu/internal/library"
 	"tiramisu/internal/lockmgr"
 	"tiramisu/internal/metadb"
-	"tiramisu/internal/natpmp"
 	"tiramisu/internal/opentracker"
-	"tiramisu/internal/preload"
 	"tiramisu/internal/prowlarr"
 	"tiramisu/internal/ratelimit"
 	"tiramisu/internal/registry"
@@ -80,8 +74,6 @@ var globalRateLimiter *ratelimit.RateLimiter
 var globalLockManager *lockmgr.LockManager
 var globalDirCache *vfs.DirCache
 
-// Global peer-based preloader (FASE 2 - Performance)
-var peerPreloader *preload.PeerPreloader
 var nativeBridge *native.NativeClient
 
 var globalCleanupManager *CleanupManager
@@ -247,11 +239,6 @@ var virtualMountPath string
 
 var backgroundStopChan = make(chan struct{})
 var backgroundStopOnce sync.Once
-
-var (
-	blockListMu   sync.Mutex
-	blockListStop chan struct{}
-)
 
 // restartExitCode tells a supervisor that this exit was a restart request from
 // the Control Panel, not a crash. The Docker entrypoint restarts only on this
@@ -4681,7 +4668,6 @@ func main() {
 
 	globalConfig.Store(&cfg)
 	prowlarrClient = prowlarr.NewClient(gc().Prowlarr)
-	logger.Printf("[DEBUG] BlockListURL loaded: '%s'", gc().BlockListURL)
 
 	// CLI args take precedence; fall back to config.json values if omitted
 	if source == "" {
@@ -4699,13 +4685,6 @@ func main() {
 	virtualMountPath = mount
 
 	gc().LogConfig(logger)
-
-	// Must precede server.Start(): the engine reads the blocklist while configuring
-	// its client, and a flag set afterwards would leave it unloaded until a refresh.
-	if err := torrutils.SetBlockListFilter(gc().BlockListFilter); err != nil {
-		logger.Printf("[BlockList] %v — loading the list unfiltered", err)
-	}
-	torrutils.SetBlockListEnabled(gc().BlockListEnabled)
 
 	// Before the engine starts serving streams (Dezoxy fork, see torrstor.BoundedReadahead).
 	torrstor.BoundedReadahead = !gc().PumpOnOpen
@@ -4750,7 +4729,6 @@ func main() {
 		return nativeBridge.FetchBlock(hash, fileID, off, buf)
 	}
 	go registry.StartRegistryWatchdog(backgroundStopChan)
-	go natpmp.NatpmpLoop(backgroundStopChan, gc().NatPMP, logger)
 
 	masterDataSemaphore = make(chan struct{}, gc().MasterConcurrencyLimit)
 	startHandleGC()
@@ -4780,12 +4758,6 @@ func main() {
 	nativeBridge = native.NewNativeClient()
 
 	go tuner.Start(context.Background())
-
-	if gc().BlockListEnabled && gc().BlockListURL != "" {
-		startBlockListLoop(gc().BlockListURL)
-	}
-
-	peerPreloader = preload.NewPeerPreloader(nativeBridge)
 
 	// Metadata LRU cache: capacity from config, 24h TTL.
 	metaCache = cache.NewLRUCache(gc().MetadataCacheSize, 24*time.Hour)
@@ -4879,7 +4851,7 @@ func main() {
 	cacheBuilder := NewStartupCacheBuilder(source, metaCache, logger)
 	cacheBuilder.Start()
 
-	globalCleanupManager = NewCleanupManager(logger, peerPreloader, metaCache, nativeBridge)
+	globalCleanupManager = NewCleanupManager(logger, metaCache, nativeBridge)
 	globalCleanupManager.Start()
 
 	globalTorrentRemover = NewTorrentRemover(nativeBridge, logger)
@@ -4941,8 +4913,6 @@ func main() {
 		raActivePercent := float64(raActive) / float64(raBudget) * 100
 		raStalePercent := float64(raStale) / float64(raBudget) * 100
 
-		natPort := atomic.LoadInt64(&natpmp.CurrentNatPort)
-
 		warmupBuckets := warmup.WarmupDurationBucketCounts()
 		warmupBucketsJSON := fmt.Sprintf("[%d,%d,%d,%d,%d,%d,%d,%d]",
 			warmupBuckets[0], warmupBuckets[1], warmupBuckets[2], warmupBuckets[3],
@@ -4973,7 +4943,7 @@ func main() {
 		shortStream, shortFetch := native.ShortReadCounts()
 		repairedStream, unfilledStream := native.ShortReadRepairCounts()
 
-		fmt.Fprintf(w, `{"version":"%s", "config_source":"%s", "uptime":"%s", "cache_entries":%d, "cache_size_mb":%.2f, "cleanup_hashes":%d, "cleanup_offsets":%d, "cleanup_activities":%d, "locks_total":%d, "master_concurrency_limit":%d, "negative_cache_entries":%d, "fullpack_cache_entries":%d, "streaming_threshold_kb":%d, "config_preload_workers":%d, "max_conns_per_host":%d, "read_ahead_total_bytes":%d, "read_ahead_active_bytes":%d, "read_ahead_stale_bytes":%d, "read_ahead_entries":%d, "read_ahead_budget":%d, "read_ahead_percent":%.2f, "read_ahead_active_percent":%.2f, "read_ahead_stale_percent":%.2f, "natpmp_port":%d, "warmup_duration_buckets_lt_2_5_10_15_30_60_120_gte120s":%s, "hedge_trigger_count":%d, "hedge_circuit_open":%t, "fetch_singleflight_dedup":%d, "peer_eject_count":%d, "v304_banned_peers":%d, "ip_blocklist_rejections":%d, "ip_blocklist_ips":%d, "fuse_short_reads":%d, "fuse_short_reads_repaired":%d, "fuse_short_reads_failed":%d, "short_read_stream":%d, "short_read_fetch":%d, "short_read_repaired":%d, "short_read_unfilled":%d, "peer_conns_tcp":%d, "peer_conns_utp":%d, "peer_rated_tcp":%d, "peer_rated_utp":%d, "peer_useful_bps_tcp":%.0f, "peer_useful_bps_utp":%.0f, "peer_eject_count_utp":%d, "peer_churn_count":%d, "peer_churn_count_utp":%d, "deadline_pieces":%d, "audio_namespace_state":"%s", "audio_namespace_entries":%d, "gradient2_peers":%d, "gradient2_backing_off":%d, "gradient2_limit_min":%d, "gradient2_limit_max":%d}`,
+		fmt.Fprintf(w, `{"version":"%s", "config_source":"%s", "uptime":"%s", "cache_entries":%d, "cache_size_mb":%.2f, "cleanup_hashes":%d, "cleanup_offsets":%d, "cleanup_activities":%d, "locks_total":%d, "master_concurrency_limit":%d, "negative_cache_entries":%d, "fullpack_cache_entries":%d, "streaming_threshold_kb":%d, "config_preload_workers":%d, "max_conns_per_host":%d, "read_ahead_total_bytes":%d, "read_ahead_active_bytes":%d, "read_ahead_stale_bytes":%d, "read_ahead_entries":%d, "read_ahead_budget":%d, "read_ahead_percent":%.2f, "read_ahead_active_percent":%.2f, "read_ahead_stale_percent":%.2f, "warmup_duration_buckets_lt_2_5_10_15_30_60_120_gte120s":%s, "hedge_trigger_count":%d, "hedge_circuit_open":%t, "fetch_singleflight_dedup":%d, "peer_eject_count":%d, "v304_banned_peers":%d, "fuse_short_reads":%d, "fuse_short_reads_repaired":%d, "fuse_short_reads_failed":%d, "short_read_stream":%d, "short_read_fetch":%d, "short_read_repaired":%d, "short_read_unfilled":%d, "peer_conns_tcp":%d, "peer_conns_utp":%d, "peer_rated_tcp":%d, "peer_rated_utp":%d, "peer_useful_bps_tcp":%.0f, "peer_useful_bps_utp":%.0f, "peer_eject_count_utp":%d, "peer_churn_count":%d, "peer_churn_count_utp":%d, "deadline_pieces":%d, "audio_namespace_state":"%s", "audio_namespace_entries":%d, "gradient2_peers":%d, "gradient2_backing_off":%d, "gradient2_limit_min":%d, "gradient2_limit_max":%d}`,
 			AppVersion,
 			gc().ConfigPath,
 			time.Since(startTime),
@@ -4988,30 +4958,14 @@ func main() {
 			gc().MaxConnsPerHost,
 			raTotal, raActive, raStale, raEntries, raBudget,
 			raPercent, raActivePercent, raStalePercent,
-			natPort,
 			warmupBucketsJSON,
 			hedgeTriggerTotal, hedgeCircuitOpenAny, fetchFlightDedupCount.Load(), peerStats.EjectTotal, torr.V304BannedCount(),
-			torrent.IPBlocklistRejections(), torrent.IPBlocklistDistinctIPs(),
 			fuseShortReadCount.Load(), fuseShortReadRepaired.Load(), fuseShortReadFailed.Load(), shortStream, shortFetch, repairedStream, unfilledStream,
 			peerStats.ConnsTCP, peerStats.ConnsUTP, peerStats.RatedTCP, peerStats.RatedUTP,
 			peerStats.UsefulBpsTCP, peerStats.UsefulBpsUTP,
 			peerStats.EjectUTP, peerStats.ChurnTotal, peerStats.ChurnUTP, deadlinePieces,
 			audioNamespaceState(), audioNamespaceEntries(),
 			g2Stats.Peers, g2Stats.BackingOff, g2Stats.LimitMin, g2Stats.LimitMax)
-	})
-
-	// Which blocklist ranges are actually rejecting peers. The aggregate counters say
-	// how much is blocked; this says who, which is the only way to tell a list that
-	// catches monitoring outfits from one quietly eating ordinary peers.
-	http.HandleFunc("/metrics/blocklist", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"enabled":      gc().BlockListEnabled,
-			"url":          gc().BlockListURL,
-			"distinct_ips": torrent.IPBlocklistDistinctIPs(),
-			"rejections":   torrent.IPBlocklistRejections(),
-			"top_ranges":   torrent.IPBlocklistTopRanges(25),
-		})
 	})
 
 	http.HandleFunc("/webhook", handlePlexWebhook)
@@ -5068,41 +5022,9 @@ func main() {
 				return
 			}
 			// Reload in memory (V1.4.0 Live Update)
-			oldEnabled := gc().BlockListEnabled
-			oldURL := gc().BlockListURL
-			oldFilter := gc().BlockListFilter
 			cfg := config.LoadConfig()
 			globalConfig.Store(&cfg)
 			prowlarrClient = prowlarr.NewClient(gc().Prowlarr)
-
-			newEnabled := gc().BlockListEnabled
-			newURL := gc().BlockListURL
-			torrutils.SetBlockListEnabled(newEnabled)
-			newFilter := gc().BlockListFilter
-			if err := torrutils.SetBlockListFilter(newFilter); err != nil {
-				logger.Printf("[BlockList] %v — loading the list unfiltered", err)
-			}
-			// The filter changes which ranges the same file yields, so re-read it rather
-			// than waiting for the next download.
-			if newEnabled && newFilter != oldFilter {
-				if list, err := torrutils.ReadBlockedIP(); err == nil {
-					torr.SetIPBlocklist(list)
-					logger.Printf("[BlockList] Filter changed, reloaded from the existing file")
-				} else {
-					logger.Printf("[BlockList] WARNING: filter changed but reload failed: %v", err)
-				}
-			}
-			switch {
-			case newEnabled && (!oldEnabled || newURL != oldURL):
-				// was off -> on, or URL changed while staying on: (re)start with fresh URL
-				startBlockListLoop(newURL)
-			case !newEnabled && oldEnabled:
-				// was on -> off: stop future refreshes and clear the ranges already loaded
-				// into the engine, otherwise the file keeps banning peers until a restart.
-				stopBlockListLoop()
-				torr.SetIPBlocklist(nil)
-				logger.Printf("[BlockList] Disabled: cleared from running engine")
-			}
 			logger.Printf("[Config] Updated via Dashboard API")
 			w.WriteHeader(200)
 		}
@@ -5414,8 +5336,6 @@ func main() {
 		http.HandleFunc("/api/library/inspect", libHandler.Inspect)
 	}
 
-	http.HandleFunc("/api/index/seed", handleIndexSeed) // Dezoxy fork; off unless configured
-
 	go http.ListenAndServe(fmt.Sprintf(":%d", gc().MetricsPort), nil)
 
 	// Graceful shutdown: saves inode map and sync caches before exit.
@@ -5512,78 +5432,9 @@ func main() {
 
 	logger.Printf("FUSE mounted at %s with VirtualMkvRoot, all systems active", mount)
 
-	go smbdWatchdog()
 	go ttffCleanupLoop()
 
 	server.Wait()
-}
-
-// smbdWatchdog detects smbd processes stuck in D-state (uninterruptible FUSE I/O).
-// Level 1 (3 hits / 180s): interrupt all pumps. Level 2 (10 hits / 600s): graceful restart.
-func smbdWatchdog() {
-	const checkInterval = 60 * time.Second
-	const unblockThreshold = 3  // 180s - Emergency unblock (interrupt all pumps)
-	const restartThreshold = 10 // 600s - Full restart (persistent stall)
-	consecutiveHits := 0
-
-	ticker := time.NewTicker(checkInterval)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		if countDStateSmbd() > 0 {
-			consecutiveHits++
-			logger.Printf("[Watchdog] D-state smbd detected (%d/%d)", consecutiveHits, restartThreshold)
-
-			// Level 1 (3 consecutive hits): soft-interrupt all pumps to unblock hung FUSE reads.
-			// Only closes pipe readers — pumps stay alive and will retry on next FUSE read.
-			// Preserves pump survival during temporary peer shortages (swarm may recover).
-			if consecutiveHits == unblockThreshold {
-				logger.Printf("[Watchdog] D-state persistent for %ds — triggering soft interrupt (pumps stay alive)",
-					consecutiveHits*int(checkInterval/time.Second))
-				activePumps.Range(func(key, value interface{}) bool {
-					if ps, ok := value.(*NativePumpState); ok {
-						if ps.reader != nil {
-							logger.Printf("[Watchdog] Soft-interrupting pump: %s", filepath.Base(ps.path))
-							ps.reader.Interrupt()
-						}
-					}
-					return true
-				})
-			}
-
-			// Level 2 (10 consecutive hits): graceful restart.
-			if consecutiveHits >= restartThreshold {
-				logger.Printf("[Watchdog] D-state STILL persistent for %ds — triggering graceful restart",
-					consecutiveHits*int(checkInterval/time.Second))
-				restartRequested.Store(true)
-				syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
-				return
-			}
-		} else {
-			if consecutiveHits > 0 {
-				logger.Printf("[Watchdog] D-state cleared after %d hit(s) (Max: %d)", consecutiveHits, restartThreshold)
-			}
-			consecutiveHits = 0
-		}
-	}
-}
-
-// countDStateSmbd returns the number of smbd processes in D-state (uninterruptible sleep).
-func countDStateSmbd() int {
-	// ps -eo stat,comm: STAT column starts with D for uninterruptible sleep
-	out, err := exec.Command("ps", "-eo", "stat,comm").Output()
-	if err != nil {
-		return 0
-	}
-	count := 0
-	for _, line := range bytes.Split(out, []byte("\n")) {
-		// Match lines where STAT starts with D and command is smbd
-		fields := bytes.Fields(line)
-		if len(fields) >= 2 && fields[0][0] == 'D' && string(fields[1]) == "smbd" {
-			count++
-		}
-	}
-	return count
 }
 
 func startHandleGC() {
@@ -5611,168 +5462,6 @@ func startHandleGC() {
 			}
 		}
 	})
-}
-
-// startBlockListLoop (re)starts the background blocklist refresh loop for the given URL,
-// stopping any previously running loop first (used for both startup and runtime toggles).
-func startBlockListLoop(urlStr string) {
-	if urlStr == "" {
-		return
-	}
-	blockListMu.Lock()
-	if blockListStop != nil {
-		close(blockListStop)
-	}
-	stop := make(chan struct{})
-	blockListStop = stop
-	blockListMu.Unlock()
-
-	safeGo(func() {
-		updateBlockList(urlStr)
-		ticker := time.NewTicker(24 * time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				updateBlockList(gc().BlockListURL)
-			case <-stop:
-				return
-			case <-backgroundStopChan:
-				return
-			}
-		}
-	})
-}
-
-// stopBlockListLoop signals the running blocklist refresh loop (if any) to exit.
-func stopBlockListLoop() {
-	blockListMu.Lock()
-	if blockListStop != nil {
-		close(blockListStop)
-		blockListStop = nil
-	}
-	blockListMu.Unlock()
-}
-
-// updateBlockList downloads and updates the BitTorrent blocklist
-func updateBlockList(urlStr string) {
-	if urlStr == "" {
-		return
-	}
-
-	// Write next to the rest of the state, not next to the binary: in a container the
-	// binary lives in the image layer, so the list was re-downloaded on every start.
-	destDir := settings.Path
-	if destDir == "" {
-		exePath, err := os.Executable()
-		if err != nil {
-			logger.Printf("[BlockList] Error getting executable path: %v", err)
-			return
-		}
-		destDir = filepath.Dir(exePath)
-	}
-	destPath := filepath.Join(destDir, "blocklist")
-
-	// A sidecar records which URL produced the file on disk. Age alone is not enough:
-	// changing the URL in the Control Panel used to keep serving the previous list for
-	// up to 24h, restart included, while the log claimed everything was fine.
-	urlPath := destPath + ".url"
-	prevURL := ""
-	if b, err := os.ReadFile(urlPath); err == nil {
-		prevURL = strings.TrimSpace(string(b))
-	}
-	if info, err := os.Stat(destPath); err == nil && prevURL == urlStr {
-		if time.Since(info.ModTime()) < 24*time.Hour {
-			logger.Printf("[BlockList] Existing blocklist is recent, skipping update")
-			return
-		}
-	}
-	if prevURL != "" && prevURL != urlStr {
-		logger.Printf("[BlockList] URL changed, refreshing now")
-	}
-
-	logger.Printf("[BlockList] Updating from %s...", urlStr)
-
-	// A bare http.Get has no deadline: a stalled connection (e.g. a VPN flap mid-download)
-	// hangs this goroutine forever. Since this call runs before the loop's select, closing
-	// blockListStop can't interrupt it either — a timeout is the only way out.
-	client := &http.Client{Timeout: 2 * time.Minute}
-	resp, err := client.Get(urlStr)
-	if err != nil {
-		logger.Printf("[BlockList] Download error: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		logger.Printf("[BlockList] Download failed: status %d", resp.StatusCode)
-		return
-	}
-
-	// Detect gzip from the magic bytes, not the URL: iblocklist and friends serve a
-	// gzip stream from a query string (...&archiveformat=gz), and a suffix test would
-	// save the compressed bytes verbatim - a blocklist with zero usable ranges and no
-	// error anywhere.
-	buffered := bufio.NewReader(resp.Body)
-	var reader io.Reader = buffered
-	if magic, err := buffered.Peek(2); err == nil && magic[0] == 0x1f && magic[1] == 0x8b {
-		gz, err := gzip.NewReader(buffered)
-		if err != nil {
-			logger.Printf("[BlockList] Gzip error: %v", err)
-			return
-		}
-		defer gz.Close()
-		reader = gz
-	}
-
-	// Write to a temp file and rename atomically, so a download that dies mid-copy
-	// (network drop, process kill) can't leave destPath truncated and destroy the
-	// last known-good blocklist.
-	tmpPath := destPath + ".tmp"
-	out, err := os.Create(tmpPath)
-	if err != nil {
-		logger.Printf("[BlockList] File create error: %v", err)
-		return
-	}
-
-	n, err := io.Copy(out, reader)
-	if err != nil {
-		out.Close()
-		os.Remove(tmpPath)
-		logger.Printf("[BlockList] File write error: %v", err)
-		return
-	}
-	if err := out.Close(); err != nil {
-		os.Remove(tmpPath)
-		logger.Printf("[BlockList] File close error: %v", err)
-		return
-	}
-	// Refuse to install something with no usable ranges. iblocklist serves a captcha page
-	// to anything that looks like a browser, and a downloaded HTML page would otherwise
-	// replace a working blocklist with an empty one, silently.
-	if ranges := torrutils.CountRanges(tmpPath); ranges == 0 {
-		os.Remove(tmpPath)
-		logger.Printf("[BlockList] Refused: %d bytes downloaded but no usable ranges — keeping the previous list", n)
-		return
-	}
-
-	if err := os.Rename(tmpPath, destPath); err != nil {
-		os.Remove(tmpPath)
-		logger.Printf("[BlockList] File rename error: %v", err)
-		return
-	}
-	if err := os.WriteFile(urlPath, []byte(urlStr), 0644); err != nil {
-		logger.Printf("[BlockList] WARNING: could not record the source URL: %v", err)
-	}
-
-	logger.Printf("[BlockList] Updated successfully: %d bytes saved to %s", n, destPath)
-
-	if list, err := torrutils.ReadBlockedIP(); err == nil {
-		torr.SetIPBlocklist(list)
-		logger.Printf("[BlockList] Live-reloaded into running engine")
-	} else {
-		logger.Printf("[BlockList] WARNING: downloaded but failed to reload live: %v", err)
-	}
 }
 
 // GetStateDir returns the centralized state directory path.

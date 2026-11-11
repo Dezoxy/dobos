@@ -10,7 +10,6 @@ import (
 	"tiramisu/internal/cache"
 	"tiramisu/internal/gostorm/native"
 	"tiramisu/internal/gostorm/torr"
-	"tiramisu/internal/preload"
 )
 
 // CleanupManager provides periodic cleanup of various in-memory structures
@@ -29,9 +28,8 @@ type CleanupManager struct {
 	activitiesMu   sync.RWMutex
 
 	// External components to clean (V238 Audit 1.A)
-	peerPreloader *preload.PeerPreloader
-	metaCache     *cache.LRUCache
-	nativeBridge  *native.NativeClient
+	metaCache    *cache.LRUCache
+	nativeBridge *native.NativeClient
 
 	// Configuration
 	deletedHashTTL  time.Duration
@@ -54,12 +52,11 @@ type offsetEntry struct {
 }
 
 // NewCleanupManager creates a new cleanup manager with references to components
-func NewCleanupManager(logger *log.Logger, pp *preload.PeerPreloader, mc *cache.LRUCache, nb *native.NativeClient) *CleanupManager {
+func NewCleanupManager(logger *log.Logger, mc *cache.LRUCache, nb *native.NativeClient) *CleanupManager {
 	return &CleanupManager{
 		deletedHashes:   make(map[string]time.Time),
 		fileOffsets:     make(map[string]*offsetEntry),
 		fileActivities:  make(map[string]time.Time),
-		peerPreloader:   pp,
 		metaCache:       mc,
 		nativeBridge:    nb,
 		deletedHashTTL:  24 * time.Hour,
@@ -147,11 +144,6 @@ func (cm *CleanupManager) runCleanup() {
 	}
 	stats.ActivitiesTotal = len(cm.fileActivities)
 	cm.activitiesMu.Unlock()
-
-	// 4. Cleanup PeerPreloader strategy cache
-	if cm.peerPreloader != nil {
-		cm.peerPreloader.Cleanup()
-	}
 
 	// V238 Audit 1.A: Cleanup Expired Metadata
 	if cm.metaCache != nil {

@@ -923,54 +923,8 @@
                                 <input type="number" name="metadata_cache_size_mb">
                                 <div class="hint">LRU metadata cache size</div>
                             </div>
-                            <div class="form-group">
-                                <label>Max Cache Entries</label>
-                                <input type="number" name="max_cache_entries">
-                                <div class="hint">Max files in metadata cache</div>
-                            </div>
-                            <div class="form-group">
-                                <label>Cleanup Interval (min)</label>
-                                <input type="number" name="cache_cleanup_interval_min">
-                                <div class="hint">Auto-cleanup frequency</div>
-                            </div>
                         </div>
                     </div>
-
-                    <div class="form-section advanced">
-                        <div class="form-section-title">NAT-PMP (WireGuard)</div>
-                        <div class="switch-item" style="margin-bottom: 12px;">
-                            <span>Enable NAT-PMP</span>
-                            <label class="switch"><input type="checkbox" name="natpmp_enabled"
-                                    data-nested="natpmp.enabled" onchange="updateNatPmpState()"><span
-                                    class="slider"></span></label>
-                        </div>
-                        <div class="form-grid">
-                            <div class="form-group">
-                                <label>Gateway IP</label>
-                                <input type="text" name="natpmp_gateway" data-nested="natpmp.gateway">
-                                <div class="hint">VPN gateway (e.g. 10.2.0.1)</div>
-                            </div>
-                            <div class="form-group">
-                                <label>VPN Interface</label>
-                                <input type="text" name="natpmp_interface" data-nested="natpmp.vpn_interface">
-                                <div class="hint">WireGuard interface (e.g. wg0)</div>
-                            </div>
-                            <div class="form-group">
-                                <label>Refresh (s)</label>
-                                <input type="number" name="natpmp_refresh" data-nested="natpmp.refresh">
-                            </div>
-                            <div class="form-group">
-                                <label>Lifetime (s)</label>
-                                <input type="number" name="natpmp_lifetime" data-nested="natpmp.lifetime">
-                            </div>
-                            <div class="form-group">
-                                <label>Local Port</label>
-                                <input type="number" name="natpmp_port" data-nested="natpmp.local_port">
-                            </div>
-                        </div>
-                    </div>
-
-
 
                     <div class="form-section advanced">
                         <div class="form-section-title">Connectivity & Rescue</div>
@@ -978,14 +932,6 @@
                             <div class="form-group">
                                 <label>GoStorm URL</label>
                                 <input type="text" name="gostorm_url">
-                            </div>
-                            <div class="form-group">
-                                <label>Rescue Grace (s)</label>
-                                <input type="number" name="rescue_grace_period_seconds">
-                            </div>
-                            <div class="form-group">
-                                <label>Rescue Cooldown (h)</label>
-                                <input type="number" name="rescue_cooldown_hours">
                             </div>
                             <div class="form-group">
                                 <label>Metrics Port</label>
@@ -998,30 +944,6 @@
                                     <option value="DEBUG">DEBUG</option>
                                     <option value="ERROR">ERROR</option>
                                 </select>
-                            </div>
-                            <div class="form-group">
-                                <label>Proxy Port</label>
-                                <input type="number" name="proxy_listen_port">
-                            </div>
-                            <div class="form-group" style="grid-column: 1 / -1;">
-                                <div class="switch-item" style="margin-bottom: 8px;">
-                                    <span>Enable IP BlockList</span>
-                                    <label class="switch"><input type="checkbox" name="blocklist_enabled"
-                                            onchange="updateBlockListState()"><span class="slider"></span></label>
-                                </div>
-                                <div class="hint" style="margin-bottom: 12px;">Impacts swarm performance; not needed if you use a VPN</div>
-                                <label>IP BlockList URL</label>
-                                <input type="text" name="blocklist_url" id="blocklist_url_input"
-                                    placeholder="https://list.iblocklist.com/?list=ydxerpxkpcfqjaybcssw&amp;fileformat=p2p&amp;archiveformat=gz">
-                                <div class="hint">Changing the URL refreshes the list immediately</div>
-                                <label style="margin-top: 10px;">BlockList Filter (regexp)</label>
-                                <input type="text" name="blocklist_filter" id="blocklist_filter_input"
-                                    placeholder="(?i)\bap2p\b|anti-?p2p">
-                                <div class="hint">Applied by default. Keeps only ranges whose description matches. Published lists mix a
-                                    small current anti-P2P section with a large one built from 1990s whois records:
-                                    unfiltered, Level 1 spans 17% of IPv4 and rejects ordinary peers on netblocks that
-                                    changed hands years ago. Clear the field to load a list whole. See <code>/metrics/blocklist</code>
-                                    for which ranges actually reject peers.</div>
                             </div>
                         </div>
                     </div>
@@ -1681,20 +1603,6 @@
             }, 1500);
         }
 
-        // --- NAT-PMP state → Listen Port readonly ---
-        function updateNatPmpState() {
-            const enabled = document.querySelector('[name="natpmp_enabled"]')?.checked;
-            const portInput = document.getElementById('peersListenPort');
-            const portHint = document.getElementById('peersListenPort-hint');
-            if (!portInput) return;
-            portInput.readOnly = enabled;
-            portInput.style.opacity = enabled ? '0.5' : '1';
-            portHint.textContent = enabled
-                ? 'Peer port managed by NAT-PMP when enabled'
-                : 'Peer port (0 = random)';
-            portHint.style.color = enabled ? '#b45309' : '';
-        }
-
         // --- Prowlarr state → Torrentio URL readonly ---
         function updateProwlarrState() {
             const enabled = document.querySelector('[name="prowlarr_enabled"]')?.checked;
@@ -1707,15 +1615,6 @@
                 ? 'Torrentio URL not used when Prowlarr is enabled'
                 : 'Torrentio base URL (used when Prowlarr is disabled)';
             urlHint.style.color = enabled ? '#b45309' : '';
-        }
-
-        // --- BlockList state → URL field readonly when disabled ---
-        function updateBlockListState() {
-            const enabled = document.querySelector('[name="blocklist_enabled"]')?.checked;
-            const urlInput = document.getElementById('blocklist_url_input');
-            if (!urlInput) return;
-            urlInput.disabled = !enabled;
-            urlInput.style.opacity = enabled ? '1' : '0.5';
         }
 
         // --- Adaptive Shield state (disabled when ResponsiveMode is OFF) ---
@@ -2257,11 +2156,11 @@
             'master_concurrency_limit', 'read_ahead_budget_mb',
             'streaming_threshold_kb',
             'fuse_block_size_bytes', 'attr_timeout_seconds', 'entry_timeout_seconds',
-            'negative_timeout_seconds', 'metadata_cache_size_mb', 'max_cache_entries',
-            'cache_cleanup_interval_min', 'max_retry_attempts',
-            'retry_delay_ms', 'gostorm_url', 'rescue_grace_period_seconds',
-            'rescue_cooldown_hours', 'metrics_port', 'disk_warmup_quota_gb',
-            'log_level', 'proxy_listen_port', 'blocklist_url', 'blocklist_filter',
+            'negative_timeout_seconds', 'metadata_cache_size_mb',
+            'max_retry_attempts',
+            'retry_delay_ms', 'gostorm_url',
+            'metrics_port', 'disk_warmup_quota_gb',
+            'log_level',
             'media_server_type',
             'tmdb_api_key', 'torrentio_url'
         ];
@@ -2287,16 +2186,6 @@
                         }
                     }
                 });
-                const n = originalEngine.NatPMP || originalEngine.natpmp;
-                if (n) {
-                    form.querySelector('[data-nested="natpmp.gateway"]').value = n.gateway || n.Gateway || "";
-                    form.querySelector('[data-nested="natpmp.vpn_interface"]').value = n.vpn_interface || n.VPNInterface || "";
-                    form.querySelector('[data-nested="natpmp.refresh"]').value = n.refresh || n.Refresh || 0;
-                    form.querySelector('[data-nested="natpmp.lifetime"]').value = n.lifetime || n.Lifetime || 0;
-                    form.querySelector('[data-nested="natpmp.local_port"]').value = n.local_port || n.LocalPort || 0;
-                    form.querySelector('[data-nested="natpmp.enabled"]').checked = (n.enabled !== undefined) ? n.enabled : n.Enabled;
-                    updateNatPmpState();
-                }
                 const p = originalEngine.plex || originalEngine.Plex;
                 if (p) {
                     form.querySelector('[data-nested="plex.url"]').value = p.url || p.URL || "";
@@ -2313,9 +2202,6 @@
                     form.querySelector('[data-nested="prowlarr.url"]').value = pr.url || pr.URL || "";
                 }
                 updateProwlarrState();
-                const blEnabled = document.querySelector('[name="blocklist_enabled"]');
-                if (blEnabled) blEnabled.checked = originalEngine.blocklist_enabled || false;
-                updateBlockListState();
                 const lang = originalEngine.language || originalEngine.Language;
                 if (lang) {
                     const terms = lang.preferred_terms || lang.PreferredTerms || [];
@@ -2351,14 +2237,11 @@
             ENGINE_ROOT_KEYS.forEach(k => {
                 let v = formData.get(k);
 
-                // Empty means "clear it" for the blocklist filter - skipping it would make
-                // the filter impossible to remove once set. Every other field keeps the
-                // original value so a blank input cannot wipe a default.
+                // Every field keeps the original value so a blank input cannot wipe a default.
                 if (v === null) return;
-                if (v === "" && k !== 'blocklist_filter') return;
+                if (v === "") return;
 
-                if (k === 'log_level' || k === 'gostorm_url' || k === 'blocklist_url' ||
-                    k === 'blocklist_filter' || k === 'media_server_type' ||
+                if (k === 'log_level' || k === 'gostorm_url' || k === 'media_server_type' ||
                     k === 'physical_source_path' || k === 'fuse_mount_path' || k === 'tmdb_api_key' ||
                     k === 'torrentio_url') {
                     data[k] = v;
@@ -2370,27 +2253,6 @@
                     if (!isNaN(parsed)) data[k] = parsed;
                 }
             });
-
-            data.blocklist_enabled = formData.has('blocklist_enabled');
-
-            const natpmpKey = originalEngine.NatPMP ? 'NatPMP' : 'natpmp';
-            const oldNat = originalEngine[natpmpKey] || {};
-
-            // Helper to get NAT-PMP values safely
-            const getNatVal = (formName, jsonKey, isInt) => {
-                const v = formData.get(formName);
-                if (v === null || v === "") return oldNat[jsonKey];
-                return isInt ? parseInt(v) : v;
-            };
-
-            data[natpmpKey] = {
-                gateway: getNatVal('natpmp_gateway', 'gateway', false),
-                vpn_interface: getNatVal('natpmp_interface', 'vpn_interface', false),
-                refresh: getNatVal('natpmp_refresh', 'refresh', true),
-                lifetime: getNatVal('natpmp_lifetime', 'lifetime', true),
-                local_port: getNatVal('natpmp_port', 'local_port', true),
-                enabled: formData.has('natpmp_enabled')
-            };
 
             const plexKey = originalEngine.plex ? 'plex' : 'Plex';
             const oldPlex = originalEngine[plexKey] || {};
