@@ -238,6 +238,13 @@ func main() {
 	}
 	physicalSourcePath = source
 	virtualMountPath = mount
+	// The mounted paths are the only paths: the library writes stubs under
+	// PhysicalSourcePath, so it must be the one FUSE serves.
+	effCfg := *gc()
+	for _, w := range applyEffectivePaths(&effCfg, source, mount) {
+		logger.Printf("WARNING: %s", w)
+	}
+	globalConfig.Store(&effCfg)
 
 	gc().LogConfig(logger)
 
@@ -530,6 +537,15 @@ func main() {
 			}
 			// The panel never sees the token; an empty post keeps the one in the file.
 			newCfg.APIToken = gc().ResolveAPIToken(newCfg.APIToken)
+			// Paths that came from the command line are not written to the
+			// file: keep what the file had.
+			onDisk := config.LoadConfig()
+			if newCfg.PhysicalSourcePath == physicalSourcePath {
+				newCfg.PhysicalSourcePath = onDisk.PhysicalSourcePath
+			}
+			if newCfg.FuseMountPath == virtualMountPath {
+				newCfg.FuseMountPath = onDisk.FuseMountPath
+			}
 			// Update file
 			data, _ := json.MarshalIndent(newCfg, "", "  ")
 			if err := atomicfile.WriteFile(gc().ConfigPath, data, 0644); err != nil {
@@ -538,6 +554,11 @@ func main() {
 			}
 			// Reload in memory (V1.4.0 Live Update)
 			cfg := config.LoadConfig()
+			// A save must not reintroduce a path other than the mounted one.
+			_ = applyEffectivePaths(&cfg, physicalSourcePath, virtualMountPath)
+			// RootPath comes from -path at startup, not from the file; without it
+			// GetStateDir falls back to /home/pi/STATE after every save.
+			cfg.RootPath = gc().RootPath
 			globalConfig.Store(&cfg)
 			logger.Printf("[Config] Updated via Dashboard API")
 			w.WriteHeader(200)

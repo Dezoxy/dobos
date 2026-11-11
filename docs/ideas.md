@@ -32,10 +32,6 @@ Bugs and data-loss risks. None open.
 
 - **Characterization tests** around naming, stub creation and replacement,
   so restructuring cannot change behaviour unnoticed.
-- **Stubs outside the mount.** The library writes stubs under the config's
-  `physical_source_path`, while FUSE serves the path from the command line.
-  A config without it files stubs outside the mount and still returns 201
-  (`main.go` around 5261 against 4653).
 - **A health endpoint.** There is none since the dashboard went. One that
   reports the mount, the engine and the stores would let a container health
   check mean more than `mountpoint`.

@@ -56,6 +56,10 @@ paths with `FLODNI_ROOT_PATH`, `FLODNI_SOURCE_PATH`, `FLODNI_MOUNT_PATH`,
 `FLODNI_*` ones. Existing state carries over: the database is still
 `tiramisu.db` and the log file `tiramisu.log`.
 
+The command-line paths (the entrypoint's `FLODNI_SOURCE_PATH` and
+`FLODNI_MOUNT_PATH`) win over `physical_source_path` and `fuse_mount_path` in
+`config.json`; a different value there is logged and overridden.
+
 The control server on `metrics_port` (default 9080) is open unless you set a
 token. Set `api_token` in `config.json` or `FLODNI_API_TOKEN` (the variable
 wins) and every route except the panel page needs

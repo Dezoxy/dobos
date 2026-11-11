@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end stream test: a local seeder seeds a private torrent, the real Flodni
 # image adds it through the library API, and the file is read back through FUSE
-# and compared by sha256. Runs two Flodni configs in sequence, then a TV
+# and compared by sha256. Runs two Flodni configs in sequence (the default one
+# has no source or mount path in config.json), then a TV
 # replacement scenario (a second release replaces the first, a third that never
 # delivers data is refused).
 #
@@ -56,7 +57,14 @@ is_running() {
 write_config() { # variant file
   local variant=$1 file=$2
   case "$variant" in
-    default | replacement)
+    default)
+      # No physical_source_path or fuse_mount_path: the entrypoint's
+      # command-line paths alone decide where stubs go and what FUSE serves.
+      cat >"$file" <<JSON
+{"telemetry": false, "telemetry_url": "", "scheduler": {"enabled": false}}
+JSON
+      ;;
+    replacement)
       cat >"$file" <<JSON
 {"telemetry": false, "telemetry_url": "", "scheduler": {"enabled": false},
  "physical_source_path": "$SOURCE_PATH", "fuse_mount_path": "$MOUNT_PATH"}
