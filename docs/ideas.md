@@ -26,15 +26,7 @@ The order matters: each step makes the next one safe.
 
 ## Must fix
 
-Bugs and data-loss risks.
-
-- **Stub and config writes are not atomic** (`WriteStub` in
-  `internal/library/naming.go:222`, `Save` in
-  `internal/config/config.go:196`). A crash mid-write leaves a truncated
-  file. Write to a temporary file, sync, rename.
-- **The control server's start error is discarded and it has no timeouts**
-  (`main.go:5124`). A port conflict is silent, and a slow client can hold a
-  connection open forever.
+Bugs and data-loss risks. None open.
 
 ## Should improve
 
@@ -62,6 +54,11 @@ Bugs and data-loss risks.
   readability check before a replacement (`ReadFileHead`) runs only against
   a fake engine. A second fixture filed over the first as the same TV
   episode would exercise it against the real engine.
+
+- **Timeouts on the engine's HTTP server.** GoStorm's gin server on port
+  8090 runs with no read, write or idle timeouts (`internal/gostorm/web`).
+  `/stream` responses are long-lived, so a write timeout does not fit; read
+  header and idle timeouts do.
 
 ## Nice to have
 

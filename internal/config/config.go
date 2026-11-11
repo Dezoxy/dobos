@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"flodni/internal/atomicfile"
 )
 
 // Config holds all configurable parameters for the FUSE proxy
@@ -116,7 +118,7 @@ func (c *Config) Save() error {
 	}
 
 	// 2. Write to file
-	return os.WriteFile(c.ConfigPath, data, 0644)
+	return atomicfile.WriteFile(c.ConfigPath, data, 0644)
 }
 
 // LoadConfig loads configuration from environment variables with defaults

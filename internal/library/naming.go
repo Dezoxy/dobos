@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"flodni/internal/atomicfile"
 )
 
 var (
@@ -231,5 +233,5 @@ func WriteStub(path, streamURL string, size int64, magnet, imdbID string) error 
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return atomicfile.WriteFile(path, data, 0644)
 }

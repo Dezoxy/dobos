@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"flodni/internal/atomicfile"
 	"flodni/internal/cache"
 	"flodni/internal/catalog"
 	"flodni/internal/catalog/mediaserver"
@@ -4529,7 +4530,7 @@ func main() {
 			}
 			// Update file
 			data, _ := json.MarshalIndent(newCfg, "", "  ")
-			if err := os.WriteFile(gc().ConfigPath, data, 0644); err != nil {
+			if err := atomicfile.WriteFile(gc().ConfigPath, data, 0644); err != nil {
 				http.Error(w, err.Error(), 500)
 				return
 			}
@@ -4663,7 +4664,31 @@ func main() {
 		http.HandleFunc("/api/library/inspect", libHandler.Inspect)
 	}
 
-	go http.ListenAndServe(fmt.Sprintf(":%d", gc().MetricsPort), nil)
+	// Control server: metrics, dashboard API and the library API.
+	// WriteTimeout bounds the slowest handler, POST /api/library/add. Worst
+	// case from internal/library: the .torrent upload (30 s, gostorm client
+	// timeout) + AddTorrent (30 s) + the metadata wait (maxMetadataWait 300 s,
+	// plus one 30 s poll and one 3 s sleep past the deadline) + the replacement
+	// read (replacementReadTimeout 60 s) + a cleanup RemoveTorrent (30 s) = 483 s.
+	// 600 s leaves margin. Waiting on another add of the same hash is not
+	// counted: that client is cut off, the add itself still completes.
+	// ReadTimeout covers the body, capped at 1 MiB (maxBodyBytes): 60 s is
+	// about 17 KB/s. No route streams (checked: no Flush loop, SSE or log tail).
+	// A failed listen is logged, not fatal: the FUSE mount and the engine do not
+	// depend on this port, and the process has always run on without it.
+	controlSrv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", gc().MetricsPort),
+		Handler:           http.DefaultServeMux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		WriteTimeout:      600 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	go func() {
+		if err := controlSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Printf("[Control] server on %s stopped: %v", controlSrv.Addr, err)
+		}
+	}()
 
 	// Graceful shutdown: saves the inode map before exit.
 	sigChan := make(chan os.Signal, 1)

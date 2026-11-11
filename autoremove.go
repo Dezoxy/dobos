@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"flodni/internal/atomicfile"
 	"flodni/internal/gostorm/native"
 	"flodni/internal/vfs"
 )
@@ -219,11 +220,7 @@ func (tr *TorrentRemover) addToBlacklistAt(blacklistPath, hash, title string) er
 	if err != nil {
 		return err
 	}
-	tmpPath := blacklistPath + ".tmp"
-	if err := ioutil.WriteFile(tmpPath, newData, 0644); err != nil {
-		return fmt.Errorf("write blacklist: %w", err)
-	}
-	if err := os.Rename(tmpPath, blacklistPath); err != nil {
+	if err := atomicfile.WriteFile(blacklistPath, newData, 0644); err != nil {
 		return fmt.Errorf("write blacklist: %w", err)
 	}
 	tr.logger.Printf("BLACKLISTED: %s (%s)", hash[:8], title)
