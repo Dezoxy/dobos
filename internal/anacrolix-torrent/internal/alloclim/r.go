@@ -74,6 +74,15 @@ func (me *Reservation) wake() bool {
 	return me.granted.Set()
 }
 
+// Whether Wait would block: the reservation is neither granted nor cancelled, and could still be.
+// Flodni fix: lets the peer request server skip a request it cannot yet allocate for.
+func (me *Reservation) WouldBlock() bool {
+	if me.n > me.l.Max {
+		return false // Wait returns an error at once
+	}
+	return !me.granted.IsSet() && !me.cancelled.IsSet()
+}
+
 func (me *Reservation) Wait(ctx context.Context) error {
 	if me.n > me.l.Max {
 		return log.WithLevel(
