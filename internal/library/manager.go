@@ -612,7 +612,7 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 			m.cfg.Logger.Printf("[LibraryAPI] replacement %s for %q delivered no data, existing files kept: %v",
 				hash[:8], req.Title, err)
 			return nil, errf(http.StatusUnprocessableEntity,
-				"replacement release did not deliver data within %s; existing files kept", replacementReadTimeout)
+				"replacement release delivered no data (%v, limit %s); existing files kept", err, replacementReadTimeout)
 		}
 		break // one readable file proves the release; later episodes need no second read
 	}
