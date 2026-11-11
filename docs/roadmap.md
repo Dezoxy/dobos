@@ -114,8 +114,10 @@ Releases and deployment are scheduled separately.
    fetch, prefetch and pump branches that only the end-to-end test reaches
    today. This is the last prerequisite for the `App` struct.
 6. **No stall after a tail probe.** A read that follows a tail read stalls
-   for about 30 s while it waits on a pump left in its grace period. Players
-   probe the end of a file before playing it, so this delays real starts.
+   for about 30 s in the end-to-end test. The pump's grace period is not the
+   cause; the engine's request scheduling is the suspect (see
+   [ideas.md](ideas.md)). Players probe the end of a file before playing it,
+   so this delays real starts.
 
 ## Done
 
