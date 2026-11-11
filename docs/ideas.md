@@ -27,6 +27,21 @@ Bugs and data-loss risks. None open.
   `engineBridge` interface. The prerequisites are met; the move itself is not
   planned yet.
 
+- **Library naming and filing quirks.** Pinned as they are by the
+  characterization tests (`internal/library/*_char_test.go`), so each change
+  is a deliberate one:
+  - A pack file named `S00E01` (a special) is filed under the requested
+    season as that season's episode 1 and competes with the real one.
+  - Samples are dropped only when a larger file names the same episode; a
+    lone sample is filed as the episode.
+  - A year in the title is read as the release year when no date is given
+    (`Blade_Runner_2049_2049_…`, `Dune_2021_2021_…`); a title with no ASCII
+    letters starts with `_`.
+  - `EpisodeKey` drops non-ASCII letters (`Élite` → `lite_s01e01`), so two
+    shows can share a key.
+  - Episode stubs are matched by the first 8 hash characters; two releases
+    with the same prefix are treated as one.
+
 ## Nice to have
 
 - **Structured logging.** 222 log call sites use `log.Printf`. Moving them

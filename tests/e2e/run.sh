@@ -12,7 +12,9 @@
 # E2E_KILL_SEEDER_AFTER_ADD=1 kills the seeder once the add is done (the read must
 # fail within its timeout instead of hanging); E2E_REPLACEMENT_EXPECT_SUCCESS_FOR_C=1
 # expects the undeliverable release to be accepted (the replacement variant must
-# fail); E2E_ONLY=<variant> runs just that variant. The index-cache variant runs
+# fail); E2E_ONLY=<variant> runs just that variant (default, slow-seeder,
+# index-cache, replacement). slow-seeder is default with a seeder that keeps the
+# engine's 1 MiB per-peer request allowance. The index-cache variant runs
 # with a random FLODNI_API_TOKEN: the seeder must see 401 without the bearer
 # header before its authorised add, and the same for GoStorm's 8090 (401 on
 # POST /torrents, 200 on /echo); the other variants run with auth off.
@@ -79,6 +81,7 @@ JSON
  "warmup_head_size_mb": 4, "warmup_tail_size_mb": 4, "disk_warmup_quota_gb": 1}
 JSON
       ;;
+    slow-seeder) write_config default "$file" ;;
     *) echo "unknown variant $variant" >&2; return 1 ;;
   esac
 }
@@ -137,8 +140,12 @@ wait_for_file() {
 }
 
 run_variant() {
-  local variant=$1 dir
-  start_stack "$variant"
+  local variant=$1 dir t0=$SECONDS
+  local -a seeder_args=()
+  # The seeder keeps the engine's default per-peer request allowance, like a
+  # real peer that is not tuned for one fast leecher.
+  if [ "$variant" = slow-seeder ]; then seeder_args=(-engine-default-alloc); fi
+  start_stack "$variant" ${seeder_args[@]+"${seeder_args[@]}"}
 
   local waited=0
   until [ -s "$dir/out/expected.sha256" ] && [ -s "$dir/out/fuse_path" ]; do
@@ -209,7 +216,7 @@ run_variant() {
     fi
     echo "ok ($variant): GoStorm 8090 refused POST /torrents with 401, /echo open" >&2
   fi
-  echo "PASS ($variant): sha256 $actual" >&2
+  echo "PASS ($variant): sha256 $actual, $((SECONDS - t0))s" >&2
 
   stop_stack
 }
@@ -306,6 +313,7 @@ run_replacement() {
 want_variant() { [ -z "${E2E_ONLY:-}" ] || [ "$E2E_ONLY" = "$1" ]; }
 
 if want_variant default; then run_variant default; fi
+if want_variant slow-seeder; then run_variant slow-seeder; fi
 if want_variant index-cache; then run_variant index-cache; fi
 if want_variant replacement; then run_replacement; fi
 echo "e2e: all variants passed" >&2

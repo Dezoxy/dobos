@@ -113,40 +113,12 @@ Releases and deployment are scheduled separately.
    through an interface instead of the concrete client, and tests cover the
    fetch, prefetch and pump branches that only the end-to-end test reaches
    today. This is the last prerequisite for the `App` struct.
+6. **No stall after a tail probe.** A read that follows a tail read stalls
+   for about 30 s while it waits on a pump left in its grace period. Players
+   probe the end of a file before playing it, so this delays real starts.
 
 ## Done
 
-- 2026-11-11, reliability step 2: shutdown saves state, then unmounts with a
-  lazy detach after 5 s and exits by 8 s at the latest, inside Docker's
-  default 10 s grace period.
-- 2026-11-11, reliability step 1: `GET /api/health` reports the mount, engine
-  and state database, and the image's health check runs `flodni healthcheck`
-  against it.
-- 2026-11-11, hardening step 4: GoStorm's server on 8090 has read-header and
-  idle timeouts and honours the same opt-in token (except `/echo`).
-- 2026-11-11, hardening step 3: the library writes stubs under the path the
-  mount serves; a different path in config.json is logged and overridden.
-- 2026-11-11, hardening step 2: table tests pin the pump and handle decision
-  helpers, and unit tests cover the read path's cache hit, short-read repair
-  and release; handle.go and pump.go coverage went from 0.6% to 32.0%.
-
-- 2026-11-11, hardening step 1: opt-in bearer-token auth on the control API;
-  the panel asks for the token, webhooks may pass it in the URL.
-
-- 2026-11-11, maintainability step 4b: `GET /api/sessions` lists open
-  sessions and the last 200 closed ones, each with bytes served, time to first
-  byte and an outcome (`served`, `probe`, `dead_swarm`, `unserved`).
-- 2026-11-11, maintainability step 4a: 43 unchecked errors that could hide
-  failures now return or log; the rest are marked intentional, and errcheck
-  gates new ones in `make go-check` and CI.
-- 2026-11-11, maintainability step 3b: the read-ahead cache is
-  `internal/readahead` with unit tests, and the control routes have their own
-  mux; `/debug/vars` is no longer served.
-- 2026-11-11, maintainability step 2: the end-to-end test files a second
-  release over a TV episode and a third that never delivers, checking that
-  the first replaces and the second is refused.
-- 2026-11-11, own identity step 3: stub and config writes are atomic, and
-  the control server has read, write and idle timeouts.
 - 2026-11-11, trim step 1: telemetry, the update check, the MCP server and
   the pprof endpoints are removed.
 - 2026-11-11, trim step 2: the dashboard, its collector and LAN discovery,
@@ -178,14 +150,51 @@ Releases and deployment are scheduled separately.
   environment variables are named Flodni; old names still work.
 - 2026-11-11, own identity step 2: a release that replaces existing stubs
   must deliver data first; if it does not, the existing files stay.
+- 2026-11-11, own identity step 3: stub and config writes are atomic, and
+  the control server has read, write and idle timeouts.
 - 2026-11-11, maintainability step 1: the vendored engine's `go.mod` is
   aligned with patched versions (gRPC, OpenTelemetry, x/crypto, websocket),
   its private-torrent tests run in `make go-test` and CI, and the Dependabot
   backlog is merged or superseded.
+- 2026-11-11, maintainability step 2: the end-to-end test files a second
+  release over a TV episode and a third that never delivers, checking that
+  the first replaces and the second is refused.
 - 2026-11-11, maintainability step 3a: `main.go` is split into nine files
   by concern (FUSE nodes, handle, pump, read-ahead cache, playback, webhook,
   profiling, inode map, wiring); a line-multiset check proves no code
   changed.
+- 2026-11-11, maintainability step 3b: the read-ahead cache is
+  `internal/readahead` with unit tests, and the control routes have their own
+  mux; `/debug/vars` is no longer served.
+- 2026-11-11, maintainability step 4a: 43 unchecked errors that could hide
+  failures now return or log; the rest are marked intentional, and errcheck
+  gates new ones in `make go-check` and CI.
+- 2026-11-11, maintainability step 4b: `GET /api/sessions` lists open
+  sessions and the last 200 closed ones, each with bytes served, time to first
+  byte and an outcome (`served`, `probe`, `dead_swarm`, `unserved`).
+- 2026-11-11, hardening step 1: opt-in bearer-token auth on the control API;
+  the panel asks for the token, webhooks may pass it in the URL.
+- 2026-11-11, hardening step 2: table tests pin the pump and handle decision
+  helpers, and unit tests cover the read path's cache hit, short-read repair
+  and release; handle.go and pump.go coverage went from 0.6% to 32.0%.
+- 2026-11-11, hardening step 3: the library writes stubs under the path the
+  mount serves; a different path in config.json is logged and overridden.
+- 2026-11-11, hardening step 4: GoStorm's server on 8090 has read-header and
+  idle timeouts and honours the same opt-in token (except `/echo`).
+- 2026-11-11, reliability step 1: `GET /api/health` reports the mount, engine
+  and state database, and the image's health check runs `flodni healthcheck`
+  against it.
+- 2026-11-11, reliability step 2: shutdown saves state, then unmounts with a
+  lazy detach after 5 s and exits by 8 s at the latest, inside Docker's
+  default 10 s grace period.
+- 2026-11-11, reliability step 3: the engine's upload side waited on a request
+  it could not yet allocate buffer for while granted requests went unread, so a
+  seeder at the default 1 MiB per-peer allowance sent nothing until the
+  leecher's ~35 s timeout; it now skips ungranted requests and restarts on a
+  release; the end-to-end test gains a slow-seeder variant.
+- 2026-11-11, reliability step 4: characterization tests pin stub naming,
+  stub contents, movie, episode and season-pack filing, replacement and
+  removal; internal/library coverage went from 48.1% to 68.9%.
 - 2026-11-11, reliability step 5: the read path reaches the engine through an
   interface, and tests with a fake engine cover fetch, singleflight, prefetch
   and the pump; handle.go and pump.go coverage went from 32% to 80%.
