@@ -37,4 +37,5 @@ a switch or calls out to third parties.
 
 ## Done
 
-Nothing yet.
+- 2026-11-11, trim step 1: telemetry, the update check, the MCP server and
+  the pprof endpoints are removed.

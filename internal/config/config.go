@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 	"tiramisu/internal/prowlarr"
-
-	"github.com/google/uuid"
 )
 
 // NatPMPConfig holds the configuration for NAT-PMP port forwarding.
@@ -358,16 +356,12 @@ type Config struct {
 	// --- Engine Scripts (populated in LoadConfig, not from JSON) ---
 	EngineScripts map[string]EngineConfig `json:"-"`
 
-	// --- Telemetry (V1.4.7) ---
-	TelemetryID     string `json:"telemetry_id"`
-	EnableTelemetry bool   `json:"telemetry"`
 	// PumpOnOpen starts the read-ahead pump as soon as a file is opened (upstream's
 	// behaviour). Off, a file opened by a scanner (Plex, Sonarr/Radarr's ffprobe,
 	// Bazarr's hash) is served by small on-demand fetches, and the pump starts once a
 	// webhook confirms playback or the reads look like playback (IsInferredPlayback).
 	// Dezoxy fork: a library scan otherwise cost ~500 MB of read-ahead per file.
-	PumpOnOpen   bool   `json:"pump_on_open"`
-	TelemetryURL string `json:"telemetry_url"`
+	PumpOnOpen bool `json:"pump_on_open"`
 
 	// --- State DB (V1.7.1) ---
 	EnableStateDB bool   `json:"enable_state_db"` // default: true
@@ -456,9 +450,6 @@ func LoadConfig() Config {
 		MetricsPort:      9080,
 		BlockListEnabled: false,
 
-		EnableTelemetry: true,
-		TelemetryURL:    "https://telemetry.gostream.workers.dev",
-
 		EnableStateDB: true,
 
 		// Legacy Fixed Defaults
@@ -530,15 +521,6 @@ func LoadConfig() Config {
 		"movies":    {ScriptPath: filepath.Join(scriptsDir, "gostorm-sync-complete.py"), LogsDir: logsDir},
 		"tv":        {ScriptPath: filepath.Join(scriptsDir, "gostorm-tv-sync.py"), LogsDir: logsDir},
 		"watchlist": {ScriptPath: filepath.Join(scriptsDir, "plex-watchlist-sync.py"), LogsDir: logsDir},
-	}
-
-	// 6. Generate Telemetry ID if missing
-	if cfg.TelemetryID == "" {
-		cfg.TelemetryID = uuid.New().String()
-		log.Printf("[Telemetry] Generated new ID: %s", cfg.TelemetryID)
-		if err := cfg.Save(); err != nil {
-			log.Printf("[Telemetry] ERROR: Failed to persist generated ID: %v", err)
-		}
 	}
 
 	return cfg
