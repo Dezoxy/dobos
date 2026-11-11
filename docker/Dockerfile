@@ -49,6 +49,11 @@ ENV MKV_PROXY_CONFIG_PATH=/config.json
 
 EXPOSE 8090 9080
 
+# `flodni healthcheck` asks GET /api/health on the control port: the mount, the
+# engine and the state database. The start period covers mount and engine start.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD ["/usr/local/bin/flodni", "healthcheck"]
+
 # tini is used as PID 1 to forward signals (e.g. SIGTERM on docker stop) to
 # flodni and reap zombie processes. Without it, the shell entrypoint script
 # would be PID 1 and would not forward signals, causing an unclean shutdown.

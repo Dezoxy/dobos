@@ -10,11 +10,11 @@ import (
 )
 
 // Control profile: everything needs the token except the static panel page,
-// which holds no data. Plex and Jellyfin webhooks cannot send headers, so only
+// which holds no data, and GET /api/health, which reports status words only. Plex and Jellyfin webhooks cannot send headers, so only
 // those two routes also take the token as ?token=; a query token elsewhere
 // would leak into logs and browser history.
 func controlOpen(r *http.Request) bool {
-	return r.Method == http.MethodGet && r.URL.Path == "/control"
+	return r.Method == http.MethodGet && (r.URL.Path == "/control" || r.URL.Path == "/api/health")
 }
 
 func controlWebhook(r *http.Request) bool {

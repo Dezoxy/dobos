@@ -175,7 +175,13 @@ jobs:
             -v "$PWD/config.json:/config.json" flodni:ci
           for _ in $(seq 1 60); do
             if curl -fsS -o /dev/null http://127.0.0.1:9080/control; then
-              docker exec flodni-smoke mountpoint -q /mnt/flodni-virtual && exit 0
+              if docker exec flodni-smoke mountpoint -q /mnt/flodni-virtual; then
+                # The engine may lag the mount: retry the health check briefly.
+                for _ in $(seq 1 15); do
+                  docker exec flodni-smoke flodni healthcheck && exit 0
+                  sleep 2
+                done
+              fi
             fi
             sleep 2
           done
