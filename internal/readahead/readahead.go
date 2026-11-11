@@ -1,4 +1,6 @@
-package main
+// Package readahead is the sharded, session-aware chunk cache that sits between
+// the torrent pump and FUSE reads.
+package readahead
 
 import (
 	torrstor "flodni/internal/gostorm/torr/storage/torrstor"
@@ -11,7 +13,7 @@ import (
 	"time"
 )
 
-type RaBuffer struct {
+type raBuffer struct {
 	start, end     int64
 	data           []byte
 	lastAccess     int64
@@ -19,8 +21,19 @@ type RaBuffer struct {
 	responsiveOnly bool // true if written in non-verified mode (responsive shield active)
 }
 
-// ReadAheadCache is a 32-shard LRU cache with session-aware eviction.
-type ReadAheadCache struct {
+// Config injects what the cache needs from the daemon. Base and Budget are read
+// on every use (config can be reloaded, and is not yet loaded when the cache is
+// constructed); all four fields are required.
+type Config struct {
+	Base   func() int64                     // chunk size (ReadAheadBase), 0 means 16MB
+	Budget func() int64                     // total budget in bytes (ReadAheadBudget)
+	Logf   func(format string, args ...any) // logger
+	Go     func(fn func())                  // panic-safe background goroutine launcher
+}
+
+// Cache is a 32-shard LRU cache with session-aware eviction.
+type Cache struct {
+	cfg       Config
 	shards    [32]*raShard
 	shardMask uint64
 	used      int64
@@ -36,8 +49,8 @@ type ReadAheadCache struct {
 
 // SetPieceLen stores the aligned chunk size for path derived from piece length.
 // Called at pump start once pieceLen is known; both pump and raCache share this value.
-func (c *ReadAheadCache) SetPieceLen(path string, pl int64) {
-	base := int64(gc().ReadAheadBase)
+func (c *Cache) SetPieceLen(path string, pl int64) {
+	base := int64(c.cfg.Base())
 	if base == 0 {
 		base = 16 * 1024 * 1024
 	}
@@ -63,12 +76,17 @@ func (c *ReadAheadCache) SetPieceLen(path string, pl int64) {
 	c.pieceLens.Store(path, base)
 }
 
+// ClearPieceLen forgets the adaptive chunk size for path (pump teardown).
+func (c *Cache) ClearPieceLen(path string) {
+	c.pieceLens.Delete(path)
+}
+
 // ChunkSize returns the adaptive chunk size for path (falls back to ReadAheadBase).
-func (c *ReadAheadCache) ChunkSize(path string) int64 {
+func (c *Cache) ChunkSize(path string) int64 {
 	if v, ok := c.pieceLens.Load(path); ok {
 		return v.(int64)
 	}
-	base := int64(gc().ReadAheadBase)
+	base := int64(c.cfg.Base())
 	if base == 0 {
 		base = 16 * 1024 * 1024
 	}
@@ -77,23 +95,24 @@ func (c *ReadAheadCache) ChunkSize(path string) int64 {
 
 type raShard struct {
 	mu      sync.RWMutex
-	buffers map[string]*RaBuffer
+	buffers map[string]*raBuffer
 	order   []string
 	total   int64
 }
 
-func newReadAheadCache() *ReadAheadCache {
-	// Static 32-buffer default: newReadAheadCache runs at package init (var raCache),
-	// BEFORE config is loaded - gc() is nil here, so nothing config-dependent may be
+func New(cfg Config) *Cache {
+	// Static 32-buffer default: New runs at package init (var raCache),
+	// BEFORE config is loaded - Base/Budget read a nil config here, so nothing config-dependent may be
 	// touched. The pool is re-anchored to the budget once config exists via
 	// AnchorPoolToConfig() (called from main after loading).
-	c := &ReadAheadCache{
+	c := &Cache{
+		cfg:       cfg,
 		shardMask: 31,
 		pool:      make(chan []byte, 32), // Cap at 32 chunks (512MB max pool)
 	}
 	for i := range c.shards {
 		c.shards[i] = &raShard{
-			buffers: make(map[string]*RaBuffer),
+			buffers: make(map[string]*raBuffer),
 		}
 	}
 	return c
@@ -110,12 +129,12 @@ func newReadAheadCache() *ReadAheadCache {
 // (256MB->32, 512MB->64), floor 16 to avoid allocation churn on tiny budgets, ceiling 64 to
 // bound parking. The ceiling is nearly free: the pool only ever retains buffers that were
 // already allocated, it never pre-allocates.
-func (c *ReadAheadCache) AnchorPoolToConfig() {
-	base := gc().ReadAheadBase
+func (c *Cache) AnchorPoolToConfig() {
+	base := c.cfg.Base()
 	if base <= 0 {
 		base = 16 * 1024 * 1024
 	}
-	budget := gc().ReadAheadBudget
+	budget := c.cfg.Budget()
 	if budget <= 0 {
 		budget = 256 * 1024 * 1024
 	}
@@ -129,12 +148,12 @@ func (c *ReadAheadCache) AnchorPoolToConfig() {
 	if poolCap == cap(c.pool) {
 		return
 	}
-	logger.Printf("[RaCache] Pool cap anchored to budget: %d buffers (%dMB max, budget %dMB, base %dMB)",
+	c.cfg.Logf("[RaCache] Pool cap anchored to budget: %d buffers (%dMB max, budget %dMB, base %dMB)",
 		poolCap, poolCap*int(base)/1024/1024, budget/1024/1024, base/1024/1024)
 	c.pool = make(chan []byte, poolCap)
 }
 
-func (c *ReadAheadCache) getShard(path string) *raShard {
+func (c *Cache) getShard(path string) *raShard {
 	return c.shards[xxhash.Sum64String(path)&c.shardMask]
 }
 
@@ -148,10 +167,10 @@ func allocChunk(size, base int64) []byte {
 	return make([]byte, size)
 }
 
-func (c *ReadAheadCache) recycle(b []byte) {
+func (c *Cache) recycle(b []byte) {
 	chunkSize := int(16 * 1024 * 1024)
-	if gc().ReadAheadBase > 0 {
-		chunkSize = int(gc().ReadAheadBase)
+	if c.cfg.Base() > 0 {
+		chunkSize = int(c.cfg.Base())
 	}
 	// Match on cap, not len: adaptive chunks (see SetPieceLen) have len < base for torrents
 	// whose piece length doesn't divide base evenly (~25% of the library uses non-power-of-two
@@ -166,7 +185,7 @@ func (c *ReadAheadCache) recycle(b []byte) {
 }
 
 // MaxCachedOffset returns the highest cached byte end for a given path.
-func (c *ReadAheadCache) MaxCachedOffset(p string) int64 {
+func (c *Cache) MaxCachedOffset(p string) int64 {
 	s := c.getShard(p)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -182,12 +201,12 @@ func (c *ReadAheadCache) MaxCachedOffset(p string) int64 {
 }
 
 // chunkKey returns a compound key using the per-path adaptive chunk size.
-func (c *ReadAheadCache) chunkKey(path string, offset int64) string {
+func (c *Cache) chunkKey(path string, offset int64) string {
 	return fmt.Sprintf("%s:%d", path, offset/c.ChunkSize(path))
 }
 
 // SwitchContext increments SessionID on path change to invalidate stale data.
-func (c *ReadAheadCache) SwitchContext(newPath string) {
+func (c *Cache) SwitchContext(newPath string) {
 	c.muContext.Lock()
 	pathChanged := newPath != c.activePath
 	if pathChanged {
@@ -200,7 +219,7 @@ func (c *ReadAheadCache) SwitchContext(newPath string) {
 	c.muContext.Unlock()
 
 	if pathChanged {
-		safeGo(func() {
+		c.cfg.Go(func() {
 			c.triggerGlobalEviction(activePath, activeSessionID)
 		})
 	}
@@ -209,7 +228,7 @@ func (c *ReadAheadCache) SwitchContext(newPath string) {
 // Covered reports whether the cache fully covers [off, end] without copying any bytes —
 // use this for presence/coverage checks on the hot path; call Get separately only once the
 // actual data is needed, to avoid an up-to-16MB defensive copy on every check.
-func (c *ReadAheadCache) Covered(p string, off, end int64) bool {
+func (c *Cache) Covered(p string, off, end int64) bool {
 	s := c.getShard(p)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -228,7 +247,7 @@ func (c *ReadAheadCache) Covered(p string, off, end int64) bool {
 	return false
 }
 
-func (c *ReadAheadCache) Get(p string, off, end int64) []byte {
+func (c *Cache) Get(p string, off, end int64) []byte {
 	s := c.getShard(p)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -255,7 +274,7 @@ func (c *ReadAheadCache) Get(p string, off, end int64) []byte {
 }
 
 // Exists checks if a chunk is present in cache without allocating.
-func (c *ReadAheadCache) Exists(p string, off int64) bool {
+func (c *Cache) Exists(p string, off int64) bool {
 	s := c.getShard(p)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -265,7 +284,7 @@ func (c *ReadAheadCache) Exists(p string, off int64) bool {
 }
 
 // CopyTo copies data directly into dest, avoiding an intermediate allocation in the FUSE Read hot path.
-func (c *ReadAheadCache) CopyTo(p string, off, end int64, dest []byte) int {
+func (c *Cache) CopyTo(p string, off, end int64, dest []byte) int {
 	s := c.getShard(p)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -288,7 +307,7 @@ func (c *ReadAheadCache) CopyTo(p string, off, end int64, dest []byte) int {
 	return 0
 }
 
-func (c *ReadAheadCache) Put(p string, start, end int64, d []byte) {
+func (c *Cache) Put(p string, start, end int64, d []byte) {
 	c.muContext.Lock()
 	sessID := c.currentSessionID
 	// Active path uses current session ID; stale pumps use sessID=0 so eviction can identify them.
@@ -310,7 +329,7 @@ func (c *ReadAheadCache) Put(p string, start, end int64, d []byte) {
 	// Fresh allocations get cap rounded up to base too, so recycle() can pool them later —
 	// previously a size mismatch both discarded the pooled buffer and allocated an
 	// unpoolable one, permanently draining the pool on non-power-of-two-piece torrents.
-	poolCap := int64(gc().ReadAheadBase)
+	poolCap := int64(c.cfg.Base())
 	if poolCap == 0 {
 		poolCap = 16 * 1024 * 1024
 	}
@@ -328,7 +347,7 @@ func (c *ReadAheadCache) Put(p string, start, end int64, d []byte) {
 	}
 	copy(dataCopy, d)
 
-	globalLimit := gc().ReadAheadBudget
+	globalLimit := c.cfg.Budget()
 	if globalLimit <= 0 {
 		globalLimit = 256 * 1024 * 1024 // Fail-safe default
 	}
@@ -352,7 +371,7 @@ func (c *ReadAheadCache) Put(p string, start, end int64, d []byte) {
 	shard.total += dataSize
 	newUsed := atomic.AddInt64(&c.used, dataSize)
 	responsiveOnly := torrstor.IsResponsive()
-	shard.buffers[key] = &RaBuffer{start, end, dataCopy, time.Now().UnixNano(), sessID, responsiveOnly}
+	shard.buffers[key] = &raBuffer{start, end, dataCopy, time.Now().UnixNano(), sessID, responsiveOnly}
 
 	// Evict from this shard while over budget; keep last item to avoid evicting the chunk just added.
 	for newUsed > globalLimit && len(shard.order) > 1 {
@@ -373,7 +392,7 @@ func (c *ReadAheadCache) Put(p string, start, end int64, d []byte) {
 		ap := c.activePath
 		sid := c.currentSessionID
 		c.muContext.Unlock()
-		safeGo(func() {
+		c.cfg.Go(func() {
 			c.triggerGlobalEviction(ap, sid)
 		})
 	}
@@ -382,7 +401,7 @@ func (c *ReadAheadCache) Put(p string, start, end int64, d []byte) {
 		// If we reach here, it means even after global eviction we are over budget.
 		// However, to allow the new stream to start, we must NOT drop the only chunk it has.
 		// So we do nothing and allow a tiny over-budget for the first few chunks.
-		logger.Printf("[RaCache] Budget full (%d MB), allowing active chunk to persist for handoff: %s", newUsed/(1024*1024), filepath.Base(p))
+		c.cfg.Logf("[RaCache] Budget full (%d MB), allowing active chunk to persist for handoff: %s", newUsed/(1024*1024), filepath.Base(p))
 	}
 
 	// Periodic compaction of order slice
@@ -398,7 +417,7 @@ func (c *ReadAheadCache) Put(p string, start, end int64, d []byte) {
 }
 
 // Stats returns read-ahead cache statistics for metrics endpoint
-func (c *ReadAheadCache) Stats() (totalBytes int64, activeBytes int64, entries int) {
+func (c *Cache) Stats() (totalBytes int64, activeBytes int64, entries int) {
 	totalBytes = atomic.LoadInt64(&c.used)
 
 	now := time.Now().UnixNano()
@@ -419,7 +438,7 @@ func (c *ReadAheadCache) Stats() (totalBytes int64, activeBytes int64, entries i
 }
 
 // triggerGlobalEviction removes stale session data and old chunks from all shards.
-func (c *ReadAheadCache) triggerGlobalEviction(activePath string, activeSessionID int64) {
+func (c *Cache) triggerGlobalEviction(activePath string, activeSessionID int64) {
 	// Single-flight: skip if already evicting.
 	if !atomic.CompareAndSwapInt32(&c.isEvicting, 0, 1) {
 		return
@@ -482,11 +501,4 @@ func (c *ReadAheadCache) triggerGlobalEviction(activePath string, activeSessionI
 		evictShard(s)
 		s.mu.Unlock()
 	}
-}
-
-func abs(n int64) int64 {
-	if n < 0 {
-		return -n
-	}
-	return n
 }

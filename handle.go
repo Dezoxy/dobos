@@ -1061,3 +1061,10 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 
 	return 0
 }
+
+func abs(n int64) int64 {
+	if n < 0 {
+		return -n
+	}
+	return n
+}

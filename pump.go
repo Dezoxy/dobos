@@ -353,7 +353,7 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader *native.NativeRea
 			// otherwise pieceLens keeps growing with entries for paths no pump is streaming
 			// anymore, and a future pump for the same path with a different piece length would
 			// see the stale entry via ChunkSize() until a fresh SetPieceLen call overwrites it.
-			raCache.pieceLens.Delete(h.path)
+			raCache.ClearPieceLen(h.path)
 		}
 
 		if pumpExitedHealthy {
