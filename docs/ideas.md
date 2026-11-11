@@ -11,10 +11,10 @@ The order matters: each step makes the next one safe.
 1. **End-to-end test first.** A local tracker seeds a small torrent, Flodni
    mounts it through FUSE, the test reads the file and compares hashes. It
    pins the one behaviour that must not break, before any code moves.
-2. **Delete unused subsystems.** About 16,800 lines: catalogue sync, music
-   import, catalogue, MCP server, audio, the indexer adapter, NAT-PMP, the
-   self-updater and telemetry. Rename the Go module, the binary and the image
-   in the same step.
+2. **Delete unused subsystems.** Chosen: now "Trim to the streaming core" in
+   [roadmap.md](roadmap.md), with the end-to-end test of step 1 placed
+   before the removals that touch the read path. The Go module, binary and
+   mount path rename follows it.
 3. **Break up `main.go`.** 6,126 lines and about 20 `global*` singletons.
    Move to packages behind an `App` struct, with its own HTTP mux and server
    timeouts.
