@@ -508,6 +508,8 @@ func main() {
 			ttffStats.stallCount.Load(), ttffStats.maxStallMS.Load())
 	})
 
+	mux.HandleFunc("/api/sessions", handleSessions)
+
 	mux.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write(settingsHTML)

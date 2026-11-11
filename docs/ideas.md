@@ -39,8 +39,6 @@ Bugs and data-loss risks. None open.
 - **A health endpoint.** There is none since the dashboard went. One that
   reports the mount, the engine and the stores would let a container health
   check mean more than `mountpoint`.
-- **Expose unserved sessions.** A file that was opened and never got bytes
-  should be a metric and an API result, not only a log line.
 - **Remove the dead index-seed path** once the supported one is the only
   caller.
 
