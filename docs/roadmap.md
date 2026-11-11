@@ -76,6 +76,9 @@ Releases and deployment are scheduled separately.
 
 ## Done
 
+- 2026-11-11, maintainability step 2: the end-to-end test files a second
+  release over a TV episode and a third that never delivers, checking that
+  the first replaces and the second is refused.
 - 2026-11-11, own identity step 3: stub and config writes are atomic, and
   the control server has read, write and idle timeouts.
 - 2026-11-11, trim step 1: telemetry, the update check, the MCP server and
