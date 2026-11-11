@@ -7,6 +7,26 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"flodni/internal/cache"
+	"flodni/internal/catalog"
+	"flodni/internal/catalog/mediaserver"
+	"flodni/internal/config"
+	server "flodni/internal/gostorm"
+	"flodni/internal/gostorm/native"
+	"flodni/internal/gostorm/settings"
+	"flodni/internal/gostorm/torr"
+	torrstor "flodni/internal/gostorm/torr/storage/torrstor"
+	tsutils "flodni/internal/gostorm/utils"
+	"flodni/internal/gostorm/web"
+	"flodni/internal/library"
+	"flodni/internal/lockmgr"
+	"flodni/internal/metadb"
+	"flodni/internal/opentracker"
+	"flodni/internal/ratelimit"
+	"flodni/internal/registry"
+	"flodni/internal/tuner"
+	"flodni/internal/vfs"
+	"flodni/internal/warmup"
 	"fmt"
 	"github.com/cespare/xxhash/v2"
 	"golang.org/x/sys/cpu"
@@ -26,26 +46,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"tiramisu/internal/cache"
-	"tiramisu/internal/catalog"
-	"tiramisu/internal/catalog/mediaserver"
-	"tiramisu/internal/config"
-	server "tiramisu/internal/gostorm"
-	"tiramisu/internal/gostorm/native"
-	"tiramisu/internal/gostorm/settings"
-	"tiramisu/internal/gostorm/torr"
-	torrstor "tiramisu/internal/gostorm/torr/storage/torrstor"
-	tsutils "tiramisu/internal/gostorm/utils"
-	"tiramisu/internal/gostorm/web"
-	"tiramisu/internal/library"
-	"tiramisu/internal/lockmgr"
-	"tiramisu/internal/metadb"
-	"tiramisu/internal/opentracker"
-	"tiramisu/internal/ratelimit"
-	"tiramisu/internal/registry"
-	"tiramisu/internal/tuner"
-	"tiramisu/internal/vfs"
-	"tiramisu/internal/warmup"
 
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
@@ -4235,7 +4235,7 @@ func main() {
 		mount = gc().FuseMountPath
 	}
 	if source == "" || mount == "" {
-		fmt.Println("Usage: tiramisu [--path /path/to/db] <source_path> <mount_path>")
+		fmt.Println("Usage: flodni [--path /path/to/db] <source_path> <mount_path>")
 		fmt.Println("  Or set physical_source_path and fuse_mount_path in config.json")
 		os.Exit(1)
 	}
@@ -4741,7 +4741,7 @@ func main() {
 			ExplicitDataCacheControl: true,            // PREVENTS kernel freezes during invalidation
 			SyncRead:                 false,           // ENABLED ASYNC READS for 4K performance
 			// NFS Export: Stable filesystem identification
-			FsName: "tiramisu",
+			FsName: "flodni",
 		},
 		UID: gc().UID, // Default file ownership: pi user (1000)
 		GID: gc().GID, // Default file ownership: pi group (1000)

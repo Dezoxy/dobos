@@ -3,7 +3,7 @@ package api
 import (
 	"net/http"
 
-	"tiramisu/internal/gostorm/torr"
+	"flodni/internal/gostorm/torr"
 
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"

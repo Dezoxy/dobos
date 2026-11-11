@@ -2,12 +2,12 @@
 set -eu
 
 CONFIG_PATH="${MKV_PROXY_CONFIG_PATH:-/config.json}"
-ROOT_PATH="${TIRAMISU_ROOT_PATH:-${GOSTREAM_ROOT_PATH:-/state}}"
-SOURCE_PATH="${TIRAMISU_SOURCE_PATH:-${GOSTREAM_SOURCE_PATH:-/mnt/tiramisu-mkv-real}}"
-MOUNT_PATH="${TIRAMISU_MOUNT_PATH:-${GOSTREAM_MOUNT_PATH:-/mnt/tiramisu-mkv-virtual}}"
-STATE_DIR="${TIRAMISU_STATE_DIR:-${GOSTREAM_STATE_DIR:-$ROOT_PATH/STATE}}"
-LOG_DIR="${TIRAMISU_LOG_DIR:-${GOSTREAM_LOG_DIR:-$ROOT_PATH/logs}}"
-HOST_MOUNT_HINT="${TIRAMISU_HOST_MOUNT_HINT:-${GOSTREAM_HOST_MOUNT_HINT:-}}"
+ROOT_PATH="${FLODNI_ROOT_PATH:-${TIRAMISU_ROOT_PATH:-${GOSTREAM_ROOT_PATH:-/state}}}"
+SOURCE_PATH="${FLODNI_SOURCE_PATH:-${TIRAMISU_SOURCE_PATH:-${GOSTREAM_SOURCE_PATH:-/mnt/flodni-real}}}"
+MOUNT_PATH="${FLODNI_MOUNT_PATH:-${TIRAMISU_MOUNT_PATH:-${GOSTREAM_MOUNT_PATH:-/mnt/flodni-virtual}}}"
+STATE_DIR="${FLODNI_STATE_DIR:-${TIRAMISU_STATE_DIR:-${GOSTREAM_STATE_DIR:-$ROOT_PATH/STATE}}}"
+LOG_DIR="${FLODNI_LOG_DIR:-${TIRAMISU_LOG_DIR:-${GOSTREAM_LOG_DIR:-$ROOT_PATH/logs}}}"
+HOST_MOUNT_HINT="${FLODNI_HOST_MOUNT_HINT:-${TIRAMISU_HOST_MOUNT_HINT:-${GOSTREAM_HOST_MOUNT_HINT:-}}}"
 
 mkdir -p "$SOURCE_PATH" "$MOUNT_PATH" "$ROOT_PATH"
 
@@ -55,7 +55,7 @@ fi
 
 mkdir -p "$STATE_DIR" "$LOG_DIR"
 
-# GoStorm keeps its settings in $ROOT_PATH/config.db and Tiramisu its state in
+# GoStorm keeps its settings in $ROOT_PATH/config.db and Flodni its state in
 # $STATE_DIR. Unmounted, both vanish on "docker rm" and every setting silently
 # returns to its default, which is hard to attribute after the fact.
 for dir in "$ROOT_PATH" "$STATE_DIR"; do
@@ -72,7 +72,7 @@ for dir in "$ROOT_PATH" "$STATE_DIR"; do
     echo "  'docker rm' + 'docker run' comes back with the defaults." >&2
     echo "" >&2
     echo "  Fix it by mounting a host directory on $ROOT_PATH:" >&2
-    echo "    -v /opt/tiramisu/state:$ROOT_PATH" >&2
+    echo "    -v /opt/flodni/state:$ROOT_PATH" >&2
     echo "===============================================================" >&2
   fi
 done
@@ -119,10 +119,10 @@ if [ ! -f "$CONFIG_PATH" ]; then
   exit 1
 fi
 
-tiramisu_pid=""
+flodni_pid=""
 stopping=""
 
-# Exit code tiramisu uses to ask for a restart (Control Panel button). Any other
+# Exit code flodni uses to ask for a restart (Control Panel button). Any other
 # code ends the container, so a real crash still hands control to Docker's
 # restart policy. Keep in sync with restartExitCode in main.go.
 RESTART_EXIT_CODE=75
@@ -131,27 +131,27 @@ shutdown() {
   trap - INT TERM EXIT
   stopping=1
 
-  if [ -n "$tiramisu_pid" ] && kill -0 "$tiramisu_pid" 2>/dev/null; then
-    kill -TERM "$tiramisu_pid" 2>/dev/null || true
+  if [ -n "$flodni_pid" ] && kill -0 "$flodni_pid" 2>/dev/null; then
+    kill -TERM "$flodni_pid" 2>/dev/null || true
   fi
 
-  wait ${tiramisu_pid:+"$tiramisu_pid"} 2>/dev/null || true
+  wait ${flodni_pid:+"$flodni_pid"} 2>/dev/null || true
   fusermount3 -uz "$MOUNT_PATH" 2>/dev/null || true
 }
 
 trap shutdown INT TERM EXIT
 
-# Tiramisu logs to stdout only; under systemd the unit appends that to a file, but a
+# Flodni logs to stdout only; under systemd the unit appends that to a file, but a
 # container has nothing doing so, which left the Control Panel's log viewer empty while
 # "docker logs" worked. A FIFO feeds tee, which writes both destinations - and keeps $!
-# pointing at tiramisu, which a plain pipeline would not.
-TIRAMISU_LOG_FILE="$LOG_DIR/tiramisu.log"
-LOG_FIFO="$(mktemp -u /tmp/tiramisu-log.XXXXXX)"
+# pointing at flodni, which a plain pipeline would not.
+LOG_FILE="${FLODNI_LOG_FILE:-${TIRAMISU_LOG_FILE:-$LOG_DIR/tiramisu.log}}"
+LOG_FIFO="$(mktemp -u /tmp/flodni-log.XXXXXX)"
 if mkfifo "$LOG_FIFO" 2>/dev/null; then
-  tee -a "$TIRAMISU_LOG_FILE" < "$LOG_FIFO" &
+  tee -a "$LOG_FILE" < "$LOG_FIFO" &
   tee_pid="$!"
   # Hold a writer open for the life of the script. Without it tee sees EOF when
-  # tiramisu exits, and the next run blocks forever opening a FIFO nobody reads.
+  # flodni exits, and the next run blocks forever opening a FIFO nobody reads.
   exec 3> "$LOG_FIFO"
 else
   echo "WARNING: could not create the log FIFO; logs go to stdout only." >&2
@@ -161,17 +161,17 @@ fi
 # Supervision loop: without it a Control Panel restart would stop the container,
 # since the entrypoint is PID 1's only child and nothing restarts it.
 while :; do
-  echo "Starting tiramisu" >&2
+  echo "Starting flodni" >&2
   if [ -n "$LOG_FIFO" ]; then
-    /usr/local/bin/tiramisu --path "$ROOT_PATH" "$SOURCE_PATH" "$MOUNT_PATH" > "$LOG_FIFO" 2>&1 &
+    /usr/local/bin/flodni --path "$ROOT_PATH" "$SOURCE_PATH" "$MOUNT_PATH" > "$LOG_FIFO" 2>&1 &
   else
-    /usr/local/bin/tiramisu --path "$ROOT_PATH" "$SOURCE_PATH" "$MOUNT_PATH" &
+    /usr/local/bin/flodni --path "$ROOT_PATH" "$SOURCE_PATH" "$MOUNT_PATH" &
   fi
-  tiramisu_pid="$!"
+  flodni_pid="$!"
 
   exit_code=0
-  wait "$tiramisu_pid" || exit_code=$?
-  tiramisu_pid=""
+  wait "$flodni_pid" || exit_code=$?
+  flodni_pid=""
 
   # Unmount between runs, or the next process finds the previous FUSE layer.
   fusermount3 -uz "$MOUNT_PATH" 2>/dev/null || true

@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"tiramisu/internal/gostorm/native"
-	"tiramisu/internal/vfs"
+	"flodni/internal/gostorm/native"
+	"flodni/internal/vfs"
 )
 
 // TorrentRemover handles automatic torrent removal from GoStorm

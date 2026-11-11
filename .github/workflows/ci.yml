@@ -168,7 +168,7 @@ jobs:
             -v "$PWD/config.json:/config.json" flodni:ci
           for _ in $(seq 1 60); do
             if curl -fsS -o /dev/null http://127.0.0.1:9080/control; then
-              docker exec flodni-smoke mountpoint -q /mnt/tiramisu-mkv-virtual && exit 0
+              docker exec flodni-smoke mountpoint -q /mnt/flodni-virtual && exit 0
             fi
             sleep 2
           done

@@ -15,7 +15,7 @@ type Logger interface {
 	Printf(format string, v ...interface{})
 }
 
-// DB wraps a SQLite database connection for tiramisu state persistence.
+// DB wraps a SQLite database connection for flodni state persistence.
 type DB struct {
 	db     *sql.DB
 	path   string
@@ -73,7 +73,7 @@ func (d *DB) hasColumn(table, column string) bool {
 // addColumn applies an additive migration guarded by hasColumn. A lookup that fails for
 // its own reasons answers "missing", so the ALTER is attempted on a table that already
 // has the column: that duplicate is tolerated here, because the alternative is New()
-// returning an error and tiramisu refusing to start.
+// returning an error and flodni refusing to start.
 func (d *DB) addColumn(table, column, ddl string) error {
 	if d.hasColumn(table, column) {
 		return nil

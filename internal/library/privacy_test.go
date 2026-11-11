@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"tiramisu/internal/gostorm/torr/utils"
+	"flodni/internal/gostorm/torr/utils"
 
 	"github.com/anacrolix/torrent/bencode"
 	"github.com/anacrolix/torrent/metainfo"

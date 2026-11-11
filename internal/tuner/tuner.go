@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"tiramisu/internal/gostorm/torr"
+	"flodni/internal/gostorm/torr"
 )
 
 const (

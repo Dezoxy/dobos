@@ -13,8 +13,7 @@ The order matters: each step makes the next one safe.
    pins the one behaviour that must not break, before any code moves.
 2. **Delete unused subsystems.** Chosen: now "Trim to the streaming core" in
    [roadmap.md](roadmap.md), with the end-to-end test of step 1 placed
-   before the removals that touch the read path. The Go module, binary and
-   mount path rename follows it.
+   before the removals that touch the read path.
 3. **Break up `main.go`.** 6,126 lines and about 20 `global*` singletons.
    Move to packages behind an `App` struct, with its own HTTP mux and server
    timeouts.

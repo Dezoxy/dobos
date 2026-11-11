@@ -3,7 +3,7 @@ package torrstor
 import (
 	"sync"
 
-	"tiramisu/internal/gostorm/torr/storage"
+	"flodni/internal/gostorm/torr/storage"
 
 	"github.com/anacrolix/torrent/metainfo"
 	ts "github.com/anacrolix/torrent/storage"
