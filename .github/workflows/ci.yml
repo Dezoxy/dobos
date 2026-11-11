@@ -63,9 +63,9 @@ jobs:
           go list ./... | grep -v 'internal/anacrolix-torrent' | xargs -r go test -race -count=1
       # The vendored engine is its own module, so ./... above never reaches it. Its
       # private-torrent guards pin CLAUDE.md hard rule 3.
-      - name: Engine private-torrent tests
+      - name: Engine private-torrent and request-server tests
         working-directory: internal/anacrolix-torrent
-        run: go test -race -count=1 -run Private .
+        run: go test -race -count=1 -run 'Private|PeerRequestServer' .
 
   workflow-lint:
     name: Workflow lint (actionlint, zizmor)
