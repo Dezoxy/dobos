@@ -55,6 +55,13 @@ Bugs and data-loss risks. None open.
   `/stream` responses are long-lived, so a write timeout does not fit; read
   header and idle timeouts do.
 
+- **An `App` struct instead of package-level state.** The FUSE handle, the
+  pump, the webhook and the cleanup manager share seven package-level maps
+  (`activeHandles`, `activePumps`, `playbackRegistry`, `pumpTimers`,
+  `priorityTimers`, `inFlightFetches`, `inFlightPrefetches`). Moving them
+  behind one struct needs unit tests on the read path first; today only the
+  end-to-end test covers `readInner` (about 690 lines in `handle.go`).
+
 ## Nice to have
 
 - **Move fork-era code out of `main.go`** ahead of the full split, since it

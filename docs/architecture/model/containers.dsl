@@ -8,7 +8,7 @@ flodni = softwareSystem "Flodni" "Presents torrents as ordinary media files and 
         vfs = component "Virtual Filesystem" "Serves reads on stub files by asking the engine for the byte range. internal/vfs." "Go, libfuse3" "Layer Runtime"
         engine = component "Torrent Engine" "GoStorm on a vendored anacrolix/torrent: sessions, piece priority, read-ahead and the piece cache. internal/gostorm." "Go" "Layer Runtime"
         library = component "Library Manager" "Turns a torrent into named stub files, and replaces or removes them. internal/library." "Go" "Layer Runtime"
-        control = component "Control API and Panel" "HTTP API and dashboard for configuration, library operations and health. main.go, internal/monitor." "Go net/http" "Layer Runtime,Web UI,Unauthenticated"
+        control = component "Control API and Panel" "HTTP API and control panel for configuration, library operations and metrics. main.go, internal/library." "Go net/http" "Layer Runtime,Web UI,Unauthenticated"
         warmup = component "Index Cache" "Keeps each file's head and index bytes on disk so a scan or a seek answers before the swarm does. internal/warmup." "Go" "Layer Runtime"
     }
 
