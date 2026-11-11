@@ -19,7 +19,7 @@ type TorrentStats struct {
 	FileStats   []FileStat `json:"file_stats"`
 }
 
-// GoStorm is the engine API the library manager needs. *engines.GoStormClient
+// GoStorm is the engine API the library manager needs. *GoStormClient
 // implements it; tests substitute a fake.
 type GoStorm interface {
 	AddTorrent(ctx context.Context, magnet, title string) (string, error)

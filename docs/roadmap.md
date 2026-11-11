@@ -40,7 +40,9 @@ a switch or calls out to third parties.
    the engines' log files use.
 8. **Remove music and audiobooks.** `internal/musicimport`,
    `cmd/musicimport`, `internal/audio` and the audio parts of
-   `internal/library`, `internal/metadb`, `startup.go` and `main.go`.
+   `internal/library`, `internal/metadb`, `startup.go` and `main.go`, then
+   `internal/prowlarr`, `Config.Prowlarr` and `music_discovery`, which only
+   the music import still uses.
 
 ## Done
 
@@ -60,3 +62,9 @@ a switch or calls out to third parties.
 - 2026-11-11, trim step 6: private torrents get no public trackers from the
   library, GoStorm's retrackers or a stored spec on wake, and the engine
   knows a torrent is private before its DHT announcer can run.
+- 2026-11-11, trim step 7: the scheduler, the movie, TV and watchlist
+  engines, the TMDB, Torrentio and Rotten Tomatoes clients, the sync caches,
+  their control panel cards and `Config.LogDir` are removed. The Prowlarr
+  client and `prowlarr` config key stay for `cmd/musicimport` until step 8;
+  the control panel no longer exposes them. The GoStorm client moved into
+  `internal/library`.

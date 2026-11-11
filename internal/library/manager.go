@@ -46,7 +46,7 @@ type Config struct {
 	// InvalidatePath, when set, drops the FUSE layer's cached state for a removed stub.
 	InvalidatePath func(string)
 	// Blacklist, when set, records a removed release the way the FUSE unlink handler
-	// does, so the sync engines do not add it back. Called only when the caller asks.
+	// does, so the title is not filed back by mistake. Called only when the caller asks.
 	Blacklist func(path, hash string) error
 	// Gaps, when set, reports the episodes the reaper removed and has not been able to
 	// replace. Read-only: what to do about a hole is a decision for the client, which
@@ -90,7 +90,7 @@ type Config struct {
 }
 
 // Manager adds and removes library entries on behalf of external clients: it does what
-// the sync engines do for one title, without any of the discovery.
+// the catalogue sync used to do for one title, without any of the discovery.
 type Manager struct {
 	cfg Config
 
@@ -190,8 +190,8 @@ type RemoveRequest struct {
 	// and Prefix are mutually exclusive.
 	Prefix string `json:"prefix"`
 	Hash   string `json:"hash"`
-	// Blacklist keeps the release out: without it the sync engines are free to add the
-	// title back on their next run, which is what you want when removing to upgrade
+	// Blacklist keeps the release out: without it a later add is free to file the
+	// title back, which is what you want when removing to upgrade
 	// and not what you want when removing for good.
 	Blacklist bool `json:"blacklist"`
 	// DropTorrent (audio only) also removes the torrent and its failure counter once

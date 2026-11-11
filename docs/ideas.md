@@ -35,11 +35,11 @@ Bugs and data-loss risks.
   the new ones are confirmed readable (preferred), a grace period, or never
   replace automatically.
 - **Stub and config writes are not atomic** (`WriteStub` in
-  `internal/library/naming.go:235`, `Save` in
-  `internal/config/config.go:386`). A crash mid-write leaves a truncated
+  `internal/library/naming.go:222`, `Save` in
+  `internal/config/config.go:196`). A crash mid-write leaves a truncated
   file. Write to a temporary file, sync, rename.
 - **The control server's start error is discarded and it has no timeouts**
-  (`main.go:5464`). A port conflict is silent, and a slow client can hold a
+  (`main.go:5124`). A port conflict is silent, and a slow client can hold a
   connection open forever.
 
 ## Should improve
