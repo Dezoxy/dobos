@@ -143,7 +143,7 @@ func decode(r *http.Request, dst interface{}) error {
 func writeJSON(w http.ResponseWriter, status int, body interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(body)
+	_ = json.NewEncoder(w).Encode(body) // headers are sent; a dead client is not actionable
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

@@ -79,7 +79,7 @@ func run(out, flodni string, peerPort, trackerPort int) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(dataDir)
+	defer func() { _ = os.RemoveAll(dataDir) }() // scratch space
 
 	sum, err := writeFixture(filepath.Join(dataDir, releaseName))
 	if err != nil {
@@ -178,7 +178,7 @@ func writeRandom(path string, seed byte, size int64, tee io.Writer) error {
 		w = io.MultiWriter(f, tee)
 	}
 	if _, err := io.CopyN(w, rand.NewChaCha8(key), size); err != nil {
-		f.Close()
+		_ = f.Close() // the copy error is the one reported
 		return err
 	}
 	return f.Close()
@@ -211,7 +211,7 @@ func startTracker(port int, h http.Handler) (stop func()) {
 			log.Fatalf("FAIL: announce server: %v", err)
 		}
 	}()
-	return func() { srv.Close() }
+	return func() { _ = srv.Close() }
 }
 
 // newClient is the seeding client: TCP only, no discovery beyond the tracker.

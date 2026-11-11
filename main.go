@@ -336,7 +336,7 @@ func main() {
 			// Migrate JSON files if needed
 			if err := stateDB.MigrateFromJSON(GetStateDir()); err != nil {
 				logger.Printf("WARNING: StateDB migration failed: %v (falling back to JSON)", err)
-				stateDB.Close()
+				_ = stateDB.Close() // already falling back to JSON
 				stateDB = nil
 			} else {
 				// Wire up DB to InodeMap, then reload from DB (covers boot 2+ where JSON is gone)
@@ -456,7 +456,7 @@ func main() {
 		shortStream, shortFetch := native.ShortReadCounts()
 		repairedStream, unfilledStream := native.ShortReadRepairCounts()
 
-		fmt.Fprintf(w, `{"version":"%s", "config_source":"%s", "uptime":"%s", "cache_entries":%d, "cache_size_mb":%.2f, "cleanup_hashes":%d, "cleanup_offsets":%d, "cleanup_activities":%d, "locks_total":%d, "master_concurrency_limit":%d, "streaming_threshold_kb":%d, "config_preload_workers":%d, "max_conns_per_host":%d, "read_ahead_total_bytes":%d, "read_ahead_active_bytes":%d, "read_ahead_stale_bytes":%d, "read_ahead_entries":%d, "read_ahead_budget":%d, "read_ahead_percent":%.2f, "read_ahead_active_percent":%.2f, "read_ahead_stale_percent":%.2f, "warmup_duration_buckets_lt_2_5_10_15_30_60_120_gte120s":%s, "hedge_trigger_count":%d, "hedge_circuit_open":%t, "fetch_singleflight_dedup":%d, "peer_eject_count":%d, "v304_banned_peers":%d, "fuse_short_reads":%d, "fuse_short_reads_repaired":%d, "fuse_short_reads_failed":%d, "short_read_stream":%d, "short_read_fetch":%d, "short_read_repaired":%d, "short_read_unfilled":%d, "peer_conns_tcp":%d, "peer_conns_utp":%d, "peer_rated_tcp":%d, "peer_rated_utp":%d, "peer_useful_bps_tcp":%.0f, "peer_useful_bps_utp":%.0f, "peer_eject_count_utp":%d, "peer_churn_count":%d, "peer_churn_count_utp":%d, "deadline_pieces":%d, "gradient2_peers":%d, "gradient2_backing_off":%d, "gradient2_limit_min":%d, "gradient2_limit_max":%d}`,
+		_, _ = fmt.Fprintf(w, `{"version":"%s", "config_source":"%s", "uptime":"%s", "cache_entries":%d, "cache_size_mb":%.2f, "cleanup_hashes":%d, "cleanup_offsets":%d, "cleanup_activities":%d, "locks_total":%d, "master_concurrency_limit":%d, "streaming_threshold_kb":%d, "config_preload_workers":%d, "max_conns_per_host":%d, "read_ahead_total_bytes":%d, "read_ahead_active_bytes":%d, "read_ahead_stale_bytes":%d, "read_ahead_entries":%d, "read_ahead_budget":%d, "read_ahead_percent":%.2f, "read_ahead_active_percent":%.2f, "read_ahead_stale_percent":%.2f, "warmup_duration_buckets_lt_2_5_10_15_30_60_120_gte120s":%s, "hedge_trigger_count":%d, "hedge_circuit_open":%t, "fetch_singleflight_dedup":%d, "peer_eject_count":%d, "v304_banned_peers":%d, "fuse_short_reads":%d, "fuse_short_reads_repaired":%d, "fuse_short_reads_failed":%d, "short_read_stream":%d, "short_read_fetch":%d, "short_read_repaired":%d, "short_read_unfilled":%d, "peer_conns_tcp":%d, "peer_conns_utp":%d, "peer_rated_tcp":%d, "peer_rated_utp":%d, "peer_useful_bps_tcp":%.0f, "peer_useful_bps_utp":%.0f, "peer_eject_count_utp":%d, "peer_churn_count":%d, "peer_churn_count_utp":%d, "deadline_pieces":%d, "gradient2_peers":%d, "gradient2_backing_off":%d, "gradient2_limit_min":%d, "gradient2_limit_max":%d}`,
 			AppVersion,
 			gc().ConfigPath,
 			time.Since(startTime),
@@ -483,7 +483,7 @@ func main() {
 	mux.HandleFunc("/metrics/profiling", func(w http.ResponseWriter, r *http.Request) {
 		totalReads, cacheHits, httpFetches, streamingReads, avgHTTPLatency, avgCacheLatency, cacheHitRate := globalProfilingStats.Stats()
 
-		fmt.Fprintf(w, `{"version":"%s", "total_reads":%d, "cache_hits":%d, "cache_hit_rate_pct":%.2f, "http_fetches":%d, "streaming_reads":%d, "non_streaming_reads":%d, "avg_http_latency_ms":%.2f, "avg_cache_latency_ms":%.2f, "max_conns_per_host":%d}`,
+		_, _ = fmt.Fprintf(w, `{"version":"%s", "total_reads":%d, "cache_hits":%d, "cache_hit_rate_pct":%.2f, "http_fetches":%d, "streaming_reads":%d, "non_streaming_reads":%d, "avg_http_latency_ms":%.2f, "avg_cache_latency_ms":%.2f, "max_conns_per_host":%d}`,
 			AppVersion,
 			totalReads,
 			cacheHits,
@@ -497,7 +497,7 @@ func main() {
 	})
 
 	mux.HandleFunc("/metrics/ttff", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"sessions_completed":%d,"sessions_filtered":%d,`+
+		_, _ = fmt.Fprintf(w, `{"sessions_completed":%d,"sessions_filtered":%d,`+
 			`"open_to_header_ms":%s,"open_to_deep_read_ms":%s,"seek_latency_ms":%s,`+
 			`"read_latency_ms":{"warmup_head":%s,"warmup_tail":%s,"racache_hit":%s,"fetch_block":%s},`+
 			`"stalls":{"count":%d,"max_ms":%d}}`,
@@ -510,13 +510,13 @@ func main() {
 
 	mux.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
-		w.Write(settingsHTML)
+		_, _ = w.Write(settingsHTML)
 	})
 
 	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(gc())
+			_ = json.NewEncoder(w).Encode(gc())
 			return
 		}
 		if r.Method == "POST" {
@@ -573,7 +573,7 @@ func main() {
 		defer resp.Body.Close()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)
-		io.Copy(w, resp.Body)
+		_, _ = io.Copy(w, resp.Body)
 	})
 
 	mux.HandleFunc("/api/restart", func(w http.ResponseWriter, r *http.Request) {
@@ -583,7 +583,7 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
-		w.Write([]byte(`{"ok":true}`))
+		_, _ = w.Write([]byte(`{"ok":true}`))
 		// Flush response before exiting
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
@@ -594,7 +594,9 @@ func main() {
 		go func() {
 			time.Sleep(150 * time.Millisecond)
 			p, _ := os.FindProcess(os.Getpid())
-			p.Signal(syscall.SIGTERM)
+			if err := p.Signal(syscall.SIGTERM); err != nil {
+				logger.Printf("WARNING: restart requested but SIGTERM to self failed: %v", err)
+			}
 		}()
 	})
 
@@ -725,7 +727,9 @@ func main() {
 
 		// Try to unmount gracefully
 		if server != nil {
-			server.Unmount()
+			if err := server.Unmount(); err != nil {
+				logger.Printf("WARNING: unmount failed: %v", err)
+			}
 		}
 
 		if restartRequested.Load() {
@@ -794,7 +798,7 @@ func startHandleGC() {
 				if idle > 1*time.Hour {
 					logger.Printf("[V239] Force closing orphan handle (idle 1h): %s", path)
 					// We simulate a FUSE Release to cleanup all resources
-					h.Release(context.Background())
+					_ = h.Release(context.Background())
 					count++
 				}
 				return true

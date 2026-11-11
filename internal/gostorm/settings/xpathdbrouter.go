@@ -37,7 +37,9 @@ func (v *XPathDBRouter) RegisterRoute(db GoStormDB, xPath string) error {
 
 	// First DB becomes Default DB with default route
 	if len(v.dbs) == 0 && len(newRoute) != 0 {
-		v.RegisterRoute(db, "")
+		if err := v.RegisterRoute(db, ""); err != nil {
+			return err
+		}
 	}
 
 	if !slices.Contains(v.dbs, db) {

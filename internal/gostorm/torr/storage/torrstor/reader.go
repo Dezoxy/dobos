@@ -224,7 +224,7 @@ func (r *Reader) Close() {
 	r.readerOff()
 
 	if len(r.file.Torrent().Files()) > 0 {
-		r.Reader.Close()
+		_ = r.Reader.Close() // read-only reader
 	}
 	safeGo(func() {
 		// Serialised with cleanPieces: both rebuild the shared pieceInRange bitmap.
@@ -325,7 +325,7 @@ func (r *Reader) endIO() {
 func (r *Reader) resume() {
 	if !r.isUse {
 		if pos, err := r.Reader.Seek(0, io.SeekCurrent); err == nil && pos == 0 {
-			r.Reader.Seek(r.offset, io.SeekStart)
+			_, _ = r.Reader.Seek(r.offset, io.SeekStart) // a non-negative absolute seek cannot fail
 		}
 		// Mark in use before restoring readahead: SetReadahead only propagates while in use, so
 		// restoring it in the other order leaves the underlying reader parked at zero.
@@ -350,7 +350,7 @@ func (r *Reader) readerOff() {
 		r.isUse = false
 		r.cache.activeReaders.Add(-1)
 		if r.offset > 0 {
-			r.Reader.Seek(0, io.SeekStart)
+			_, _ = r.Reader.Seek(0, io.SeekStart) // a non-negative absolute seek cannot fail
 		}
 	}
 }

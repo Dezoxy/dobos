@@ -39,7 +39,7 @@ func Start() {
 		log.TLogln("Check web ssl port", settings.Args.SslPort)
 		l, err := net.Listen("tcp", settings.Args.IP+":"+settings.Args.SslPort)
 		if l != nil {
-			l.Close()
+			_ = l.Close() // port probe only
 		}
 		if err != nil {
 			log.TLogln("Port", settings.Args.SslPort, "already in use! Please set different ssl port for HTTPS. Abort")
@@ -54,7 +54,7 @@ func Start() {
 	log.TLogln("Check web port", settings.Args.Port)
 	l, err := net.Listen("tcp", settings.Args.IP+":"+settings.Args.Port)
 	if l != nil {
-		l.Close()
+		_ = l.Close() // port probe only
 	}
 	if err != nil {
 		log.TLogln("Port", settings.Args.Port, "already in use! Please set different port for HTTP. Abort")
@@ -120,7 +120,11 @@ func removeAllFiles(path string) {
 	}
 	for _, f := range files {
 		name := filepath.Join(path, f.Name())
-		os.Remove(name)
+		if err := os.Remove(name); err != nil {
+			log.TLogln("Error remove cache file:", err)
+		}
 	}
-	os.Remove(path)
+	if err := os.Remove(path); err != nil {
+		log.TLogln("Error remove cache dir:", err)
+	}
 }

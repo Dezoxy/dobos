@@ -82,23 +82,29 @@ func MakeCertKeyFiles(ips []string) (string, string) {
 		log.TLogln("Error creating certificate file:", err)
 		os.Exit(1)
 	}
-	defer certFile.Close()
 
 	privFile, err := os.Create(filepath.Join(settings.Path, "server.key"))
 	if err != nil {
 		log.TLogln("Error creating private key file:", err)
 		os.Exit(1)
 	}
-	defer privFile.Close()
 
 	_, err = certFile.Write(certPEM)
 	if err != nil {
 		log.TLogln("Error writing certificate file:", err)
 		os.Exit(1)
 	}
+	if err = certFile.Close(); err != nil {
+		log.TLogln("Error closing certificate file:", err)
+		os.Exit(1)
+	}
 	_, err = privFile.Write(privPEM)
 	if err != nil {
 		log.TLogln("Error writing private key file:", err)
+		os.Exit(1)
+	}
+	if err = privFile.Close(); err != nil {
+		log.TLogln("Error closing private key file:", err)
 		os.Exit(1)
 	}
 	log.TLogln("Self-signed certificate and private key generated successfully.")
@@ -140,7 +146,7 @@ func VerifyCertKeyFiles(certFile, keyFile, port string) error {
 	if err != nil {
 		return err
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }() // listener opened only to verify the pair
 	log.TLogln("Certificate and key are valid.")
 	return nil
 }

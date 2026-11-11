@@ -66,6 +66,9 @@ Bugs and data-loss risks. None open.
 
 - **Move fork-era code out of `main.go`** ahead of the full split, since it
   is the best-understood part.
+- **Structured logging.** 222 log call sites use `log.Printf`. Moving them
+  to `slog` with fields would help log search, but each line needs its own
+  key choices; worth doing when logs ship to a central store.
 - **A shutdown deadline**, so a hung unmount cannot block a restart forever.
 - **CodeQL.** Left out for now: the cgo FUSE build may defeat its automatic
   build. Needs a manual build step.

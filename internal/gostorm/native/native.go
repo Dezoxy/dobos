@@ -523,7 +523,9 @@ func streamRange(ctx context.Context, hash string, fileID int, offset, length in
 	resp := &PipeResponseWriter{writer: pw, header: make(http.Header)}
 	go func() {
 		defer pw.Close()
-		t.Stream(fileID, req, resp)
+		if err := t.Stream(fileID, req, resp); err != nil {
+			log.Printf("[NativeReader] streamRange error hash=%s fileID=%d: %v", hash, fileID, err)
+		}
 	}()
 	return nil
 }
@@ -670,7 +672,9 @@ func (c *NativeClient) FetchBlock(hash string, fileID int, offset int64, p []byt
 
 	go func() {
 		defer pw.Close()
-		t.Stream(fileID, req, resp)
+		if err := t.Stream(fileID, req, resp); err != nil {
+			log.Printf("[NativeReader] FetchBlock stream error hash=%s fileID=%d: %v", hash, fileID, err)
+		}
 	}()
 
 	// V283-Fix: Ensure io.ReadFull is unblocked if context expires (8s timeout).

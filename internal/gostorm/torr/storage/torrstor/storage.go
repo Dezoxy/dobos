@@ -49,7 +49,7 @@ func (s *Storage) CloseHash(hash metainfo.Hash) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if ch, ok := s.caches[hash]; ok {
-		ch.Close()
+		_ = ch.Close() // Cache.Close only returns nil
 		delete(s.caches, hash)
 	}
 }
@@ -58,7 +58,7 @@ func (s *Storage) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, ch := range s.caches {
-		ch.Close()
+		_ = ch.Close() // Cache.Close only returns nil
 	}
 	s.caches = make(map[metainfo.Hash]*Cache)
 	return nil

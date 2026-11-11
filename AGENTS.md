@@ -63,7 +63,9 @@ A change that violates one is wrong even if it works.
 ## Conventions
 
 - **Go 1.26**, cgo for FUSE (`libfuse3-dev`, `pkg-config`), Linux only.
-  `make go-check` runs gofmt, build and vet; `make go-test` runs the tests
+  `make go-check` runs gofmt, build, vet and errcheck (an ignored error
+  needs a check, a log line or an explicit `_ =`; the few calls ignored
+  everywhere are in `.errcheck-excludes`); `make go-test` runs the tests
   with the race detector. `make e2e` seeds a private torrent and reads it
   through FUSE in the built image, then replaces a TV episode with a second
   release and refuses a third that never delivers (needs Docker and

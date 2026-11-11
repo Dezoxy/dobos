@@ -50,6 +50,8 @@ jobs:
       - run: go build ./...
       - name: Vet
         run: go list ./... | grep -v 'internal/anacrolix-torrent' | xargs -r go vet
+      - name: Unchecked errors
+        run: make errcheck
       - name: Check the module files are tidy
         run: go mod tidy -diff
       # Say how many test files ran: the suite is still small.

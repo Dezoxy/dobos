@@ -113,7 +113,7 @@ func SetBTSets(sets *BTSets) {
 
 		go func(s *BTSets) {
 			rootPath := filepath.Clean(s.TorrentsSavePath)
-			filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, err error) error {
+			err := filepath.WalkDir(rootPath, func(path string, d fs.DirEntry, err error) error {
 				if err != nil {
 					return err
 				}
@@ -136,6 +136,10 @@ func SetBTSets(sets *BTSets) {
 				}
 				return nil
 			})
+			// io.EOF is the "found it" signal returned above.
+			if err != nil && err != io.EOF {
+				log.TLogln("Error scan for .tsc directory:", err)
+			}
 		}(sets)
 	}
 

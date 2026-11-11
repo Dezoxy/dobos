@@ -36,7 +36,7 @@ func torrentUpload(c *gin.Context) {
 		c.AbortWithError(http.StatusBadRequest, err)
 		return
 	}
-	defer form.RemoveAll()
+	defer func() { _ = form.RemoveAll() }() // temp upload files; nothing to recover
 
 	save := len(form.Value["save"]) > 0
 	title := ""
@@ -64,7 +64,7 @@ func torrentUpload(c *gin.Context) {
 			log.TLogln("error upload torrent:", err)
 			continue
 		}
-		defer torrFile.Close()
+		defer func() { _ = torrFile.Close() }() // read-only
 
 		spec, err := utils.ParseFile(torrFile)
 		if err != nil {

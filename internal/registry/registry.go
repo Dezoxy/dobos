@@ -208,7 +208,9 @@ func removeFromRegistryJSON(filePath string) {
 	}
 
 	if removed {
-		saveRegistryLocked(path, registry)
+		if err := saveRegistryLocked(path, registry); err != nil {
+			logger.Printf("[Registry] WARNING: could not save registry after removing %s: %v", filepath.Base(filePath), err)
+		}
 	}
 }
 
@@ -218,12 +220,12 @@ func saveRegistryLocked(path string, registry map[string]EpisodeEntry) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // the checked Close is at the end of the write path
 
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}
-	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }() // closing the file drops the lock anyway
 
 	data, err := json.Marshal(registry)
 	if err != nil {
@@ -236,8 +238,10 @@ func saveRegistryLocked(path string, registry map[string]EpisodeEntry) error {
 	if _, err := f.Seek(0, 0); err != nil {
 		return err
 	}
-	_, err = f.Write(data)
-	return err
+	if _, err = f.Write(data); err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 func unmarshalJSON(data []byte, target interface{}) error {

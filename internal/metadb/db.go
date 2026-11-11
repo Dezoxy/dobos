@@ -43,12 +43,12 @@ func New(dbPath string, logger Logger) (*DB, error) {
 	}
 
 	if err := db.applyPragmas(); err != nil {
-		d.Close()
+		_ = d.Close() // the pragma error is the one reported
 		return nil, fmt.Errorf("metadb: pragmas: %w", err)
 	}
 
 	if err := db.ExecSchema(); err != nil {
-		d.Close()
+		_ = d.Close() // the schema error is the one reported
 		return nil, fmt.Errorf("metadb: schema: %w", err)
 	}
 

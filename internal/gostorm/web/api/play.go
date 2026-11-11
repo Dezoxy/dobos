@@ -7,6 +7,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"flodni/internal/gostorm/log"
 	"flodni/internal/gostorm/torr"
 	"flodni/internal/gostorm/torr/state"
 	"flodni/internal/gostorm/web/api/utils"
@@ -81,5 +82,7 @@ func play(c *gin.Context) {
 		return
 	}
 
-	tor.Stream(index, c.Request, c.Writer)
+	if err := tor.Stream(index, c.Request, c.Writer); err != nil {
+		log.TLogln("Error stream:", err)
+	}
 }

@@ -222,15 +222,15 @@ func (v *JsonDB) writeMapAsJsonFile(filename string, o map[string]interface{}) e
 		return err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }() // gone after a successful rename
 
 	if _, err := tmp.Write(fileData); err != nil {
-		tmp.Close()
+		_ = tmp.Close() // the write error is the one reported
 		v.log(fmt.Sprintf("writeMapAsJsonFile path: %s write error", path), err)
 		return err
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
+		_ = tmp.Close() // the sync error is the one reported
 		v.log(fmt.Sprintf("writeMapAsJsonFile path: %s sync error", path), err)
 		return err
 	}

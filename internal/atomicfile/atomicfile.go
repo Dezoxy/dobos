@@ -23,8 +23,9 @@ func WriteFile(path string, data []byte, perm os.FileMode) (err error) {
 	tmpName := tmp.Name()
 	defer func() {
 		if err != nil {
-			tmp.Close()
-			os.Remove(tmpName)
+			// The write error is the one to report; cleanup is best effort.
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
 		}
 	}()
 
@@ -45,8 +46,8 @@ func WriteFile(path string, data []byte, perm os.FileMode) (err error) {
 		return err
 	}
 	if d, derr := os.Open(dir); derr == nil {
-		d.Sync()
-		d.Close()
+		_ = d.Sync() // best effort, see above
+		_ = d.Close()
 	}
 	return nil
 }
