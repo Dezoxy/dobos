@@ -257,6 +257,8 @@ func (me *PeerConn) deletePeerRequest(r Request) {
 	}
 	state.allocReservation.Drop()
 	delete(me.peerRequests, r)
+	// Flodni fix: the freed allocation may have granted a waiting request.
+	me.startPeerRequestServer()
 }
 
 func (cn *PeerConn) choke(msg messageWriter) (more bool) {
@@ -642,6 +644,14 @@ again:
 	if !c.closed.IsSet() {
 		for r, state := range c.peerRequests {
 			if state.data != nil {
+				continue
+			}
+			// Flodni fix: never wait on a request whose allocation is not granted yet. Grants
+			// go to requests in arrival order, but this loop visits them in map order, so
+			// waiting on a later one left earlier granted requests unread: nothing was sent,
+			// so no allocation was released, until the peer's request timeout (~35 s) cancelled
+			// them. A release or delete restarts the server (sendChunk, deletePeerRequest).
+			if state.allocReservation.WouldBlock() {
 				continue
 			}
 			c.servePeerRequest(r, state)
@@ -1147,6 +1157,8 @@ func (c *PeerConn) tickleWriter() {
 func (c *PeerConn) sendChunk(r Request, msg func(pp.Message) bool, state *peerRequestState) (more bool) {
 	c.lastChunkSent = time.Now()
 	state.allocReservation.Release()
+	// Flodni fix: the released allocation may have granted a waiting request.
+	c.startPeerRequestServer()
 	return msg(pp.Message{
 		Type:  pp.Piece,
 		Index: r.Index,

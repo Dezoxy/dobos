@@ -113,9 +113,17 @@ Releases and deployment are scheduled separately.
    through an interface instead of the concrete client, and tests cover the
    fetch, prefetch and pump branches that only the end-to-end test reaches
    today. This is the last prerequisite for the `App` struct.
+6. **No stall after a tail probe.** A read that follows a tail read stalls
+   for about 30 s while it waits on a pump left in its grace period. Players
+   probe the end of a file before playing it, so this delays real starts.
 
 ## Done
 
+- 2026-11-11, reliability step 3: the engine's upload side waited on a request
+  it could not yet allocate buffer for while granted requests went unread, so a
+  seeder at the default 1 MiB per-peer allowance sent nothing until the
+  leecher's ~35 s timeout; it now skips ungranted requests and restarts on a
+  release; the end-to-end test gains a slow-seeder variant.
 - 2026-11-11, reliability step 2: shutdown saves state, then unmounts with a
   lazy detach after 5 s and exits by 8 s at the latest, inside Docker's
   default 10 s grace period.

@@ -48,12 +48,17 @@ const (
 	announce   = "http://seeder:6969/announce"
 )
 
+// engineDefaultAlloc leaves MaxAllocPeerRequestDataPerConn at the engine default.
+var engineDefaultAlloc bool
+
 func main() {
 	out := flag.String("out", "/e2e", "shared directory for expected.sha256 and fuse_path")
 	flodni := flag.String("flodni", "flodni", "hostname of the Flodni container")
 	peerPort := flag.Int("peer-port", 51413, "TCP peer port")
 	trackerPort := flag.Int("tracker-port", 6969, "HTTP announce port")
 	mode := flag.String("mode", "stream", "stream (one movie) or replacement (three episode releases)")
+	flag.BoolVar(&engineDefaultAlloc, "engine-default-alloc", false,
+		"keep the engine's 1 MiB per-peer request allowance (a slow real peer) instead of 64 MiB")
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[seeder] ")
@@ -243,7 +248,10 @@ func newClient(dataDir string, peerPort int) (*torrent.Client, error) {
 	cfg.Seed = true
 	// The 1 MiB default drops most of the leecher's pipelined requests, which then
 	// wait out a ~35 s request timeout: reads crawled at 600 kB/s with stalls.
-	cfg.MaxAllocPeerRequestDataPerConn = 64 << 20
+	// The slow-seeder variant keeps it, to exercise exactly that.
+	if !engineDefaultAlloc {
+		cfg.MaxAllocPeerRequestDataPerConn = 64 << 20
+	}
 	cl, err := torrent.NewClient(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("client: %w", err)
