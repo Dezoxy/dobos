@@ -137,9 +137,7 @@ func stream(c *gin.Context) {
 
 	// return play if query
 	if play {
-		if err := tor.Stream(index, c.Request, c.Writer); err != nil {
-			log.TLogln("Error stream:", err)
-		}
+		streamOrFail(c, tor, index)
 		return
 	}
 }
@@ -247,11 +245,22 @@ func streamNoAuth(c *gin.Context) {
 
 	// return play if query
 	if play {
-		if err := tor.Stream(index, c.Request, c.Writer); err != nil {
-			log.TLogln("Error stream:", err)
-		}
+		streamOrFail(c, tor, index)
 		return
 	}
 	c.Header("WWW-Authenticate", "Basic realm=Authorization Required")
 	c.AbortWithStatus(http.StatusUnauthorized)
+}
+
+// streamOrFail serves a file of tor. Stream returns early, before writing anything,
+// when the torrent has no info yet, the file id is unknown or no reader can be made;
+// without a status the client would get an empty 200, so answer 500 instead. Once the
+// response has started, the status is already sent and only the log remains.
+func streamOrFail(c *gin.Context, tor *torr.Torrent, index int) {
+	if err := tor.Stream(index, c.Request, c.Writer); err != nil {
+		log.TLogln("Error stream:", err)
+		if !c.Writer.Written() {
+			c.String(http.StatusInternalServerError, "stream: %v", err)
+		}
+	}
 }
