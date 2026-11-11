@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # End-to-end stream test: a local seeder seeds a private torrent, the real Flodni
 # image adds it through the library API, and the file is read back through FUSE
-# and compared by sha256. Runs two Flodni configs in sequence.
+# and compared by sha256. Runs two Flodni configs in sequence, then a TV
+# replacement scenario (a second release replaces the first, a third that never
+# delivers data is refused).
 #
 #   bash tests/e2e/run.sh [flodni-image] [seeder-image]
 #
 # Test hooks: E2E_CORRUPT_EXPECTED=1 flips the expected hash (the run must fail);
 # E2E_KILL_SEEDER_AFTER_ADD=1 kills the seeder once the add is done (the read must
-# fail within its timeout instead of hanging).
+# fail within its timeout instead of hanging); E2E_REPLACEMENT_EXPECT_SUCCESS_FOR_C=1
+# expects the undeliverable release to be accepted (the replacement variant must
+# fail); E2E_ONLY=<variant> runs just that variant.
 set -euo pipefail
 
 FLODNI_IMAGE=${1:-flodni:ci}
@@ -50,7 +54,7 @@ is_running() {
 write_config() { # variant file
   local variant=$1 file=$2
   case "$variant" in
-    default)
+    default | replacement)
       cat >"$file" <<JSON
 {"telemetry": false, "telemetry_url": "", "scheduler": {"enabled": false},
  "physical_source_path": "$SOURCE_PATH", "fuse_mount_path": "$MOUNT_PATH"}
@@ -68,9 +72,11 @@ JSON
   esac
 }
 
-run_variant() {
+# start_stack variant [seeder args...]: network, Flodni and seeder for one variant.
+start_stack() {
   local variant=$1
-  local dir="$work/$variant"
+  shift
+  dir="$work/$variant"
   mkdir -p "$dir/state" "$dir/out" "$dir/cache"
   chmod 777 "$dir/out" "$dir/cache"
   write_config "$variant" "$dir/config.json"
@@ -86,7 +92,38 @@ run_variant() {
     -v "$dir/config.json:/config.json:ro" -v "$dir/state:/state" \
     -v "$dir/cache:/cache" "$FLODNI_IMAGE" >/dev/null
   docker run -d --name "$seeder" --network "$network" --network-alias seeder \
-    -v "$dir/out:/e2e" "$SEEDER_IMAGE" -out /e2e >/dev/null
+    -v "$dir/out:/e2e" "$SEEDER_IMAGE" -out /e2e "$@" >/dev/null
+}
+
+stop_stack() {
+  docker rm -f "$seeder" "$flodni" >/dev/null
+  docker network rm "$network" >/dev/null
+  seeder="" flodni="" network=""
+}
+
+# wait_for_file path seconds label: wait for a seeder output, failing fast if a
+# container exits.
+wait_for_file() {
+  local file=$1 limit=$2 label=$3 waited=0
+  until [ -s "$file" ]; do
+    if ! is_running "$flodni" || ! is_running "$seeder"; then
+      echo "FAIL ($label): a container exited before $(basename "$file") appeared" >&2
+      dump_diagnostics
+      return 1
+    fi
+    if [ "$waited" -ge "$limit" ]; then
+      echo "FAIL ($label): no $(basename "$file") after ${limit}s" >&2
+      dump_diagnostics
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
+run_variant() {
+  local variant=$1 dir
+  start_stack "$variant"
 
   local waited=0
   until [ -s "$dir/out/expected.sha256" ] && [ -s "$dir/out/fuse_path" ]; do
@@ -140,11 +177,101 @@ run_variant() {
   fi
   echo "PASS ($variant): sha256 $actual" >&2
 
-  docker rm -f "$seeder" "$flodni" >/dev/null
-  docker network rm "$network" >/dev/null
-  seeder="" flodni="" network=""
+  stop_stack
 }
 
-run_variant default
-run_variant index-cache
+# check_sha label path want: full read through FUSE, compared by sha256.
+check_sha() {
+  local label=$1 path=$2 want=$3 got
+  if ! got=$(docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sha256sum "$path"); then
+    echo "FAIL (replacement): $label: read failed or timed out" >&2
+    dump_diagnostics
+    return 1
+  fi
+  got=${got%% *}
+  if [ "$got" != "$want" ]; then
+    echo "FAIL (replacement): $label: sha256 mismatch: got $got, want $want" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($label): sha256 $got" >&2
+}
+
+# stub_gone path: the old stub must disappear from the mount (polled briefly, as
+# FUSE may cache the directory).
+stub_gone() {
+  local tries=0
+  while [ "$tries" -lt 10 ]; do
+    tries=$((tries + 1))
+    docker exec "$flodni" test ! -e "$1" && return 0
+    sleep 1
+  done
+  return 1
+}
+
+run_replacement() {
+  local dir t0
+  t0=$SECONDS
+  start_stack replacement -mode replacement
+  local out="$dir/out"
+
+  wait_for_file "$out/a.path" "$WAIT_SECONDS" replacement
+  echo "step add A: $((SECONDS - t0))s since start" >&2
+  local path_a path_b
+  path_a="$MOUNT_PATH/$(cat "$out/a.path")"
+  check_sha "A read" "$path_a" "$(cat "$out/a.sha256")"
+  : >"$out/go-b"
+
+  t0=$SECONDS
+  wait_for_file "$out/b.path" "$WAIT_SECONDS" replacement
+  echo "step add B (replaces A): $((SECONDS - t0))s" >&2
+  path_b="$MOUNT_PATH/$(cat "$out/b.path")"
+  if [ "$path_a" = "$path_b" ]; then
+    echo "FAIL (replacement): B filed at A's path $path_a" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if ! stub_gone "$path_a"; then
+    echo "FAIL (replacement): A's stub $path_a still exists after B replaced it" >&2
+    dump_diagnostics
+    return 1
+  fi
+  check_sha "B read" "$path_b" "$(cat "$out/b.sha256")"
+  : >"$out/go-c"
+
+  t0=$SECONDS
+  wait_for_file "$out/c.status" "$WAIT_SECONDS" replacement
+  echo "step add C (refused): $((SECONDS - t0))s, seeder measured $(cat "$out/c.seconds")s" >&2
+  local want_status=422 status
+  if [ "${E2E_REPLACEMENT_EXPECT_SUCCESS_FOR_C:-}" = "1" ]; then
+    want_status=200
+    echo "E2E_REPLACEMENT_EXPECT_SUCCESS_FOR_C: expecting status $want_status" >&2
+  fi
+  status=$(cat "$out/c.status")
+  if [ "$status" != "$want_status" ]; then
+    echo "FAIL (replacement): add C: status $status, want $want_status: $(cat "$out/c.body")" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if ! grep -q 'existing files kept' "$out/c.body"; then
+    echo "FAIL (replacement): add C: body does not say existing files were kept: $(cat "$out/c.body")" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if ! docker exec "$flodni" test -e "$path_b"; then
+    echo "FAIL (replacement): B's stub $path_b is gone after the refused add" >&2
+    dump_diagnostics
+    return 1
+  fi
+  check_sha "B read after refused C" "$path_b" "$(cat "$out/b.sha256")"
+  echo "PASS (replacement): A replaced by B, C refused with $status" >&2
+
+  stop_stack
+}
+
+want_variant() { [ -z "${E2E_ONLY:-}" ] || [ "$E2E_ONLY" = "$1" ]; }
+
+if want_variant default; then run_variant default; fi
+if want_variant index-cache; then run_variant index-cache; fi
+if want_variant replacement; then run_replacement; fi
 echo "e2e: all variants passed" >&2

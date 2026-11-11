@@ -65,7 +65,9 @@ A change that violates one is wrong even if it works.
 - **Go 1.26**, cgo for FUSE (`libfuse3-dev`, `pkg-config`), Linux only.
   `make go-check` runs gofmt, build and vet; `make go-test` runs the tests
   with the race detector. `make e2e` seeds a private torrent and reads it
-  through FUSE in the built image (needs Docker and `/dev/fuse`). The module
+  through FUSE in the built image, then replaces a TV episode with a second
+  release and refuses a third that never delivers (needs Docker and
+  `/dev/fuse`). The module
   and the binary are `flodni`; the `FLODNI_*` environment variables win over
   the older `TIRAMISU_*` names, and persisted file names (`tiramisu.db`,
   `tiramisu.log`) stay as they were.

@@ -4,6 +4,9 @@
 // whose only tracker is its own announce handler, seeds it over TCP, and then
 // files the torrent into a running Flodni through the library API. It leaves
 // the expected sha256 and the FUSE path in a shared directory for run.sh.
+//
+// With -mode replacement it files three single-file episode releases instead:
+// see replacement.go.
 package main
 
 import (
@@ -49,11 +52,21 @@ func main() {
 	flodni := flag.String("flodni", "flodni", "hostname of the Flodni container")
 	peerPort := flag.Int("peer-port", 51413, "TCP peer port")
 	trackerPort := flag.Int("tracker-port", 6969, "HTTP announce port")
+	mode := flag.String("mode", "stream", "stream (one movie) or replacement (three episode releases)")
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("[seeder] ")
 
-	if err := run(*out, *flodni, *peerPort, *trackerPort); err != nil {
+	var err error
+	switch *mode {
+	case "stream":
+		err = run(*out, *flodni, *peerPort, *trackerPort)
+	case "replacement":
+		err = runReplacement(*out, *flodni, *peerPort, *trackerPort)
+	default:
+		err = fmt.Errorf("unknown mode %q", *mode)
+	}
+	if err != nil {
 		log.Fatalf("FAIL: %v", err)
 	}
 }
@@ -86,34 +99,12 @@ func run(out, flodni string, peerPort, trackerPort int) error {
 	log.Printf("own address %s:%d", ip, peerPort)
 
 	// Announce first, so the tracker is up before any peer asks.
-	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", trackerPort),
-		Handler:           announceHandler(ip, peerPort),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("FAIL: announce server: %v", err)
-		}
-	}()
-	defer srv.Close()
+	stopTracker := startTracker(trackerPort, announceHandler(ip, peerPort, nil))
+	defer stopTracker()
 
-	cfg := torrent.NewDefaultClientConfig()
-	cfg.DataDir = dataDir
-	cfg.DefaultStorage = storage.NewFileWithCompletion(dataDir, storage.NewMapPieceCompletion())
-	cfg.ListenPort = peerPort
-	cfg.NoDHT = true
-	cfg.DisablePEX = true
-	cfg.NoDefaultPortForwarding = true
-	cfg.DisableIPv6 = true
-	cfg.DisableUTP = true
-	cfg.Seed = true
-	// The 1 MiB default drops most of the leecher's pipelined requests, which then
-	// wait out a ~35 s request timeout: reads crawled at 600 kB/s with stalls.
-	cfg.MaxAllocPeerRequestDataPerConn = 64 << 20
-	cl, err := torrent.NewClient(cfg)
+	cl, err := newClient(dataDir, peerPort)
 	if err != nil {
-		return fmt.Errorf("client: %w", err)
+		return err
 	}
 	defer cl.Close()
 
@@ -208,6 +199,43 @@ func buildMetaInfo(root string) (*metainfo.MetaInfo, error) {
 	return mi, nil
 }
 
+// startTracker serves the announce handler and returns the function that stops it.
+func startTracker(port int, h http.Handler) (stop func()) {
+	srv := &http.Server{
+		Addr:              fmt.Sprintf(":%d", port),
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatalf("FAIL: announce server: %v", err)
+		}
+	}()
+	return func() { srv.Close() }
+}
+
+// newClient is the seeding client: TCP only, no discovery beyond the tracker.
+func newClient(dataDir string, peerPort int) (*torrent.Client, error) {
+	cfg := torrent.NewDefaultClientConfig()
+	cfg.DataDir = dataDir
+	cfg.DefaultStorage = storage.NewFileWithCompletion(dataDir, storage.NewMapPieceCompletion())
+	cfg.ListenPort = peerPort
+	cfg.NoDHT = true
+	cfg.DisablePEX = true
+	cfg.NoDefaultPortForwarding = true
+	cfg.DisableIPv6 = true
+	cfg.DisableUTP = true
+	cfg.Seed = true
+	// The 1 MiB default drops most of the leecher's pipelined requests, which then
+	// wait out a ~35 s request timeout: reads crawled at 600 kB/s with stalls.
+	cfg.MaxAllocPeerRequestDataPerConn = 64 << 20
+	cl, err := torrent.NewClient(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("client: %w", err)
+	}
+	return cl, nil
+}
+
 func ownIPv4() (net.IP, error) {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil {
@@ -221,9 +249,10 @@ func ownIPv4() (net.IP, error) {
 	return nil, errors.New("no non-loopback IPv4 address")
 }
 
-// announceHandler answers every announce with the seeder itself as the only peer,
-// whatever the event or numwant, in the compact form (BEP 23).
-func announceHandler(ip net.IP, port int) http.Handler {
+// announceHandler answers an announce with the seeder itself as the only peer,
+// whatever the event or numwant, in the compact form (BEP 23). With a non-nil
+// known set, only those info hashes (hex) get the peer; any other gets none.
+func announceHandler(ip net.IP, port int, known map[string]bool) http.Handler {
 	peers := make([]byte, 6)
 	copy(peers, ip)
 	binary.BigEndian.PutUint16(peers[4:], uint16(port))
@@ -234,10 +263,20 @@ func announceHandler(ip net.IP, port int) http.Handler {
 	if err != nil {
 		log.Fatalf("FAIL: announce body: %v", err)
 	}
+	empty, err := bencode.Marshal(map[string]any{"interval": 30, "peers": ""})
+	if err != nil {
+		log.Fatalf("FAIL: announce body: %v", err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/announce", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("announce from %s event=%q", r.RemoteAddr, r.URL.Query().Get("event"))
+		q := r.URL.Query()
+		hash := hex.EncodeToString([]byte(q.Get("info_hash")))
+		log.Printf("announce from %s hash=%.8s event=%q", r.RemoteAddr, hash, q.Get("event"))
 		w.Header().Set("Content-Type", "text/plain")
+		if known != nil && !known[hash] {
+			_, _ = w.Write(empty)
+			return
+		}
 		_, _ = w.Write(body)
 	})
 	return mux
@@ -285,7 +324,7 @@ func waitHTTP(ctx context.Context, url string, limit time.Duration) error {
 // addToLibrary files the torrent through POST /api/library/add and returns the
 // fuse_path of the first file the response lists.
 func addToLibrary(ctx context.Context, flodni, hash string, torrentFile []byte) (string, error) {
-	req := map[string]any{
+	return addAccepted(ctx, flodni, map[string]any{
 		"type":          "movie",
 		"hash":          hash,
 		"torrent_file":  torrentFile,
@@ -293,27 +332,20 @@ func addToLibrary(ctx context.Context, flodni, hash string, torrentFile []byte) 
 		"year":          2026,
 		"release_title": releaseName,
 		"metadata_wait": 60,
-	}
-	body, err := json.Marshal(req)
+	})
+}
+
+// addAccepted posts an add request that must succeed and returns the fuse_path of
+// the first file the response lists.
+func addAccepted(ctx context.Context, flodni string, req map[string]any) (string, error) {
+	status, raw, err := postAdd(ctx, flodni, req)
 	if err != nil {
 		return "", err
 	}
-	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		fmt.Sprintf("http://%s:9080/api/library/add", flodni), bytes.NewReader(body))
-	if err != nil {
-		return "", err
+	if status < 200 || status > 299 {
+		return "", fmt.Errorf("library add: status %d: %s", status, raw)
 	}
-	hreq.Header.Set("Content-Type", "application/json")
-	resp, err := (&http.Client{Timeout: 2 * time.Minute}).Do(hreq)
-	if err != nil {
-		return "", fmt.Errorf("library add: %w", err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return "", fmt.Errorf("library add: status %d: %s", resp.StatusCode, raw)
-	}
-	log.Printf("library add: status %d: %s", resp.StatusCode, raw)
+	log.Printf("library add: status %d: %s", status, raw)
 	var ar struct {
 		Files []struct {
 			FusePath string `json:"fuse_path"`
@@ -326,6 +358,27 @@ func addToLibrary(ctx context.Context, flodni, hash string, torrentFile []byte) 
 		return "", fmt.Errorf("library add: no files[0].fuse_path in %s", raw)
 	}
 	return ar.Files[0].FusePath, nil
+}
+
+// postAdd sends one add request and returns the status and body, whatever the status.
+func postAdd(ctx context.Context, flodni string, req map[string]any) (int, []byte, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		fmt.Sprintf("http://%s:9080/api/library/add", flodni), bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	hreq.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 2 * time.Minute}).Do(hreq)
+	if err != nil {
+		return 0, nil, fmt.Errorf("library add: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	return resp.StatusCode, raw, nil
 }
 
 func writeAtomic(path, content string) error {
