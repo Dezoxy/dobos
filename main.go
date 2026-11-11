@@ -179,6 +179,12 @@ func checkHardwareSupport() {
 }
 
 func main() {
+	// `flodni healthcheck` is the container health probe: before anything else
+	// runs, and without the daemon, the mount or the flags below.
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheckMain())
+	}
+
 	checkHardwareSupport()
 
 	var dbPath string
@@ -518,6 +524,7 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/sessions", handleSessions)
+	mux.HandleFunc("/api/health", newHealthChecks().handler)
 
 	mux.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")

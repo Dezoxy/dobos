@@ -191,14 +191,18 @@ run_variant() {
     return 1
   fi
   if [ "$variant" = index-cache ]; then
-    if ! docker logs "$seeder" 2>&1 | grep -q 'unauthenticated library add refused: status 401'; then
+    # Read the log once: grep -q exits on the first match, and under pipefail the
+    # SIGPIPE it gives a still-writing docker logs would fail the whole check.
+    local seeder_log
+    seeder_log=$(docker logs "$seeder" 2>&1)
+    if ! grep -q 'unauthenticated library add refused: status 401' <<<"$seeder_log"; then
       echo "FAIL ($variant): the seeder did not see a 401 for the add without a token" >&2
       dump_diagnostics
       return 1
     fi
     echo "ok ($variant): add without token refused with 401, with token accepted" >&2
-    if ! docker logs "$seeder" 2>&1 | grep -q 'unauthenticated POST :8090/torrents refused: status 401' ||
-      ! docker logs "$seeder" 2>&1 | grep -q 'unauthenticated GET :8090/echo open: status 200'; then
+    if ! grep -q 'unauthenticated POST :8090/torrents refused: status 401' <<<"$seeder_log" ||
+      ! grep -q 'unauthenticated GET :8090/echo open: status 200' <<<"$seeder_log"; then
       echo "FAIL ($variant): GoStorm on 8090 did not refuse torrent control without a token, or closed /echo" >&2
       dump_diagnostics
       return 1

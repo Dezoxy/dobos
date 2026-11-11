@@ -62,8 +62,8 @@ The command-line paths (the entrypoint's `FLODNI_SOURCE_PATH` and
 
 The control server on `metrics_port` (default 9080) is open unless you set a
 token. Set `api_token` in `config.json` or `FLODNI_API_TOKEN` (the variable
-wins) and every route except the panel page needs
-`Authorization: Bearer <token>`. The Plex or Jellyfin webhook cannot send
+wins) and every route except the panel page and
+`/api/health` needs `Authorization: Bearer <token>`. The Plex or Jellyfin webhook cannot send
 headers, so `/plex/webhook` and `/webhook` also accept the token in the URL,
 for example `http://host:9080/plex/webhook?token=<token>`; no other route
 does. `/control` loads without it and asks for the token on its first call,
@@ -72,6 +72,15 @@ returns the token, and saving from the panel leaves it unchanged. The
 same token covers GoStorm's port 8090 (every route except `GET /echo`, header
 only, no `?token=`); external clients of 8090 must send it. There is no TLS:
 see `SECURITY.md`.
+
+`GET /api/health` on the control port reports the mount, the engine and the
+state database, each as `{"ok": ..., "reason": "..."}`, with an overall
+`status` of `ok` (HTTP 200), `degraded` (engine or state database down) or
+`down` (mount down), the last two with HTTP 503. It is open even when a token
+is set and returns status words only. The image's health check runs
+`flodni healthcheck`, which requests it on `127.0.0.1:<metrics_port>` and
+exits 0 on HTTP 200 and 1 otherwise; run it with
+`docker exec <container> flodni healthcheck`.
 
 ## Viewing the model
 

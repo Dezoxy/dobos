@@ -116,6 +116,9 @@ Releases and deployment are scheduled separately.
 
 ## Done
 
+- 2026-11-11, reliability step 1: `GET /api/health` reports the mount, engine
+  and state database, and the image's health check runs `flodni healthcheck`
+  against it.
 - 2026-11-11, hardening step 4: GoStorm's server on 8090 has read-header and
   idle timeouts and honours the same opt-in token (except `/echo`).
 - 2026-11-11, hardening step 3: the library writes stubs under the path the
