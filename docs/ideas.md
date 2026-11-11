@@ -42,6 +42,38 @@ Bugs and data-loss risks. None open.
   - Episode stubs are matched by the first 8 hash characters; two releases
     with the same prefix are treated as one.
 
+- **A read stalls about 30 s while the pump runs (engine, unresolved).**
+  Symptom: in `tests/e2e/run.sh` the `default` variant, a 1 MiB tail read
+  followed by a full `sha256sum`, takes 33 to 58 s instead of 1 to 5 s in
+  roughly half the runs (150 MB file, 1 MiB pieces, 128 MB cache). Reads at
+  about 136 MB wait the 8 s fetch timeout three times, and the pump's chunk
+  read returns short after about 30 s. Reproduce: the `default` variant on
+  `main`, repeated until it stalls. Control: with `pump_on_open` false the
+  full read took 0 to 1 s in 3 of 3 runs; skipping the tail read does not
+  prevent it (one run stalled, one failed outright), and the `slow-seeder`
+  and `index-cache` variants do not stall. Ruled out: the pump's grace
+  period and its re-anchoring (the pump starts at offset 0 at open, never
+  waits on a hard lead limit, and ends cleanly), and the seeder (the
+  leecher's peer is unchoked and nothing is pending at the seeder). What was
+  seen on the leecher during a stall: the peer holds no requests and has
+  sent "not interested" while pieces the readers want are pending or
+  already marked complete, no request update runs for 30 s or more, and it
+  resumes when the readers time out or a piece is released. The last update
+  before such a stall scanned 129 pieces and stopped at the 128 MB storage
+  cap with nothing to request. Waking idle peers when the piece order
+  changes did not remove the stall. It likely lives in the interplay of the
+  request strategy's storage cap with two readers (`GetRequestablePieces`
+  in `internal/anacrolix-torrent/request-strategy/order.go`) and the cache
+  completion state in `internal/gostorm/torr/storage/torrstor`; trace per
+  piece completion against the cache's `Complete` flag first. Hypothesis
+  to test next: the test file (150 MB) is larger than GoStorm's default
+  128 MB cache, so two readers can hold pieces up to the cap and leave the
+  strategy nothing to request until a read times out and releases one. The
+  cheap experiment is the `default` variant with GoStorm's `CacheSize` raised
+  to 512 MB (set through its settings API: get, modify, set); if the stall
+  goes away, the fix is in how the cap counts pieces readers still hold.
+  Players probe file ends before playing, so this can delay real starts.
+
 ## Nice to have
 
 - **Structured logging.** 222 log call sites use `log.Printf`. Moving them
