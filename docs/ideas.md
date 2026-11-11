@@ -28,11 +28,6 @@ The order matters: each step makes the next one safe.
 
 Bugs and data-loss risks.
 
-- **Replacing a pack deletes working stubs**
-  (`internal/library/manager.go:709`). A replacement that never becomes
-  playable still removes files that played. Options: keep the old stubs until
-  the new ones are confirmed readable (preferred), a grace period, or never
-  replace automatically.
 - **Stub and config writes are not atomic** (`WriteStub` in
   `internal/library/naming.go:222`, `Save` in
   `internal/config/config.go:196`). A crash mid-write leaves a truncated
@@ -62,6 +57,11 @@ Bugs and data-loss risks.
   request allowance served about 600 kB/s with 35 to 60 s stalls, and a
   sequential read ended in EIO. Real swarms have such peers; check the
   leecher's request timeouts against them.
+
+- **End-to-end coverage for replacement.** `make e2e` files a movie, so the
+  readability check before a replacement (`ReadFileHead`) runs only against
+  a fake engine. A second fixture filed over the first as the same TV
+  episode would exercise it against the real engine.
 
 ## Nice to have
 

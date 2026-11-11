@@ -26,4 +26,8 @@ type GoStorm interface {
 	GetTorrentInfo(ctx context.Context, hash string, maxWait int) (*TorrentStats, error)
 	RemoveTorrent(ctx context.Context, hash string) error
 	ListTorrents(ctx context.Context) ([]TorrentStats, error)
+	// ReadFileHead reads the first n bytes of one file through the engine's stream
+	// endpoint and fails when fewer arrive before ctx ends. It proves the swarm
+	// delivers; the bytes themselves are discarded.
+	ReadFileHead(ctx context.Context, hash string, fileID int, n int64) error
 }

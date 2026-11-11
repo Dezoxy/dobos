@@ -96,7 +96,8 @@ func (f *fakeEngine) AddTorrent(_ context.Context, magnet, _ string) (string, er
 func (f *fakeEngine) GetTorrentInfo(context.Context, string, int) (*TorrentStats, error) {
 	return nil, context.DeadlineExceeded
 }
-func (f *fakeEngine) RemoveTorrent(context.Context, string) error { return nil }
+func (f *fakeEngine) RemoveTorrent(context.Context, string) error            { return nil }
+func (f *fakeEngine) ReadFileHead(context.Context, string, int, int64) error { return nil }
 func (f *fakeEngine) ListTorrents(context.Context) ([]TorrentStats, error) {
 	return nil, nil
 }

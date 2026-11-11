@@ -175,6 +175,39 @@ func (c *GoStormClient) RemoveTorrent(ctx context.Context, hash string) error {
 	return c.postTorrents(ctx, body)
 }
 
+// ReadFileHead requests the first n bytes of a file from /stream, the URL a stub
+// carries, and reads them all. The client's 30 s timeout would cut the read short of
+// the caller's deadline, so the request uses a copy without it; ctx bounds the call.
+func (c *GoStormClient) ReadFileHead(ctx context.Context, hash string, fileID int, n int64) error {
+	if n <= 0 {
+		return nil
+	}
+	url := fmt.Sprintf("%s/stream?link=%s&index=%d&play", c.baseURL, hash, fileID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", n-1))
+	hc := *c.httpClient
+	hc.Timeout = 0
+	resp, err := hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return fmt.Errorf("gostorm /stream: status %d", resp.StatusCode)
+	}
+	got, err := io.Copy(io.Discard, io.LimitReader(resp.Body, n))
+	if err != nil {
+		return fmt.Errorf("read after %d of %d bytes: %w", got, n, err)
+	}
+	if got < n {
+		return fmt.Errorf("stream ended after %d of %d bytes", got, n)
+	}
+	return nil
+}
+
 // ListTorrents returns all active torrents.
 func (c *GoStormClient) ListTorrents(ctx context.Context) ([]TorrentStats, error) {
 	body := map[string]string{"action": "list"}
