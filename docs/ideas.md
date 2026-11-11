@@ -49,9 +49,9 @@ Bugs and data-loss risks.
 - **A test that a private torrent stays private.** No DHT, PEX or added
   trackers for a torrent flagged private (BEP 27). It is a hard rule with no
   check behind it.
-- **A real health endpoint.** `/api/health` always answers 200. It should
-  report the mount, the engine and the stores, so a container health check
-  means something.
+- **A health endpoint.** There is none since the dashboard went. One that
+  reports the mount, the engine and the stores would let a container health
+  check mean more than `mountpoint`.
 - **Expose unserved sessions.** A file that was opened and never got bytes
   should be a metric and an API result, not only a log line.
 - **Remove the dead index-seed path** once the supported one is the only
@@ -71,6 +71,6 @@ Bugs and data-loss risks.
 ## Enterprise-grade, optional
 
 - **Token authentication on the control API.** `/api/restart`, `/api/config`
-  and `/api/kill-stream` accept any caller that can reach the port.
+  and `/api/library/*` accept any caller that can reach the port.
 - **Less container privilege.** The image runs with `SYS_ADMIN` and AppArmor
   unconfined for the FUSE mount; a narrower profile may be enough.

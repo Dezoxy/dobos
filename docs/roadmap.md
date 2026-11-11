@@ -16,13 +16,13 @@ a switch or calls out to third parties.
    default, posts to the upstream project's endpoint), the update check (polls
    the upstream repository), the MCP server (unauthenticated, always on) and
    the `net/http/pprof` import (unauthenticated debug endpoints).
-2. **Remove dead and switched-off code.** NAT-PMP (and `iptables` in the
-   image), the IP blocklist, index seeding, the Samba watchdog,
-   `internal/preload`, `internal/syncer/statestore`, `Config.EngineScripts`
-   and the configuration keys nothing reads.
-3. **Remove the dashboard.** `/dashboard` and its API routes, the collector
+2. **Remove the dashboard.** `/dashboard` and its API routes, the collector
    (polls every 5 s, looks up the public IP, broadcasts on the LAN) and the
    macOS toolbar app that wraps it.
+3. **Remove dead and switched-off code.** NAT-PMP (and `iptables` in the
+   image), the IP blocklist, index seeding, the Samba watchdog,
+   `internal/preload`, `internal/syncer/statestore`, `Config.EngineScripts`,
+   `Config.LogDir` and the configuration keys nothing reads.
 4. **Remove upstream packaging.** `docker-windows/`, `install.sh`,
    `tiramisu.service`. The container image is the only supported install.
 5. **End-to-end streaming test.** A local tracker seeds a small torrent,
@@ -39,3 +39,6 @@ a switch or calls out to third parties.
 
 - 2026-11-11, trim step 1: telemetry, the update check, the MCP server and
   the pprof endpoints are removed.
+- 2026-11-11, trim step 2: the dashboard, its collector and LAN discovery,
+  and the macOS toolbar app are removed. Done before the dead-code step
+  because the collector read NAT-PMP and blocklist state.
