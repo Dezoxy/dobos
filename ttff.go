@@ -141,6 +141,8 @@ type TTFFSession struct {
 	firstDeepReadAt atomic.Int64 // 0 = unset (CAS-once)
 	lastReadAt      atomic.Int64
 	bytesRead       atomic.Int64
+	reads           atomic.Int64 // served reads, for /api/sessions
+	failedReads     atomic.Int64 // reads that gave up with EAGAIN/EIO, for /api/sessions
 	lastOff         atomic.Int64 // start offset of previous read; -1 = none
 	seekCount       atomic.Int64
 	stallCount      atomic.Int64
@@ -171,6 +173,7 @@ func (s *TTFFSession) recordRead(src ttffSource, d time.Duration, n int, off int
 	}
 	nowN := time.Now().UnixNano()
 	s.lastReadAt.Store(nowN)
+	s.reads.Add(1)
 	if n > 0 {
 		s.firstDataAt.CompareAndSwap(0, nowN)
 		s.bytesRead.Add(int64(n))
@@ -244,9 +247,12 @@ var sessionActivePeers = native.ActivePeers
 //
 // Runs before the ttffIsReal filter below on purpose: a session that served nothing
 // is exactly what that filter drops, and exactly what this needs to see.
-func (s *TTFFSession) reportSwarmVerdict() {
+//
+// Returns true exactly when it logged the [DeadSwarm] line and condemned the release;
+// /api/sessions reports that session as dead_swarm.
+func (s *TTFFSession) reportSwarmVerdict() bool {
 	if native.ReachabilityOutcome == nil || s.hash == "" {
-		return
+		return false
 	}
 	// The swarm answered at some point in this session: that clears whatever the
 	// counter had gathered, however the session ended afterwards. Without this the
@@ -254,22 +260,23 @@ func (s *TTFFSession) reportSwarmVerdict() {
 	// reaped after it has already recovered.
 	if s.servedByNet.Load() {
 		native.ReachabilityOutcome(s.hash, true)
-		return
+		return false
 	}
 	// Deliberately not bytesRead: it counts what the player received, and the SSD
 	// warmup feeds it too. A dead release left a 38-byte warmup file behind, served it
 	// back on the next session, and suppressed its own condemnation with it. The same
 	// measure decides both directions: only the swarm answers for a release.
 	if !s.readFailed.Load() {
-		return
+		return false
 	}
 	if opened := s.openedAt.Load(); opened == 0 ||
 		time.Since(time.Unix(0, opened)) < sessionVerdictFloor {
-		return
+		return false
 	}
 	logger.Printf("[DeadSwarm] session of %s ended after %s with a failed read and nothing served",
 		filepath.Base(s.path), time.Since(time.Unix(0, s.openedAt.Load())).Round(time.Second))
 	native.ReachabilityOutcome(s.hash, false)
+	return true
 }
 
 // closeSession aggregates the session into the global histograms and logs one
@@ -278,7 +285,8 @@ func (s *TTFFSession) closeSession() {
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
 		sessions.CompareAndDelete(s.path, s)
-		s.reportSwarmVerdict()
+		dead := s.reportSwarmVerdict()
+		closedSessions.add(s.record(time.Now(), dead))
 		if !ttffIsReal(s.tailOrDeep.Load(), s.bytesRead.Load()) {
 			ttffStats.sessionsFiltered.Add(1)
 			return
@@ -403,7 +411,9 @@ func ttffRead(path string, src ttffSource, d time.Duration, n int, off int64) {
 // the two exits that mean the swarm did not deliver call it (EAGAIN, EIO).
 func ttffReadFailed(path string) {
 	if val, ok := sessions.Load(path); ok {
-		val.(*TTFFSession).readFailed.Store(true)
+		s := val.(*TTFFSession)
+		s.failedReads.Add(1)
+		s.readFailed.Store(true)
 	}
 }
 

@@ -80,6 +80,9 @@ Releases and deployment are scheduled separately.
 
 ## Done
 
+- 2026-11-11, maintainability step 4b: `GET /api/sessions` lists open
+  sessions and the last 200 closed ones, each with bytes served, time to first
+  byte and an outcome (`served`, `probe`, `dead_swarm`, `unserved`).
 - 2026-11-11, maintainability step 4a: 43 unchecked errors that could hide
   failures now return or log; the rest are marked intentional, and errcheck
   gates new ones in `make go-check` and CI.
