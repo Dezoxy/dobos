@@ -93,19 +93,14 @@ var tailFillTargets sync.Map // path -> tailFillTarget
 
 // PlaybackState traccia lo stato di una sessione di visione reale
 type PlaybackState struct {
-	mu     sync.RWMutex
-	Path   string
-	Hash   string // InfoHash for GoStorm priority management
-	ImdbID string // IMDB ID from MKV line 4, used for webhook matching
-	// ExternalID/ExternalIDNamespace carry the audio projection's registered
-	// identity ("musicbrainz", "asin", ...) so a music webhook can match the
-	// session the same way a movie webhook matches on ImdbID.
-	ExternalID          string
-	ExternalIDNamespace string
-	OpenedAt            time.Time
-	ConfirmedAt         time.Time // Set when Plex webhook arrives
-	IsHealthy           bool      // Confirmed by Plex
-	IsStopped           bool      // Set on explicit media.stop webhook
+	mu          sync.RWMutex
+	Path        string
+	Hash        string // InfoHash for GoStorm priority management
+	ImdbID      string // IMDB ID from MKV line 4, used for webhook matching
+	OpenedAt    time.Time
+	ConfirmedAt time.Time // Set when Plex webhook arrives
+	IsHealthy   bool      // Confirmed by Plex
+	IsStopped   bool      // Set on explicit media.stop webhook
 	// V750: Inferred playback detection (self-healing when webhook is lost)
 	ReadCount   int64
 	LastSeekOff int64
@@ -146,13 +141,6 @@ func (ps *PlaybackState) GetImdbID() string {
 	ps.mu.RLock()
 	defer ps.mu.RUnlock()
 	return ps.ImdbID
-}
-
-// GetExternalIdentity returns the audio projection identity and its namespace.
-func (ps *PlaybackState) GetExternalIdentity() (string, string) {
-	ps.mu.RLock()
-	defer ps.mu.RUnlock()
-	return ps.ExternalID, ps.ExternalIDNamespace
 }
 
 // LastSignOfLife is the later of the open and the webhook confirmation.
@@ -246,151 +234,6 @@ var reImdbID = regexp.MustCompile(`"imdb://(tt\d+)"`)
 // webhookMaxBody bounds a webhook post. Plex sends multipart with a thumbnail, so
 // the ceiling has to clear a poster, not just the JSON.
 const webhookMaxBody = 10 * 1024 * 1024
-
-// reMbid matches "mbid://<uuid>" in Plex webhook payloads for music. A track
-// payload can carry several: the recording, its release group and the artist.
-var reMbid = regexp.MustCompile(`"mbid://([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"`)
-
-// reUUID matches a bare MusicBrainz uuid, which is how Jellyfin's ProviderIds
-// carry the same identities.
-var reUUID = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
-
-// webhookIdentityKeys is the identity set a music payload carries, ranked by how
-// specific each id is: the item's own recording beats its release group, which
-// beats the artist. The ranking is what keeps concurrent sessions of the same
-// artist apart when only a coarser id is shared between them.
-type webhookIdentityKeys struct {
-	recording []string
-	release   []string
-	artist    []string
-}
-
-func (k webhookIdentityKeys) empty() bool {
-	return len(k.recording) == 0 && len(k.release) == 0 && len(k.artist) == 0
-}
-
-// rank reports the most specific group id belongs to: 2 recording, 1 release,
-// 0 artist. An unclassified id is deliberately not a match here; the caller puts
-// those in the artist group, where they only win when nothing better matches.
-func (k webhookIdentityKeys) rank(id string) (int, bool) {
-	for rank, group := range [][]string{k.recording, k.release, k.artist} {
-		for _, want := range group {
-			if strings.EqualFold(want, id) {
-				return 2 - rank, true
-			}
-		}
-	}
-	return 0, false
-}
-
-// webhookIdentityKeysFromPayload reads the mbid of the item, its parent and its
-// grandparent from the payload's JSON shape, because a flat scan cannot tell an
-// artist id shared by a whole discography from a recording id unique to one track.
-// Ids from fields this does not model stay matchable at the lowest rank.
-func webhookIdentityKeysFromPayload(payloadStr string) webhookIdentityKeys {
-	keys := webhookIdentityKeys{}
-	var raw struct {
-		Metadata map[string]interface{} `json:"Metadata"`
-	}
-	if err := json.Unmarshal([]byte(payloadStr), &raw); err == nil {
-		meta := raw.Metadata
-		keys.recording = collectMbids(meta["guid"], meta["Guid"])
-		keys.release = collectMbids(meta["parentGuid"], meta["ParentGuid"])
-		keys.artist = collectMbids(meta["grandparentGuid"], meta["GrandparentGuid"])
-		// Jellyfin has no mbid:// scheme: the same identities arrive as bare
-		// uuids under ProviderIds.
-		if pids, ok := meta["ProviderIds"].(map[string]interface{}); ok {
-			keys.recording = append(keys.recording, collectUUIDs(pids["MusicBrainzTrack"])...)
-			keys.release = append(keys.release, collectUUIDs(
-				pids["MusicBrainzReleaseGroup"], pids["MusicBrainzAlbum"])...)
-			keys.artist = append(keys.artist, collectUUIDs(pids["MusicBrainzArtist"])...)
-		}
-	}
-	// Fallback for a payload shape this does not model: keep every mbid matchable,
-	// deduplicated into the lowest rank.
-	for _, id := range flatMbidIDs(payloadStr) {
-		if _, ok := keys.rank(id); !ok {
-			keys.artist = append(keys.artist, id)
-		}
-	}
-	keys.recording = dedupeIDs(keys.recording)
-	keys.release = dedupeIDs(keys.release)
-	keys.artist = dedupeIDs(keys.artist)
-	return keys
-}
-
-// collectMbids extracts "mbid://<uuid>" values from any JSON shape a metadata
-// field takes (a string or an array of objects with an "id").
-func collectMbids(values ...interface{}) []string {
-	var ids []string
-	for _, value := range values {
-		walkJSONStrings(value, func(s string) {
-			for _, m := range reMbid.FindAllStringSubmatch(`"`+s+`"`, -1) {
-				ids = append(ids, strings.ToLower(m[1]))
-			}
-		})
-	}
-	return ids
-}
-
-// collectUUIDs extracts bare MusicBrainz uuids from any JSON shape.
-func collectUUIDs(values ...interface{}) []string {
-	var ids []string
-	for _, value := range values {
-		walkJSONStrings(value, func(s string) {
-			for _, m := range reUUID.FindAllString(s, -1) {
-				ids = append(ids, strings.ToLower(m))
-			}
-		})
-	}
-	return ids
-}
-
-// walkJSONStrings visits every string inside a decoded JSON value.
-func walkJSONStrings(value interface{}, visit func(string)) {
-	switch t := value.(type) {
-	case string:
-		visit(t)
-	case []interface{}:
-		for _, item := range t {
-			walkJSONStrings(item, visit)
-		}
-	case map[string]interface{}:
-		for _, item := range t {
-			walkJSONStrings(item, visit)
-		}
-	}
-}
-
-// flatMbidIDs is the shape-blind scan, kept as a fallback for payload variants the
-// structural reader does not know.
-func flatMbidIDs(payloadStr string) []string {
-	matches := reMbid.FindAllStringSubmatch(payloadStr, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-	ids := make([]string, 0, len(matches))
-	for _, m := range matches {
-		ids = append(ids, strings.ToLower(m[1]))
-	}
-	return dedupeIDs(ids)
-}
-
-func dedupeIDs(ids []string) []string {
-	if len(ids) < 2 {
-		return ids
-	}
-	seen := make(map[string]bool, len(ids))
-	out := ids[:0]
-	for _, id := range ids {
-		if id == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, id)
-	}
-	return out
-}
 
 var reEmptyNumber = regexp.MustCompile(`"(\w+)":\s*,`)
 
@@ -499,27 +342,21 @@ func resolveTargetFile(url string, targetSize int64, physicalPath string) (strin
 		}
 	}
 
-	section, _ := library.SectionForPath(physicalSourcePath, physicalPath)
-
 	// The engine's list is shared state, so it is copied before sorting. IDs are
-	// assigned from the sorted order, the same way GoStorm assigns them. Audio never
-	// reads this list - its identity comes from the registry - so a music scan does
-	// not pay for a copy and sort of the whole resident file list on every Open.
+	// assigned from the sorted order, the same way GoStorm assigns them.
 	var files []library.TorrentFile
-	if !library.IsAudioSection(section) {
-		if t := web.BTS.GetTorrent(metainfo.NewHashFromHex(hashStr)); t != nil {
-			resident := append([]*torrent.File(nil), t.Files()...)
-			sort.Slice(resident, func(i, j int) bool {
-				return tsutils.CompareStrings(resident[i].Path(), resident[j].Path())
-			})
-			files = make([]library.TorrentFile, 0, len(resident))
-			for i, f := range resident {
-				files = append(files, library.TorrentFile{Index: i + 1, Path: f.Path(), Length: f.Length()})
-			}
+	if t := web.BTS.GetTorrent(metainfo.NewHashFromHex(hashStr)); t != nil {
+		resident := append([]*torrent.File(nil), t.Files()...)
+		sort.Slice(resident, func(i, j int) bool {
+			return tsutils.CompareStrings(resident[i].Path(), resident[j].Path())
+		})
+		files = make([]library.TorrentFile, 0, len(resident))
+		for i, f := range resident {
+			files = append(files, library.TorrentFile{Index: i + 1, Path: f.Path(), Length: f.Length()})
 		}
 	}
 
-	target, err := library.ResolveOpenTarget(section, hashStr, urlIndex, targetSize, physicalPath, files)
+	target, err := library.ResolveOpenTarget(hashStr, urlIndex, targetSize, physicalPath, files)
 	if err != nil {
 		return "", 0, err
 	}
@@ -645,11 +482,6 @@ func fillAttrFromStat(st *syscall.Stat_t, out *fuse.Attr) {
 func fillAttrFromMetadata(m *vfs.Metadata, out *fuse.Attr) {
 	out.Size = uint64(m.Size)
 	out.Mode = syscall.S_IFREG | 0644
-	// Audio projections are read-only to their clients (spec 4): the API owns every
-	// mutation, so a conventional scanner must never see a writable stub.
-	if m.Audio {
-		out.Mode = syscall.S_IFREG | 0444
-	}
 	out.Uid, out.Gid = gc().UID, gc().GID
 	out.Nlink = 1
 	// out.Blksize = 4096                                 // Standard block size
@@ -660,36 +492,6 @@ func fillAttrFromMetadata(m *vfs.Metadata, out *fuse.Attr) {
 	out.Mtime = ts
 	out.Atime = ts
 	out.Ctime = ts
-}
-
-// isAudioSectionPath reports whether an absolute path lives under a Phase 1 audio
-// section root (music/ or audiobooks/). Prefix matching is component-wise, so a
-// sibling like "music-videos/" is not an audio section.
-func isAudioSectionPath(fullPath string) bool {
-	rel, err := filepath.Rel(physicalSourcePath, fullPath)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
-	}
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	if len(parts) == 0 || parts[0] == "." {
-		return false
-	}
-	return library.IsAudioSection(library.Section(parts[0]))
-}
-
-// audioWriteIntent reports whether open flags ask for anything a read-only
-// projection cannot give.
-func audioWriteIntent(flags uint32) bool {
-	return flags&(syscall.O_WRONLY|syscall.O_RDWR|syscall.O_TRUNC|syscall.O_APPEND) != 0
-}
-
-// audioMutationErrno keeps every audio mutation on the deliberate EROFS the spec
-// requires; video keeps the untouched ENOSYS it has always answered with.
-func audioMutationErrno(fullPath string) syscall.Errno {
-	if isAudioSectionPath(fullPath) {
-		return syscall.EROFS
-	}
-	return syscall.ENOSYS
 }
 
 // VirtualMkvRoot - nodo radice per file virtuali .mkv
@@ -725,10 +527,10 @@ func (r *VirtualMkvRoot) Getattr(ctx context.Context, f fs.FileHandle, out *fuse
 func (r *VirtualMkvRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	fullPath := filepath.Join(r.sourcePath, name)
 
-	if classifyVFSPath(fullPath).Stub {
-		meta, err := stubMeta(fullPath)
+	if isStubPath(fullPath) {
+		meta, err := getOrReadMeta(fullPath)
 		if err == nil {
-			addMetaToInodeMap(fullPath, meta)
+			addFileToInodeMap(fullPath, meta.URL)
 			ino := getFileInodeFromMap(fullPath)
 			node := &VirtualMkvNode{vMeta: meta}
 			stable := fs.StableAttr{
@@ -887,40 +689,24 @@ var _ fs.NodeCreater = (*VirtualDirNode)(nil)
 var _ fs.NodeRenamer = (*VirtualDirNode)(nil)
 var _ fs.NodeSetattrer = (*VirtualDirNode)(nil)
 
-// Every mutation of an audio directory answers EROFS (spec 4); video directories keep
-// the untouched ENOSYS they have always answered with.
+// Every mutation of a virtual directory answers ENOSYS.
 func (d *VirtualDirNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
-	return nil, audioMutationErrno(filepath.Join(d.physicalPath, name))
+	return nil, syscall.ENOSYS
 }
 
 func (d *VirtualDirNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (*fs.Inode, fs.FileHandle, uint32, syscall.Errno) {
-	return nil, nil, 0, audioMutationErrno(filepath.Join(d.physicalPath, name))
+	return nil, nil, 0, syscall.ENOSYS
 }
 
 func (d *VirtualDirNode) Rename(ctx context.Context, name string, newParent fs.InodeEmbedder, newName string, flags uint32) syscall.Errno {
-	return audioMutationErrno(filepath.Join(d.physicalPath, name))
+	return syscall.ENOSYS
 }
 
 func (d *VirtualDirNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
-	if isAudioSectionPath(d.physicalPath) {
-		return syscall.EROFS
-	}
 	return syscall.ENOSYS
 }
 
 func (d *VirtualDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
-	// Inside an audio section before reconciliation has published, the committed
-	// set is unknown. Wait for it rather than answering: an empty-but-successful
-	// listing tells a scanner the library was deleted (spec 9: never a plausible
-	// but incomplete tree).
-	//
-	// This check stays AHEAD of the directory cache deliberately. A listing cached
-	// while the namespace was Ready would otherwise still be served after a later
-	// MarkFailed, masking a terminal failure behind stale entries.
-	if errno := audioWaitServable(ctx, d.physicalPath); errno != 0 {
-		return nil, errno
-	}
-
 	if entries, found := globalDirCache.Get(d.physicalPath); found {
 		return &nfsDirStream{entries: entries}, 0
 	}
@@ -945,7 +731,7 @@ func (d *VirtualDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Err
 				Ino:  ino,
 				Off:  uint64(i + 1),
 			})
-		} else if classifyVFSPath(fullPath).Stub {
+		} else if isStubPath(fullPath) {
 			ino := getFileInodeFromMap(fullPath)
 			result = append(result, fuse.DirEntry{
 				Name: e.Name(),
@@ -964,23 +750,10 @@ func (d *VirtualDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Err
 func (d *VirtualDirNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
 	fullPath := filepath.Join(d.physicalPath, name)
 
-	// Only Readdir used to check readiness, so a stat during the unready window
-	// fell through to ENOENT below - semantic absence rather than refusal, which
-	// a non-zero NegativeTimeoutSeconds then let the kernel cache past
-	// publication. Waiting here removes the false negative at its source, so the
-	// correctness no longer depends on that timeout being zero.
-	//
-	// Directories inside an audio section wait too. The caller is about to read
-	// the directory anyway, so exempting them would only move the wait one call
-	// later while adding a branch.
-	if errno := audioWaitServable(ctx, d.physicalPath); errno != 0 {
-		return nil, errno
-	}
-
-	if classifyVFSPath(fullPath).Stub {
-		meta, err := stubMeta(fullPath)
+	if isStubPath(fullPath) {
+		meta, err := getOrReadMeta(fullPath)
 		if err == nil {
-			addMetaToInodeMap(fullPath, meta)
+			addFileToInodeMap(fullPath, meta.URL)
 			ino := getFileInodeFromMap(fullPath)
 			node := &VirtualMkvNode{vMeta: meta}
 			stable := fs.StableAttr{
@@ -1033,39 +806,9 @@ func (d *VirtualDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse
 
 	// Override ONLY Mode and Size to ensure directory permissions and Samba compliance
 	out.Mode = syscall.S_IFDIR | 0755
-	// Projected audio directories are read-only to their clients (spec 4); the API
-	// owns every mutation, so 0555 is the honest answer.
-	if section, rel, ok := audioSectionRel(d.physicalPath); ok {
-		out.Mode = syscall.S_IFDIR | 0555
-		// Spec 7: an audio directory's mtime moves when its committed child set does,
-		// and at no other time. Deriving it from the registry rows also keeps a
-		// rolled-back staging file from leaving a spurious timestamp behind.
-		if mtime, found := globalAudioNamespace.DirMtime(section, rel); found {
-			ts := sanitizeTime(mtime)
-			out.Mtime, out.Atime, out.Ctime = ts, ts, ts
-		}
-	}
 	out.Size = 4096
 
 	return 0
-}
-
-// audioSectionRel splits a physical path into its audio section and the section-relative
-// directory path. ok is false outside music/ and audiobooks/.
-func audioSectionRel(fullPath string) (library.Section, string, bool) {
-	rel, err := filepath.Rel(physicalSourcePath, fullPath)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", "", false
-	}
-	parts := strings.Split(filepath.ToSlash(rel), "/")
-	section := library.Section(parts[0])
-	if !library.IsAudioSection(section) {
-		return "", "", false
-	}
-	if len(parts) == 1 {
-		return section, "", true
-	}
-	return section, strings.Join(parts[1:], "/"), true
 }
 
 // forceCloseVirtualFile terminates the active pump and closes all open handles for a
@@ -1165,8 +908,6 @@ func (d *VirtualDirNode) Unlink(ctx context.Context, name string) syscall.Errno 
 	} else if success {
 		logger.Printf("UNLINK: torrent successfully removed from GoStorm")
 	} else if blacklisted {
-		// Also reached when an audio projection still owns the torrent, which the
-		// guard logs with its own reason.
 		logger.Printf("UNLINK: torrent not removed (already gone, or still referenced), but hash was blacklisted")
 	} else {
 		logger.Printf("UNLINK: torrent not removed and hash not blacklisted (see the warning above)")
@@ -1209,12 +950,7 @@ func (n *VirtualMkvNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse
 
 var _ fs.NodeSetattrer = (*VirtualMkvNode)(nil)
 
-// Setattr refuses every metadata mutation of an audio projection: chmod, chown and
-// truncate are all API-owned (spec 4). Video keeps answering ENOSYS as before.
 func (n *VirtualMkvNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
-	if n.vMeta.Audio {
-		return syscall.EROFS
-	}
 	return syscall.ENOSYS
 }
 
@@ -1222,15 +958,6 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 	if gc().LogLevel == "DEBUG" {
 		logger.Printf("=== OPEN VIRTUAL === path=%s", n.vMeta.Path)
 	}
-	// Read-only first: an audio projection refuses a writable open before any handle
-	// exists, so no write path ever has to exist behind it (spec 4).
-	if n.vMeta.Audio && audioWriteIntent(flags) {
-		return nil, 0, syscall.EROFS
-	}
-	if len(n.vMeta.SegmentHeader) > 0 {
-		return n.openCueTrack(ctx, flags)
-	}
-
 	// PROACTIVE CLEANUP TRIGGER (V246): must be sync before any Read() can arrive.
 	raCache.SwitchContext(n.vMeta.Path)
 
@@ -1246,18 +973,9 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 
 	// hasFullWarmup: Open returns instantly only if both head and tail warmup files are ready.
 	// headReady: Allows async Wake and direct ID injection for instant start.
-	// Audio projections skip the movie/TV head/tail SSD warmup entirely, and Phase 1
-	// puts nothing in its place: demand fetch plus the existing read-ahead is the
-	// whole policy. Decided once here rather than special-cased at each warmup site.
-	usesWarmup := pathUsesSSDWarmup(n.vMeta.Path)
-	// isAudio: audio projections resolve their identity from the registry, which needs no
-	// torrent, so the pump can start while the wake runs behind it instead of serializing
-	// activation before the first read (see the wake branch).
-	isAudio := isAudioSectionPath(n.vMeta.Path)
-
 	headReady := false
 	tailReady := false
-	if usesWarmup && warmup.DiskWarmup != nil && hashStr != "" {
+	if warmup.DiskWarmup != nil && hashStr != "" {
 		headReady = warmup.DiskWarmup.HeadReady(hashStr, urlFileIdx)
 		tailReady = warmup.DiskWarmup.TailReady(hashStr, urlFileIdx)
 	}
@@ -1266,9 +984,7 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 		magnetCandidate = "magnet:?xt=urn:btih:" + hashStr
 	}
 
-	// Async Wake when head warmup is ready (Open returns instantly), and for audio, whose
-	// identity comes from the registry and whose pump can start while the wake runs behind it;
-	// sync Wake otherwise.
+	// Async Wake when head warmup is ready (Open returns instantly); sync Wake otherwise.
 	wake := n.wake
 	if wake == nil && nativeBridge != nil {
 		wake = nativeBridge.Wake
@@ -1284,16 +1000,6 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 					logger.Printf("[VFS] background activation failed for %s: %v", n.vMeta.Path, err)
 				}
 			})
-		} else if isAudio {
-			// Audio has no SSD head to serve the first reads, so an activation that fails at
-			// once (semaphore exhausted mid-scan) must fail Open as the synchronous path does;
-			// a slower one keeps running behind the pump.
-			if err := vfs.StartWake(func(c context.Context) error {
-				return wake(c, magnetCandidate, urlFileIdx)
-			}, audioWakeGrace, logger.Printf); err != nil {
-				logger.Printf("[VFS] activation failed for %s: %v", n.vMeta.Path, err)
-				return nil, 0, syscall.EIO
-			}
 		} else {
 			if ctx.Err() != nil {
 				return nil, 0, syscall.EINTR
@@ -1332,12 +1038,10 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 
 	if val, exists := playbackRegistry.Load(n.vMeta.Path); !exists {
 		playbackRegistry.Store(n.vMeta.Path, &PlaybackState{
-			Path:                n.vMeta.Path,
-			Hash:                hashStr,
-			ImdbID:              n.vMeta.ImdbID,
-			ExternalID:          n.vMeta.ExternalID,
-			ExternalIDNamespace: n.vMeta.ExternalIDNamespace,
-			OpenedAt:            time.Now(),
+			Path:     n.vMeta.Path,
+			Hash:     hashStr,
+			ImdbID:   n.vMeta.ImdbID,
+			OpenedAt: time.Now(),
 		})
 	} else {
 		if val != nil {
@@ -1393,7 +1097,7 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 		lastOff:          -1,
 		lastActivityTime: now,       // Initialize activity tracking
 		hasWarmup:        headReady, // Eligibility for fast SSD probes
-		usesWarmup:       usesWarmup,
+		usesWarmup:       true,
 	}
 	h.state.Store(stateWarmup) // Initial state; transitions to stateStreaming on seek/resume.
 
@@ -1401,9 +1105,7 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 		h.hash = finalHash
 		h.fileID = fileIdx
 		// media.stop only knows the path; keep what EnsureTail needs to reach the file.
-		if usesWarmup {
-			tailFillTargets.Store(n.vMeta.Path, tailFillTarget{hash: finalHash, fileID: fileIdx, size: n.vMeta.Size})
-		}
+		tailFillTargets.Store(n.vMeta.Path, tailFillTarget{hash: finalHash, fileID: fileIdx, size: n.vMeta.Size})
 		// Gillian: proactive pump start at Open() — pump ready before first Read().
 		// pumpOnce ensures single start; late rescue path in Read() handles hash=='' case.
 		// Dezoxy fork: with pump_on_open off, only confirmed playback starts it here; a
@@ -1413,7 +1115,7 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 				h.startNativePump(finalHash, fileIdx)
 			})
 		}
-		if usesWarmup && !headReady {
+		if !headReady {
 			// Real cold start: no warmup data present yet. Signal warmupActive here, at Open(),
 			// rather than waiting for the first WriteChunk - that first-connection burst is
 			// exactly the window aggressive PEX churn (Task 3) needs to catch, and by the time
@@ -1479,7 +1181,7 @@ type MkvHandle struct {
 	pumpState       *NativePumpState
 	isWatching      bool
 	hasWarmup       bool          // true if both head+tail warmup available at Open time
-	usesWarmup      bool          // false for audio projections: they skip SSD warmup entirely
+	usesWarmup      bool          // true for every handle: all remaining files use the SSD warmup
 	state           atomic.Uint32 // handleState: stateWarmup | stateStreaming
 	pumpOnce        sync.Once
 	isPrimaryHandle atomic.Bool  // pump creator, primary reconnects (refCount 0→1), proven readers
@@ -2371,10 +2073,6 @@ func forceTorrentWarmupActive(hash string, fileID int) {
 }
 
 // safeGo runs a function in a new goroutine with panic recovery.
-// audioWakeGrace is how long Open waits for an audio activation before letting it run behind
-// the pump: long enough to catch an immediate failure, short enough to keep the start fast.
-const audioWakeGrace = 300 * time.Millisecond
-
 func safeGo(fn func()) {
 	go func() {
 		defer func() {
@@ -2389,66 +2087,6 @@ func safeGo(fn func()) {
 // Compile-time interface checks for MkvHandle
 var _ fs.FileReader = (*MkvHandle)(nil)
 var _ fs.FileReleaser = (*MkvHandle)(nil)
-
-// cueHandle serves one cue track of a single-file image: the generated header from
-// memory, then the image's frames through an ordinary MkvHandle whose file ends
-// where the track ends. MkvHandle itself is untouched.
-type cueHandle struct {
-	inner  *MkvHandle
-	header []byte
-	base   int64 // where the track's frames start in the torrent file
-	length int64 // image bytes the track spans
-}
-
-var _ fs.FileReader = (*cueHandle)(nil)
-var _ fs.FileReleaser = (*cueHandle)(nil)
-
-// openCueTrack opens the image through the regular path, sized to end at the end of
-// the track, and wraps it.
-func (n *VirtualMkvNode) openCueTrack(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
-	length := n.vMeta.Size - int64(len(n.vMeta.SegmentHeader))
-	if length <= 0 {
-		return nil, 0, syscall.EIO
-	}
-	inner := *n.vMeta
-	inner.Size = n.vMeta.SegmentOffset + length
-	inner.SegmentHeader = nil
-	fh, fuseFlags, errno := (&VirtualMkvNode{vMeta: &inner, wake: n.wake}).Open(ctx, flags)
-	if errno != 0 {
-		return nil, 0, errno
-	}
-	h, ok := fh.(*MkvHandle)
-	if !ok {
-		return nil, 0, syscall.EIO
-	}
-	return &cueHandle{inner: h, header: n.vMeta.SegmentHeader, base: n.vMeta.SegmentOffset, length: length}, fuseFlags, 0
-}
-
-func (h *cueHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
-	hdrFrom, hdrTo, innerOff, innerN := vfs.SegmentRead(len(h.header), h.base, h.length, off, len(dest))
-	n := copy(dest, h.header[hdrFrom:hdrTo])
-	if innerN > 0 {
-		want := dest[n : n+innerN]
-		res, errno := h.inner.Read(ctx, want, innerOff)
-		if errno != 0 {
-			// Never the header alone: a short read away from EOF is EOF to the
-			// kernel, and a cold torrent would truncate the track for the player.
-			return nil, errno
-		}
-		data, _ := res.Bytes(want)
-		got := copy(dest[n:], data)
-		res.Done()
-		if got < innerN {
-			return nil, syscall.EIO
-		}
-		n += got
-	}
-	return fuse.ReadResultData(dest[:n]), 0
-}
-
-func (h *cueHandle) Release(ctx context.Context) syscall.Errno {
-	return h.inner.Release(ctx)
-}
 
 // shortAwayFromEOF reports whether a read of n bytes into a want-sized buffer at off leaves a
 // gap before end of file. Short AT eof is normal; short before it is what the kernel turns
@@ -3458,20 +3096,17 @@ func getOrReadMeta(path string) (*vfs.Metadata, error) {
 		if val, ok := metaCache.Get(path); ok {
 			m = val
 		} else {
-			fileMeta, err := vfs.ReadMetadataFromFileWithLimits(path, stubSizeLimits(path))
+			fileMeta, err := vfs.ReadMetadataFromFileWithLimits(path, vfs.VideoSizeLimits)
 			if err != nil {
 				return nil, err
 			}
 
 			m = &vfs.Metadata{
-				URL:                 fileMeta.URL,
-				Size:                fileMeta.Size,
-				Mtime:               fileMeta.Mtime,
-				Path:                fileMeta.Path,
-				ImdbID:              fileMeta.ImdbID,
-				ExternalID:          fileMeta.ExternalID,
-				ExternalIDNamespace: fileMeta.ExternalIDNamespace,
-				Audio:               isAudioSectionPath(path),
+				URL:    fileMeta.URL,
+				Size:   fileMeta.Size,
+				Mtime:  fileMeta.Mtime,
+				Path:   fileMeta.Path,
+				ImdbID: fileMeta.ImdbID,
 			}
 
 			metaCache.Put(path, m, approximateMetadataSize(m))
@@ -3969,9 +3604,8 @@ type exactMatchEntry struct {
 
 // exactMatchKeys carries the webhook-side keys used by pass-1 matching.
 type exactMatchKeys struct {
-	imdbID     string
-	identities webhookIdentityKeys
-	basenames  []string
+	imdbID    string
+	basenames []string
 }
 
 // findExactMatch selects the pass-1 match among the registry entries.
@@ -4002,40 +3636,6 @@ func findExactMatch(keys exactMatchKeys, entries []exactMatchEntry) (string, *Pl
 			if imdb := e.state.GetImdbID(); imdb != "" && imdb == keys.imdbID {
 				return e.path, e.state
 			}
-		}
-	}
-	// Audio identity, most specific first: a session registered with the payload's
-	// recording id beats one that only shares its release group, which in turn beats
-	// one sharing the artist. Within one rank the most recent sign of life wins — the
-	// coarser the shared id, the weaker that tiebreak is, which is why an exact
-	// recording match is preferred over a recent artist match.
-	if !keys.identities.empty() {
-		bestRank := -1
-		var bestPath string
-		var bestState *PlaybackState
-		var bestAt time.Time
-		for _, e := range entries {
-			if e.state == nil {
-				continue
-			}
-			id, ns := e.state.GetExternalIdentity()
-			if id == "" {
-				continue
-			}
-			if ns != "" && !strings.EqualFold(ns, "musicbrainz") {
-				continue
-			}
-			rank, ok := keys.identities.rank(id)
-			if !ok {
-				continue
-			}
-			sign := e.state.LastSignOfLife()
-			if rank > bestRank || (rank == bestRank && (bestState == nil || sign.After(bestAt))) {
-				bestPath, bestState, bestAt, bestRank = e.path, e.state, sign, rank
-			}
-		}
-		if bestState != nil {
-			return bestPath, bestState
 		}
 	}
 	return "", nil
@@ -4183,26 +3783,16 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		payload.Event = "media.resume"
 	}
 
-	// Normalize Jellyfin ItemType values to Plex-style ("Movie"→"movie", "Episode"→"show")
-	// and Plex music section types ("artist", "album") to one audio marker. Audio is
-	// accepted so the identity pass can run, but its fuzzy name fallbacks stay behind:
-	// an album id is shared by every track, and a name-similarity guess would be worse
-	// than no match.
-	audioWebhook := false
+	// Normalize Jellyfin ItemType values to Plex-style ("Movie"→"movie", "Episode"→"show").
 	switch payload.Metadata.LibrarySectionType {
 	case "Movie":
 		payload.Metadata.LibrarySectionType = "movie"
 	case "Episode":
 		payload.Metadata.LibrarySectionType = "show"
-	case "artist", "album", "music", "Audio":
-		payload.Metadata.LibrarySectionType = "music"
-		audioWebhook = true
-	case "audiobook":
-		audioWebhook = true
 	}
 
 	switch payload.Metadata.LibrarySectionType {
-	case "movie", "show", "music", "audiobook":
+	case "movie", "show":
 	default:
 		return
 	}
@@ -4228,7 +3818,6 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		if m := reImdbID.FindStringSubmatch(payloadStr); len(m) > 1 {
 			webhookImdbID = m[1]
 		}
-		identities := webhookIdentityKeysFromPayload(sanitized)
 
 		// Pass 1: Exact matches only (filename, IMDB ID).
 		var basenames []string
@@ -4240,7 +3829,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		exactMatch, exactState := findExactMatch(
-			exactMatchKeys{imdbID: webhookImdbID, identities: identities, basenames: basenames},
+			exactMatchKeys{imdbID: webhookImdbID, basenames: basenames},
 			snapshotPlaybackEntries(),
 		)
 
@@ -4276,10 +3865,8 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Pass 2: Fuzzy matches only if no exact match found. Never for audio: the
-		// identity pass above is the precise match, and a name guess on a music payload
-		// could confirm a different track of the same album.
-		if exactMatch == "" && !audioWebhook {
+		// Pass 2: Fuzzy matches only if no exact match found.
+		if exactMatch == "" {
 			var bestMatch string
 			var bestState *PlaybackState
 			bestLevel := 0 // higher = better match
@@ -4364,7 +3951,6 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		if m := reImdbID.FindStringSubmatch(payloadStr); len(m) > 1 {
 			stopImdbID = m[1]
 		}
-		stopIdentities := webhookIdentityKeysFromPayload(sanitized)
 
 		var basenames []string
 		for _, m := range payload.Metadata.Media {
@@ -4377,15 +3963,14 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 
 		// Pass 1: Exact matches (filename, IMDB ID) — never the shared hash suffix.
 		stopMatch, stopState := findExactMatch(
-			exactMatchKeys{imdbID: stopImdbID, identities: stopIdentities, basenames: basenames},
+			exactMatchKeys{imdbID: stopImdbID, basenames: basenames},
 			snapshotPlaybackEntries(),
 		)
 
 		stopMatchFromFuzzy := false
 
-		// Pass 2: Fuzzy matches only if no exact match, and never for audio (see the
-		// play path): a name guess must not stop the wrong track.
-		if stopMatch == "" && !audioWebhook {
+		// Pass 2: Fuzzy matches only if no exact match.
+		if stopMatch == "" {
 			bestLevel := 0
 			playbackRegistry.Range(func(key, value interface{}) bool {
 				path := key.(string)
@@ -4459,24 +4044,12 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			})
 			imdbUnique = n == 1
 		}
-		// An audio identity match is exact: the matched state's registered id is one
-		// of the ids the webhook carried, at the best rank available. It is trusted
-		// like a basename even though sibling tracks can share a coarser id, because
-		// the identity pass preferred the session with the most specific match.
-		matchByIdentity := false
-		if stopMatch != "" && stopState != nil && !stopIdentities.empty() {
-			id, ns := stopState.GetExternalIdentity()
-			if id != "" && (ns == "" || strings.EqualFold(ns, "musicbrainz")) {
-				_, matchByIdentity = stopIdentities.rank(id)
-			}
-		}
-
 		// A fuzzy (pass 2) match is a name-similarity guess; an IMDB-only match is only
 		// trusted when unique. If such a match still has a live handle it is likely a
 		// sibling episode being read, so a late or spurious stop must not kill it.
 		// Basename and unique-IMDB matches are honored even with the handle open:
 		// ignoring them would leave the pump alive until the 2h idle timeout (V262).
-		if stopMatch != "" && stopState != nil && !matchByBasename && !matchByIdentity && !imdbUnique && anyLiveHandleFor(stopMatch) {
+		if stopMatch != "" && stopState != nil && !matchByBasename && !imdbUnique && anyLiveHandleFor(stopMatch) {
 			logger.Printf("[PLEX] STOP ignored for %s: fuzzy or ambiguous match with handle still open", filepath.Base(stopMatch))
 		} else if stopMatch != "" && stopState != nil {
 			stopState.mu.Lock()
@@ -4531,18 +4104,16 @@ func savePlaybackStateToDB(ps *PlaybackState) {
 	}
 	ps.mu.RLock()
 	rec := &metadb.PlaybackRecord{
-		Path:         ps.Path,
-		Hash:         ps.Hash,
-		ImdbID:       ps.ImdbID,
-		ExternalID:   ps.ExternalID,
-		ExternalIDNS: ps.ExternalIDNamespace,
-		OpenedAt:     ps.OpenedAt,
-		ConfirmedAt:  ps.ConfirmedAt,
-		IsHealthy:    ps.IsHealthy,
-		IsStopped:    ps.IsStopped,
-		LastReadAt:   ps.LastReadAt,
-		ReadCount:    ps.ReadCount,
-		LastSeekOff:  ps.LastSeekOff,
+		Path:        ps.Path,
+		Hash:        ps.Hash,
+		ImdbID:      ps.ImdbID,
+		OpenedAt:    ps.OpenedAt,
+		ConfirmedAt: ps.ConfirmedAt,
+		IsHealthy:   ps.IsHealthy,
+		IsStopped:   ps.IsStopped,
+		LastReadAt:  ps.LastReadAt,
+		ReadCount:   ps.ReadCount,
+		LastSeekOff: ps.LastSeekOff,
 	}
 	ps.mu.RUnlock()
 	if err := stateDB.SavePlaybackState(rec); err != nil {
@@ -4562,17 +4133,15 @@ func restorePlaybackStates(db *metadb.DB) {
 	for _, rec := range records {
 		if rec.IsHealthy && !rec.ConfirmedAt.IsZero() {
 			ps := &PlaybackState{
-				Path:                rec.Path,
-				Hash:                rec.Hash,
-				ImdbID:              rec.ImdbID,
-				ExternalID:          rec.ExternalID,
-				ExternalIDNamespace: rec.ExternalIDNS,
-				OpenedAt:            rec.OpenedAt,
-				ConfirmedAt:         rec.ConfirmedAt,
-				IsHealthy:           true,
-				ReadCount:           rec.ReadCount,
-				LastSeekOff:         rec.LastSeekOff,
-				LastReadAt:          rec.LastReadAt,
+				Path:        rec.Path,
+				Hash:        rec.Hash,
+				ImdbID:      rec.ImdbID,
+				OpenedAt:    rec.OpenedAt,
+				ConfirmedAt: rec.ConfirmedAt,
+				IsHealthy:   true,
+				ReadCount:   rec.ReadCount,
+				LastSeekOff: rec.LastSeekOff,
+				LastReadAt:  rec.LastReadAt,
 			}
 			playbackRegistry.Store(rec.Path, ps)
 			// Restore GoStorm priority
@@ -4831,9 +4400,8 @@ func main() {
 
 	finishGlobalInodeMapInit(logger)
 
-	// The dir cache must exist before the startup builder runs: audio
-	// reconciliation invalidates stale listings when it publishes, and a nil cache
-	// there is a panic in a bare goroutine that would kill the process before mount.
+	// The dir cache must exist before the startup builder runs: a nil cache there
+	// is a panic in a bare goroutine that would kill the process before mount.
 	globalDirCache = vfs.NewDirCache(10 * time.Second)
 
 	// Pre-populate cache at startup to improve Plex scan performance.
@@ -4890,7 +4458,7 @@ func main() {
 		shortStream, shortFetch := native.ShortReadCounts()
 		repairedStream, unfilledStream := native.ShortReadRepairCounts()
 
-		fmt.Fprintf(w, `{"version":"%s", "config_source":"%s", "uptime":"%s", "cache_entries":%d, "cache_size_mb":%.2f, "cleanup_hashes":%d, "cleanup_offsets":%d, "cleanup_activities":%d, "locks_total":%d, "master_concurrency_limit":%d, "streaming_threshold_kb":%d, "config_preload_workers":%d, "max_conns_per_host":%d, "read_ahead_total_bytes":%d, "read_ahead_active_bytes":%d, "read_ahead_stale_bytes":%d, "read_ahead_entries":%d, "read_ahead_budget":%d, "read_ahead_percent":%.2f, "read_ahead_active_percent":%.2f, "read_ahead_stale_percent":%.2f, "warmup_duration_buckets_lt_2_5_10_15_30_60_120_gte120s":%s, "hedge_trigger_count":%d, "hedge_circuit_open":%t, "fetch_singleflight_dedup":%d, "peer_eject_count":%d, "v304_banned_peers":%d, "fuse_short_reads":%d, "fuse_short_reads_repaired":%d, "fuse_short_reads_failed":%d, "short_read_stream":%d, "short_read_fetch":%d, "short_read_repaired":%d, "short_read_unfilled":%d, "peer_conns_tcp":%d, "peer_conns_utp":%d, "peer_rated_tcp":%d, "peer_rated_utp":%d, "peer_useful_bps_tcp":%.0f, "peer_useful_bps_utp":%.0f, "peer_eject_count_utp":%d, "peer_churn_count":%d, "peer_churn_count_utp":%d, "deadline_pieces":%d, "audio_namespace_state":"%s", "audio_namespace_entries":%d, "gradient2_peers":%d, "gradient2_backing_off":%d, "gradient2_limit_min":%d, "gradient2_limit_max":%d}`,
+		fmt.Fprintf(w, `{"version":"%s", "config_source":"%s", "uptime":"%s", "cache_entries":%d, "cache_size_mb":%.2f, "cleanup_hashes":%d, "cleanup_offsets":%d, "cleanup_activities":%d, "locks_total":%d, "master_concurrency_limit":%d, "streaming_threshold_kb":%d, "config_preload_workers":%d, "max_conns_per_host":%d, "read_ahead_total_bytes":%d, "read_ahead_active_bytes":%d, "read_ahead_stale_bytes":%d, "read_ahead_entries":%d, "read_ahead_budget":%d, "read_ahead_percent":%.2f, "read_ahead_active_percent":%.2f, "read_ahead_stale_percent":%.2f, "warmup_duration_buckets_lt_2_5_10_15_30_60_120_gte120s":%s, "hedge_trigger_count":%d, "hedge_circuit_open":%t, "fetch_singleflight_dedup":%d, "peer_eject_count":%d, "v304_banned_peers":%d, "fuse_short_reads":%d, "fuse_short_reads_repaired":%d, "fuse_short_reads_failed":%d, "short_read_stream":%d, "short_read_fetch":%d, "short_read_repaired":%d, "short_read_unfilled":%d, "peer_conns_tcp":%d, "peer_conns_utp":%d, "peer_rated_tcp":%d, "peer_rated_utp":%d, "peer_useful_bps_tcp":%.0f, "peer_useful_bps_utp":%.0f, "peer_eject_count_utp":%d, "peer_churn_count":%d, "peer_churn_count_utp":%d, "deadline_pieces":%d, "gradient2_peers":%d, "gradient2_backing_off":%d, "gradient2_limit_min":%d, "gradient2_limit_max":%d}`,
 			AppVersion,
 			gc().ConfigPath,
 			time.Since(startTime),
@@ -4909,7 +4477,6 @@ func main() {
 			peerStats.ConnsTCP, peerStats.ConnsUTP, peerStats.RatedTCP, peerStats.RatedUTP,
 			peerStats.UsefulBpsTCP, peerStats.UsefulBpsUTP,
 			peerStats.EjectUTP, peerStats.ChurnTotal, peerStats.ChurnUTP, deadlinePieces,
-			audioNamespaceState(), audioNamespaceEntries(),
 			g2Stats.Peers, g2Stats.BackingOff, g2Stats.LimitMin, g2Stats.LimitMax)
 	})
 
@@ -5043,35 +4610,11 @@ func main() {
 			registry = stateDB
 		}
 		libMgr := library.New(library.Config{
-			MoviesDir:  filepath.Join(gc().PhysicalSourcePath, "movies"),
-			TVDir:      filepath.Join(gc().PhysicalSourcePath, "tv"),
-			GoStormURL: gc().GoStormBaseURL,
-			GoStorm:    library.NewGoStormClient(gc().GoStormBaseURL),
-			Registry:   registry,
-			// Without this the drop path sees only movie and tv stubs, and removing
-			// the last one for a shared hash takes the torrent out from under any
-			// audio projection still backed by it.
-			//
-			// audioOwnershipRegistry(), not a raw stateDB value: on a boot where
-			// EnableStateDB is true but the DB failed to open, the raw value is nil
-			// and this path would permit exactly that drop.
-			AudioRegistry: audioOwnershipRegistry(),
-			// The audio sections live beside movies/ and tv/, and the projection
-			// registry is authoritative for what is published under them.
-			AudioRoot:        gc().PhysicalSourcePath,
-			AudioProjections: audioProjectionRegistry(),
-			// Without this a projection stays invisible to Readdir and Lookup
-			// until the next startup reconciliation.
-			PublishAudioPath: publishAudioProjectionsLive,
-			// Removal reaches the same object through the narrower interface it
-			// actually calls.
-			AudioRemoval: audioRemovalRegistry(),
-			// Without this a removed projection keeps resolving until its stub is
-			// gone and the next reconciliation runs.
-			UnpublishAudioPath: unpublishAudioProjectionLive,
-			// The audio reaper skips albums with an open session: the swarm counter is
-			// only acquitted when that session closes.
-			ActiveSession:  ttffActiveByHash,
+			MoviesDir:      filepath.Join(gc().PhysicalSourcePath, "movies"),
+			TVDir:          filepath.Join(gc().PhysicalSourcePath, "tv"),
+			GoStormURL:     gc().GoStormBaseURL,
+			GoStorm:        library.NewGoStormClient(gc().GoStormBaseURL),
+			Registry:       registry,
 			InvalidatePath: invalidateSyncRemovedPath,
 			// Read-only view of the holes the reaper left, for a client that can decide
 			// what to do about them.
@@ -5112,7 +4655,6 @@ func main() {
 			MediaServer:  mediaserver.New(gc().MediaServerType, gc().Plex.URL, gc().Plex.Token),
 			MovieSection: gc().Plex.LibraryID,
 			TVSection:    gc().Plex.TVLibraryID,
-			MusicSection: gc().Plex.MusicLibraryID,
 		})
 		libHandler := library.NewHandler(libMgr)
 		http.HandleFunc("/api/library/add", libHandler.Add)
@@ -5300,24 +4842,6 @@ func getFileInodeFromMap(fullPath string) uint64 {
 	return hashFilenameToInode(filepath.Base(fullPath)) & vfs.InodeFileMask
 }
 
-// publishAudioProjectionsLive wires a committed audio batch into the live VFS. Every
-// inode is registered before the namespace gains the paths, exactly as startup
-// reconciliation does, so a Readdir that lands before the first Lookup emits the
-// content-derived inode instead of a basename-derived fallback (or, through the basename
-// map, the inode of a different projection that happens to share the basename). The batch
-// lands in one namespace update, so no reader observes half an album.
-func publishAudioProjectionsLive(ps []library.AudioProjection) {
-	for _, p := range ps {
-		if globalInodeMap != nil {
-			full := filepath.Join(physicalSourcePath, string(p.Section), filepath.FromSlash(p.VirtualPath))
-			globalInodeMap.AddFile(full, vfs.SegmentInodeHash(p.Hash, p.CueTrack), p.FileIndex)
-		}
-	}
-	if globalAudioNamespace != nil {
-		globalAudioNamespace.AddProjections(ps)
-	}
-}
-
 func getDirInodeFromMap(relativePath string) uint64 {
 	if globalInodeMap == nil {
 		return vfs.GenerateDirInode(relativePath)
@@ -5336,23 +4860,6 @@ func addFileToInodeMap(fullPath, url string) uint64 {
 	return globalInodeMap.AddFile(fullPath, hash, index)
 }
 
-// addMetaToInodeMap registers a virtual file's inode. A cue track joins its track to
-// the key, since the tracks of an image share one torrent file; every other file,
-// video included, goes through addFileToInodeMap unchanged.
-func addMetaToInodeMap(fullPath string, meta *vfs.Metadata) uint64 {
-	if meta.SegmentTrack <= 0 {
-		return addFileToInodeMap(fullPath, meta.URL)
-	}
-	if globalInodeMap == nil {
-		return 0
-	}
-	hash, index := vfs.ExtractHashAndIndex(meta.URL)
-	if hash == "" {
-		return 0
-	}
-	return globalInodeMap.AddFile(fullPath, vfs.SegmentInodeHash(hash, meta.SegmentTrack), index)
-}
-
 func GetInodeMapStats() (files, dirs, hits, misses int64) {
 	if globalInodeMap == nil {
 		return 0, 0, 0, 0
@@ -5367,182 +4874,10 @@ func (l *vfsLogger) Printf(format string, args ...interface{}) {
 	l.logger.Printf(format, args...)
 }
 
-// pathUsesSSDWarmup reports whether a projection at this physical path takes the
-// movie/TV head/tail SSD warmup. A path outside every known section keeps the
-// existing behavior; only the audio sections opt out.
-func pathUsesSSDWarmup(path string) bool {
-	section, ok := library.SectionForPath(physicalSourcePath, path)
-	if !ok {
-		return true
-	}
-	return library.UsesSSDWarmup(section)
-}
-
-// classifyVFSPath is the single dispatch decision every FUSE entry point shares:
-// Readdir, Lookup, Getattr and Open must agree about what is a virtual file, or a
-// scanner sees names it cannot open. physicalSourcePath is the effective root,
-// which is the CLI argument when one was given.
-// globalAudioNamespace is the committed audio namespace the VFS dispatches on.
-// Extension alone must not publish a projection: a stub the registry disowned,
-// or one nobody ever committed, would otherwise be listed and served.
-var globalAudioNamespace = library.NewAudioNamespace()
-
-func classifyVFSPath(fullPath string) library.VFSClass {
-	return library.ClassifyProjection(physicalSourcePath, fullPath, globalAudioNamespace)
-}
-
-// stubSizeLimits picks the size guard for a stub. Audio drops the movie-sized
-// floor: a valid track or book part is legitimately small.
-// Size limits follow the file format, not ownership: reading a stub must work
-// even for a projection the registry has disowned, or recovery could not see it.
-func stubSizeLimits(fullPath string) vfs.SizeLimits {
-	if library.ClassifyPath(physicalSourcePath, fullPath).Audio {
-		return vfs.AudioSizeLimits
-	}
-	return vfs.VideoSizeLimits
-}
-
-// audioOwnershipRegistry is what every drop guard consults. The nil case means
-// audio is genuinely not configured; when the state DB was expected but could not
-// be opened, an unavailable registry is returned instead so a tolerated
-// persistence failure cannot become permission to delete shared torrents.
-func audioOwnershipRegistry() library.AudioRegistry {
-	if stateDB != nil {
-		return stateDB
-	}
-	if gc().EnableStateDB {
-		return library.UnavailableAudioRegistry{Err: errStateDBUnavailable}
-	}
-	return nil
-}
-
-// audioNamespaceState reports the audio namespace readiness to external observers:
-// "Ready" only once reconciliation published a coherent committed set, never during
-// a partial rebuild (spec 8).
-func audioNamespaceState() string {
-	if globalAudioNamespace == nil {
-		return "Uninitialized"
-	}
-	return globalAudioNamespace.State().String()
-}
-
-func audioNamespaceEntries() int {
-	if globalAudioNamespace == nil {
-		return 0
-	}
-	return globalAudioNamespace.Len()
-}
-
-// audioProjectionRegistry returns the projection registry only when it is really
-// open: a typed-nil *metadb.DB would satisfy the interface and then panic.
-func audioProjectionRegistry() library.AudioProjectionRegistry {
-	if stateDB == nil {
-		return nil
-	}
-	return stateDB
-}
-
-// audioRemovalRegistry mirrors audioProjectionRegistry for the removal half of the
-// registry, so a boot whose DB failed to open cannot half-enable the endpoint.
-func audioRemovalRegistry() library.AudioRemovalRegistry {
-	if stateDB == nil {
-		return nil
-	}
-	return stateDB
-}
-
-// unpublishAudioProjectionLive drops a removed projection from the live VFS and clears
-// the caches that still answer for it, before its stub is unlinked.
-func unpublishAudioProjectionLive(p library.AudioProjection) {
-	if globalAudioNamespace != nil {
-		globalAudioNamespace.Remove(p.Path())
-	}
-	invalidateSyncRemovedPath(filepath.Join(physicalSourcePath, string(p.Section), filepath.FromSlash(p.VirtualPath)))
-}
-
-var errStateDBUnavailable = errors.New("state DB is enabled but was not opened")
-
-// audioReadyWait bounds how long a VFS operation waits for reconciliation. The
-// wait exists because reconciliation always finishes; the bound exists because
-// "always" is a claim about code that could regress. Without it, a builder that
-// never runs would hang the mount for the life of the process, and a hung mount
-// is harder to diagnose than an I/O error.
-const audioReadyWait = 2 * time.Minute
-
-// audioWaitServable blocks until an audio directory may be served, and reports
-// the errno to fail with when it may not.
-//
-// Movies and tv return immediately in every state: they are read straight from
-// disk and must never wait on the audio registry.
-//
-// This replaced a bare syscall.EAGAIN. Pass 4 read the scanner sources: GNU ls
-// reports and stops, Navidrome retries once then returns the entries it has
-// (none), and Audiobookshelf converts the error to an empty slice and then marks
-// existing items missing. The errno chosen to avoid an apparent-empty library
-// produced exactly that on two supported scanners. Blocking is what a network
-// filesystem does, and scanners tolerate slow far better than empty.
-func audioWaitServable(ctx context.Context, dir string) syscall.Errno {
-	section, ok := library.SectionForPath(physicalSourcePath, filepath.Join(dir, "x"))
-	if !ok || !library.IsAudioSection(section) {
-		return 0
-	}
-	waitCtx, cancel := context.WithTimeout(ctx, audioReadyWait)
-	defer cancel()
-
-	err := globalAudioNamespace.WaitServable(waitCtx)
-	switch {
-	case err == nil:
-		return 0
-	case errors.Is(err, library.ErrAudioReconcileFailed):
-		// Terminal. Never ENOENT: a scanner reads absence as a deletion.
-		return syscall.EIO
-	case ctx.Err() != nil:
-		// The caller gave up, not us. EINTR says interrupted rather than failed.
-		return syscall.EINTR
-	default:
-		// Our own deadline expired, so reconciliation never terminated.
-		logger.Printf("AUDIO: readiness wait expired after %s for %s", audioReadyWait, dir)
-		return syscall.EIO
-	}
-}
-
-// audioProjectionMeta builds an audio file's metadata from its committed registry
-// row instead of the physical stub. The registry is authoritative for audio
-// (spec §5.1), and the stream URL is recomputed from (hash, file_index) rather
-// than read back from the stub, which spec §5.2 calls a second potentially stale
-// source of truth. A stub swapped underneath therefore cannot change what is
-// served, and a stub with an unparseable URL cannot make a committed row
-// unreadable.
-func audioProjectionMeta(fullPath string, p library.AudioProjection) *vfs.Metadata {
-	return &vfs.Metadata{
-		URL:                 fmt.Sprintf("%s/stream?link=%s&index=%d&play", strings.TrimRight(gc().GoStormBaseURL, "/"), p.Hash, p.FileIndex),
-		Size:                p.Size,
-		Mtime:               time.Unix(0, p.MtimeNS),
-		Path:                fullPath,
-		ExternalID:          p.ExternalID,
-		ExternalIDNamespace: p.ExternalIDNamespace,
-		Audio:               true,
-		SegmentTrack:        p.CueTrack,
-		SegmentOffset:       p.ByteOffset,
-		SegmentHeader:       p.Header,
-	}
-}
-
-// committedAudioMeta returns registry-derived metadata when the namespace owns
-// the path. ok is false for video and for anything uncommitted.
-func committedAudioMeta(fullPath string) (*vfs.Metadata, bool) {
-	p, ok := library.CommittedProjectionFor(physicalSourcePath, fullPath, globalAudioNamespace)
-	if !ok {
-		return nil, false
-	}
-	return audioProjectionMeta(fullPath, p), true
-}
-
-// stubMeta returns a virtual file's metadata. Audio comes from its committed
-// registry row; video keeps reading its physical stub exactly as before.
-func stubMeta(fullPath string) (*vfs.Metadata, error) {
-	if meta, ok := committedAudioMeta(fullPath); ok {
-		return meta, nil
-	}
-	return getOrReadMeta(fullPath)
+// isStubPath reports whether a physical path is a virtual file. Every FUSE entry
+// point shares it: Readdir, Lookup, Getattr and Open must agree about what is a
+// virtual file, or a scanner sees names it cannot open.
+func isStubPath(fullPath string) bool {
+	base := filepath.Base(fullPath)
+	return len(base) > len(".mkv") && strings.HasSuffix(base, ".mkv")
 }

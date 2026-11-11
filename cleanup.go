@@ -287,7 +287,7 @@ func (cm *CleanupManager) runCleanup() {
 
 		// Remove entries older than 24h (just in case). This branch is only reached with
 		// activePaths[path] == true, so a FUSE handle is open: its pump is not an orphan, it
-		// may be serving a playback that has been running for days (audio handles stay open).
+		// may be serving a playback that has been running for days.
 		// Terminating it here would cut the data path under a live reader, and a leaked handle
 		// cannot be told apart from a long playback. Reclaiming is left to the idle handle
 		// reaper and to the 15-minute branch above, which runs once no handle is open.

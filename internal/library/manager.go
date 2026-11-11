@@ -3,7 +3,6 @@ package library
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -58,35 +57,8 @@ type Config struct {
 	MediaServer  MediaServer
 	MovieSection int
 	TVSection    int
-	// MusicSection is the music library id: an audio add or removal is invisible to
-	// the media server until it rescans, like a stub. 0 leaves Plex alone.
-	MusicSection int
 	// RefreshDelay is how long refreshes are coalesced for; 0 means the default.
 	RefreshDelay time.Duration
-	// AudioRegistry, when set, is asked whether an audio projection still
-	// references a torrent before it is dropped. An audio projection is a registry
-	// row rather than a stub under the media directories, so the filesystem scan
-	// cannot see it.
-	AudioRegistry AudioRegistry
-	// AudioRoot is the physical directory holding the audio section roots.
-	AudioRoot string
-	// AudioProjections is the registry an audio add stages, commits and rolls
-	// back through. *metadb.DB satisfies it.
-	AudioProjections AudioProjectionRegistry
-	// PublishAudioPath, when set, adds a committed batch of projections to the
-	// namespace the VFS dispatches on, in one update so a Readdir cannot see half an
-	// album. Without it the projections are invisible until reconciliation.
-	PublishAudioPath func([]AudioProjection)
-	// AudioRemoval is the removal half of the projection registry: claiming a row,
-	// forgetting it and counting references. *metadb.DB satisfies it; it is separate
-	// from AudioProjections so read-only seams stay minimal.
-	AudioRemoval AudioRemovalRegistry
-	// UnpublishAudioPath, when set, drops a removed projection from the namespace the
-	// VFS dispatches on, before its stub is unlinked.
-	UnpublishAudioPath func(AudioProjection)
-	// ActiveSession, when set, reports whether a hash has an open playback session.
-	// The list exposes it so a reaper can skip an album that is being listened to.
-	ActiveSession func(hash string) bool
 }
 
 // Manager adds and removes library entries on behalf of external clients: it does what
@@ -155,9 +127,6 @@ type AddRequest struct {
 	// to replace the episode with any release it scores above zero.
 	QualityScore int `json:"quality_score"`
 	MetadataWait int `json:"metadata_wait"`
-	// Files carries the requested projections for an audio type: one torrent
-	// can back many of them, and the caller names each one.
-	Files []AudioFileRequest `json:"files"`
 	// AcceptFiles vets the torrent's file list once metadata arrives; an error drops
 	// the torrent and becomes a 422. Not part of the HTTP contract.
 	AcceptFiles func(paths []string) error `json:"-"`
@@ -182,21 +151,14 @@ type AddResponse struct {
 }
 
 type RemoveRequest struct {
-	// Type routes audio removal ("music", "audiobook"); video requests predate it
-	// and may omit it.
+	// Type is "movie" or "tv", or omitted: video requests predate it.
 	Type string `json:"type"`
 	Path string `json:"path"`
-	// Prefix removes every projection under a section-relative album prefix. Path
-	// and Prefix are mutually exclusive.
-	Prefix string `json:"prefix"`
-	Hash   string `json:"hash"`
+	Hash string `json:"hash"`
 	// Blacklist keeps the release out: without it a later add is free to file the
 	// title back, which is what you want when removing to upgrade
 	// and not what you want when removing for good.
 	Blacklist bool `json:"blacklist"`
-	// DropTorrent (audio only) also removes the torrent and its failure counter once
-	// no projection or stub references it; audio removal otherwise leaves it in place.
-	DropTorrent bool `json:"drop_torrent"`
 }
 
 // Gap is an episode removed because its release died and nothing live replaced it.
@@ -768,20 +730,6 @@ func (m *Manager) dropTorrentIfUnused(ctx context.Context, hash string) bool {
 			return false
 		}
 	}
-	// Audio lives in the projection registry, not as a stub under the media
-	// directories, so the scan above cannot see it: one torrent behind both a movie
-	// and an album would be dropped from under the album. Staged and removing rows
-	// count too - a removal still in flight may have a reader holding the file open.
-	if m.cfg.AudioRegistry != nil {
-		referenced, err := m.cfg.AudioRegistry.AudioHashReferenced(hash)
-		if err != nil {
-			m.cfg.Logger.Printf("[LibraryAPI] WARNING: keeping torrent %s, cannot check its audio projections: %v", hash, err)
-			return false
-		}
-		if referenced {
-			return false
-		}
-	}
 	return m.dropTorrent(ctx, hash)
 }
 
@@ -808,15 +756,6 @@ func (m *Manager) pickFileForEpisode(req AddRequest, files []FileStat) (*FileSta
 		return best, nil
 	}
 	return m.pickFile(0, files)
-}
-
-// audioSection is the media server library of an audio section; audiobooks have
-// no configured id yet.
-func (m *Manager) audioSection(s Section) int {
-	if s == SectionMusic {
-		return m.cfg.MusicSection
-	}
-	return 0
 }
 
 func (m *Manager) section(kind string) int {
@@ -902,6 +841,11 @@ func (m *Manager) findByHash(kind, hash string) ([]AddedFile, error) {
 // Remove deletes the stubs for a title, the torrent behind them, and the registry
 // entries pointing at them.
 func (m *Manager) Remove(ctx context.Context, req RemoveRequest) (*RemoveResponse, error) {
+	switch strings.ToLower(strings.TrimSpace(req.Type)) {
+	case "", "movie", "movies", "film", "tv", "show", "series", "episode":
+	default:
+		return nil, errf(http.StatusBadRequest, "unknown type %q: use movie or tv", req.Type)
+	}
 	var targets []string
 
 	switch {
@@ -983,37 +927,6 @@ func (m *Manager) blacklist(path, hash string) string {
 		return fmt.Sprintf("%s removed but not blacklisted: %v", path, err)
 	}
 	return ""
-}
-
-// RemoveAny routes a removal to the audio or video path, as the HTTP handler does.
-// The returned value is the concrete response of the path taken.
-func (m *Manager) RemoveAny(ctx context.Context, req RemoveRequest) (any, error) {
-	if section, canonical := SectionForType(req.Type); canonical && IsAudioSection(section) {
-		switch {
-		case req.Path != "" && req.Prefix != "":
-			return nil, errf(http.StatusBadRequest, "path and prefix are mutually exclusive")
-		case req.Path == "" && req.Prefix == "":
-			return nil, errf(http.StatusBadRequest, "path or prefix is required")
-		case req.Prefix != "":
-			resp, err := m.RemoveAudioPrefix(ctx, req)
-			if err != nil {
-				return nil, err
-			}
-			return resp, nil
-		}
-	}
-	audio, err := m.RemoveAudio(ctx, req)
-	if !errors.Is(err, ErrRequestNotAudio) {
-		if err != nil {
-			return nil, err
-		}
-		return audio, nil
-	}
-	resp, err := m.Remove(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return resp, nil
 }
 
 func (m *Manager) forgetEpisode(path string) {

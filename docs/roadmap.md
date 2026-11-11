@@ -68,3 +68,8 @@ a switch or calls out to third parties.
   client and `prowlarr` config key stay for `cmd/musicimport` until step 8;
   the control panel no longer exposes them. The GoStorm client moved into
   `internal/library`.
+- 2026-11-11, trim step 8: music and audiobooks (import, cue splitting,
+  audio library API, projections and their FUSE paths), the Prowlarr client
+  and the music-only configuration are removed. Existing `music/` and
+  `audiobooks/` folders stay on disk; the mount lists them as directories
+  without their audio files. Trim to the streaming core is complete.
