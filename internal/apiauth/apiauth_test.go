@@ -59,3 +59,53 @@ func TestMiddleware(t *testing.T) {
 		})
 	}
 }
+
+func serveGoStorm(token, method, target, auth string) *httptest.ResponseRecorder {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	req := httptest.NewRequest(method, target, nil)
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	rec := httptest.NewRecorder()
+	GoStorm(token, nil, next).ServeHTTP(rec, req)
+	return rec
+}
+
+func TestGoStorm(t *testing.T) {
+	tests := []struct {
+		name, token, method, target, auth string
+		want                              int
+	}{
+		{"off passes torrents", "", "POST", "/torrents", "", 200},
+		{"off passes shutdown", "", "GET", "/shutdown", "Bearer nope", 200},
+		{"echo open", tok, "GET", "/echo", "", 200},
+		{"echo POST not open", tok, "POST", "/echo", "", 401},
+		{"echo subpath not open", tok, "GET", "/echo/x", "", 401},
+		{"torrents valid header", tok, "POST", "/torrents", "Bearer " + tok, 200},
+		{"torrents missing header", tok, "POST", "/torrents", "", 401},
+		{"torrents wrong header", tok, "POST", "/torrents", "Bearer wrong", 401},
+		{"basic scheme", tok, "POST", "/torrents", "Basic " + tok, 401},
+		{"stream needs token", tok, "GET", "/stream?link=abc&index=1&play", "", 401},
+		{"stream with header", tok, "GET", "/stream?link=abc&index=1&play", "Bearer " + tok, 200},
+		{"play needs token", tok, "GET", "/play/abc/1", "", 401},
+		{"shutdown needs token", tok, "GET", "/shutdown", "", 401},
+		{"settings needs token", tok, "POST", "/settings", "", 401},
+		{"query token refused on stream", tok, "GET", "/stream?link=abc&token=" + tok, "", 401},
+		{"query token refused on torrents", tok, "POST", "/torrents?token=" + tok, "", 401},
+		{"query token refused on webhook path", tok, "POST", "/webhook?token=" + tok, "", 401},
+		{"query token refused on plex webhook path", tok, "POST", "/plex/webhook?token=" + tok, "", 401},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := serveGoStorm(tt.token, tt.method, tt.target, tt.auth)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d, want %d", rec.Code, tt.want)
+			}
+			if tt.want == 401 && rec.Header().Get("WWW-Authenticate") != "Bearer" {
+				t.Errorf("WWW-Authenticate = %q, want Bearer", rec.Header().Get("WWW-Authenticate"))
+			}
+		})
+	}
+}

@@ -37,7 +37,8 @@ is the only way in besides the mount.
 
 ### Status
 
-Implemented, inherited from Tiramisu and running. The control API has no
-authentication: it is meant to be reachable only from the host and a trusted
-network. Planned changes are in the repository's `docs/roadmap.md`; ideas not
-yet planned are in `docs/ideas.md`.
+Implemented, inherited from Tiramisu and running. The control API and the
+engine's server on port 8090 take an opt-in bearer token (`api_token`); with
+none set they are open and meant to be reachable only from the host and a
+trusted network. Planned changes are in the repository's `docs/roadmap.md`;
+ideas not yet planned are in `docs/ideas.md`.

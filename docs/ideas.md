@@ -44,11 +44,6 @@ Bugs and data-loss risks. None open.
   sequential read ended in EIO. Real swarms have such peers; check the
   leecher's request timeouts against them.
 
-- **Timeouts on the engine's HTTP server.** GoStorm's gin server on port
-  8090 runs with no read, write or idle timeouts (`internal/gostorm/web`).
-  `/stream` responses are long-lived, so a write timeout does not fit; read
-  header and idle timeouts do.
-
 - **An `App` struct instead of package-level state.** The FUSE handle, the
   pump, the webhook and the cleanup manager share seven package-level maps
   (`activeHandles`, `activePumps`, `playbackRegistry`, `pumpTimers`,

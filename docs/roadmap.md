@@ -97,6 +97,8 @@ Releases and deployment are scheduled separately.
 
 ## Done
 
+- 2026-11-11, hardening step 4: GoStorm's server on 8090 has read-header and
+  idle timeouts and honours the same opt-in token (except `/echo`).
 - 2026-11-11, hardening step 3: the library writes stubs under the path the
   mount serves; a different path in config.json is logged and overridden.
 - 2026-11-11, hardening step 2: table tests pin the pump and handle decision

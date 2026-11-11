@@ -250,6 +250,7 @@ func main() {
 
 	// Before the engine starts serving streams (Dezoxy fork, see torrstor.BoundedReadahead).
 	torrstor.BoundedReadahead = !gc().PumpOnOpen
+	server.SetAPIToken(gc().APIToken)
 	go func() {
 		logger.Println("Starting Embedded GoStorm Engine...")
 		server.Start() // Starts Web Server on 8090 and Engine
@@ -591,6 +592,9 @@ func main() {
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if t := gc().APIToken; t != "" {
+			req.Header.Set("Authorization", "Bearer "+t)
+		}
 		resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
 		if err != nil {
 			http.Error(w, "gostorm unreachable: "+err.Error(), http.StatusBadGateway)
@@ -639,7 +643,7 @@ func main() {
 			MoviesDir:      filepath.Join(gc().PhysicalSourcePath, "movies"),
 			TVDir:          filepath.Join(gc().PhysicalSourcePath, "tv"),
 			GoStormURL:     gc().GoStormBaseURL,
-			GoStorm:        library.NewGoStormClient(gc().GoStormBaseURL),
+			GoStorm:        library.NewGoStormClient(gc().GoStormBaseURL, gc().APIToken),
 			Registry:       registry,
 			InvalidatePath: invalidateSyncRemovedPath,
 			// Read-only view of the holes the reaper left, for a client that can decide

@@ -68,8 +68,10 @@ headers, so `/plex/webhook` and `/webhook` also accept the token in the URL,
 for example `http://host:9080/plex/webhook?token=<token>`; no other route
 does. `/control` loads without it and asks for the token on its first call,
 then keeps it in the browser's local storage. `GET /api/config` never
-returns the token, and saving from the panel leaves it unchanged. GoStorm's
-port 8090 is not covered, and there is no TLS: see `SECURITY.md`.
+returns the token, and saving from the panel leaves it unchanged. The
+same token covers GoStorm's port 8090 (every route except `GET /echo`, header
+only, no `?token=`); external clients of 8090 must send it. There is no TLS:
+see `SECURITY.md`.
 
 ## Viewing the model
 

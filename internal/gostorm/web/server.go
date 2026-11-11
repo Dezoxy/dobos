@@ -2,9 +2,12 @@ package web
 
 import (
 	"net"
+	"net/http"
 	"os"
 	"sort"
+	"time"
 
+	"flodni/internal/apiauth"
 	"flodni/internal/gostorm/log"
 	"flodni/internal/gostorm/settings"
 	"flodni/internal/gostorm/torr"
@@ -23,7 +26,23 @@ import (
 var (
 	BTS      = torr.NewBTS()
 	waitChan = make(chan error, 3)
+
+	// APIToken, when set before Start, is required as a bearer token on every
+	// route except GET /echo. Empty: no auth.
+	APIToken string
 )
+
+// newServer wraps the gin engine at the http.Server level so no route bypasses
+// the token. Only the header read and idle connections are bounded: /stream
+// and /torrent/upload are long-lived or large, so no read or write timeout.
+func newServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           apiauth.GoStorm(APIToken, nil, h),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
 
 func Start() {
 	log.TLogln("Start GoStorm " + version.Version + " torrent " + version.GetTorrentVersion())
@@ -75,13 +94,16 @@ func Start() {
 		}
 		go func() {
 			log.TLogln("Start https server at", settings.IP+":"+settings.SslPort)
-			waitChan <- route.RunTLS(settings.IP+":"+settings.SslPort, settings.BTsets.SslCert, settings.BTsets.SslKey)
+			waitChan <- newServer(settings.IP+":"+settings.SslPort, route).ListenAndServeTLS(settings.BTsets.SslCert, settings.BTsets.SslKey)
 		}()
 	}
 
+	if APIToken != "" {
+		log.TLogln("Bearer-token auth enabled (all routes except GET /echo)")
+	}
 	go func() {
 		log.TLogln("Start http server at", settings.IP+":"+settings.Port)
-		waitChan <- route.Run(settings.IP + ":" + settings.Port)
+		waitChan <- newServer(settings.IP+":"+settings.Port, route).ListenAndServe()
 	}()
 }
 

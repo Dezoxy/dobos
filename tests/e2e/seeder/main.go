@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -140,6 +141,9 @@ func run(out, flodni string, peerPort, trackerPort int) error {
 			return fmt.Errorf("unauthenticated library add: status %d, want 401", status)
 		}
 		log.Printf("unauthenticated library add refused: status %d", status)
+		if err := checkGoStormAuth(ctx, flodni); err != nil {
+			return err
+		}
 	}
 	fusePath, err := addToLibrary(ctx, flodni, hash.HexString(), torrentFile.Bytes())
 	if err != nil {
@@ -374,6 +378,41 @@ func addAccepted(ctx context.Context, flodni string, req map[string]any) (string
 // postAdd sends one add request and returns the status and body, whatever the status.
 func postAdd(ctx context.Context, flodni string, req map[string]any) (int, []byte, error) {
 	return postAddAs(ctx, flodni, apiToken(), req)
+}
+
+// checkGoStormAuth pins the engine's server on 8090 under the same token: torrent
+// control without the header is refused, the readiness probe stays open.
+func checkGoStormAuth(ctx context.Context, flodni string) error {
+	client := &http.Client{Timeout: 10 * time.Second}
+	do := func(method, path, body string) (int, error) {
+		req, err := http.NewRequestWithContext(ctx, method, "http://"+flodni+":8090"+path, strings.NewReader(body))
+		if err != nil {
+			return 0, err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, err
+		}
+		resp.Body.Close()
+		return resp.StatusCode, nil
+	}
+	status, err := do(http.MethodPost, "/torrents", `{"action":"list"}`)
+	if err != nil {
+		return err
+	}
+	if status != http.StatusUnauthorized {
+		return fmt.Errorf("unauthenticated POST :8090/torrents: status %d, want 401", status)
+	}
+	log.Printf("unauthenticated POST :8090/torrents refused: status %d", status)
+	status, err = do(http.MethodGet, "/echo", "")
+	if err != nil {
+		return err
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("unauthenticated GET :8090/echo: status %d, want 200", status)
+	}
+	log.Printf("unauthenticated GET :8090/echo open: status %d", status)
+	return nil
 }
 
 // apiToken is the control API token the stack runs with; empty means auth is off.

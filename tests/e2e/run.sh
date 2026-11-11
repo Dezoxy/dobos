@@ -14,7 +14,8 @@
 # expects the undeliverable release to be accepted (the replacement variant must
 # fail); E2E_ONLY=<variant> runs just that variant. The index-cache variant runs
 # with a random FLODNI_API_TOKEN: the seeder must see 401 without the bearer
-# header before its authorised add; the other variants run with auth off.
+# header before its authorised add, and the same for GoStorm's 8090 (401 on
+# POST /torrents, 200 on /echo); the other variants run with auth off.
 set -euo pipefail
 
 FLODNI_IMAGE=${1:-flodni:ci}
@@ -196,6 +197,13 @@ run_variant() {
       return 1
     fi
     echo "ok ($variant): add without token refused with 401, with token accepted" >&2
+    if ! docker logs "$seeder" 2>&1 | grep -q 'unauthenticated POST :8090/torrents refused: status 401' ||
+      ! docker logs "$seeder" 2>&1 | grep -q 'unauthenticated GET :8090/echo open: status 200'; then
+      echo "FAIL ($variant): GoStorm on 8090 did not refuse torrent control without a token, or closed /echo" >&2
+      dump_diagnostics
+      return 1
+    fi
+    echo "ok ($variant): GoStorm 8090 refused POST /torrents with 401, /echo open" >&2
   fi
   echo "PASS ($variant): sha256 $actual" >&2
 
