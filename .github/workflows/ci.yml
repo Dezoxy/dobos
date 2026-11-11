@@ -24,19 +24,19 @@ jobs:
     name: Build and test
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # The image's own build stage: the same Go and Debian packages as docker/Dockerfile,
+    # and no dependency on the runner's Ubuntu mirror, which failed to resolve for hours.
+    container:
+      image: golang:1.26-bookworm@sha256:dc40a13b61304647ed7e5d581d246b86413dfc29d63c6d018310feb93cd98fc0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: go.mod
-          # Module and build cache for branches and pull requests only. It can only change
-          # how fast tests run: the published image is built by Publish, in Docker, with no
-          # cache at all.
-          cache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: FUSE headers for the cgo build
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libfuse3-dev pkg-config
+        run: |
+          apt-get update -o Acquire::Retries=3
+          apt-get install -y --no-install-recommends -o Acquire::Retries=3 libfuse3-dev pkg-config
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
       # The vendored anacrolix fork keeps its own project's formatting.
       - name: Check formatting
         run: |
