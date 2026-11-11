@@ -26,3 +26,7 @@ updates:
       go-modules:
         patterns: ["*"]
         update-types: [minor, patch]
+    # missinggo 2.11 moves to roaring/v2, which the vendored engine does not build against.
+    ignore:
+      - dependency-name: github.com/anacrolix/missinggo/v2
+        versions: [">= 2.11.0"]
