@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flodni/internal/gostorm/native"
 	"flodni/internal/gostorm/torr"
 	torrstor "flodni/internal/gostorm/torr/storage/torrstor"
 	"flodni/internal/warmup"
@@ -21,7 +20,7 @@ type tailFillTarget struct {
 // NativePumpState tracks a shared pump across multiple handles for the same file.
 type NativePumpState struct {
 	cancel           context.CancelFunc
-	reader           *native.NativeReader
+	reader           streamReader
 	path             string
 	refCount         int32
 	playerOff        int64       // last known player position, saved on handle release
@@ -304,7 +303,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 // nativePump reads continuously from the Native pipe and fills raCache.
 // sharedState guards against orphan-delete in defer. pumpReader is captured by the caller
 // so a concurrent Release cannot nil it out from under the goroutine.
-func (h *MkvHandle) nativePump(ctx context.Context, pumpReader *native.NativeReader, startOffset int64, sharedState *NativePumpState) {
+func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, startOffset int64, sharedState *NativePumpState) {
 	// The master slot must be returned on every exit, including the early return below.
 	// It used to be released only by the teardown defer, which the nil-reader return path
 	// never reached, leaking one slot per event.
@@ -568,7 +567,7 @@ func pumpLeadLimit(budget, chunkSize int64) int64 {
 	return lead
 }
 
-func (h *MkvHandle) nativePumpChunk(r *native.NativeReader, offset, chunkSize, playerOff int64) (stop bool, nextOffset int64) {
+func (h *MkvHandle) nativePumpChunk(r streamReader, offset, chunkSize, playerOff int64) (stop bool, nextOffset int64) {
 	// Don't pump beyond file size
 	if offset >= h.size {
 		return true, offset

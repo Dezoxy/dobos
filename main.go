@@ -71,7 +71,7 @@ var globalRateLimiter *ratelimit.RateLimiter
 var globalLockManager *lockmgr.LockManager
 var globalDirCache *vfs.DirCache
 
-var nativeBridge *native.NativeClient
+var nativeBridge engineBridge
 
 var globalCleanupManager *CleanupManager
 var globalTorrentRemover *TorrentRemover
@@ -324,7 +324,7 @@ func main() {
 
 	catalog.SetRetryDefaults(gc().MaxRetryAttempts, time.Duration(gc().RetryDelayMS)*time.Millisecond)
 
-	nativeBridge = native.NewNativeClient()
+	nativeBridge = nativeEngine{native.NewNativeClient()}
 
 	go tuner.Start(context.Background())
 

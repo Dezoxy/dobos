@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"flodni/internal/atomicfile"
-	"flodni/internal/gostorm/native"
 	"flodni/internal/vfs"
 )
 
@@ -23,13 +22,13 @@ import (
 // TorrentRemover handles automatic torrent removal from GoStorm
 // Extracts hash directly from .mkv file content and handles blacklisting
 type TorrentRemover struct {
-	nativeBridge *native.NativeClient // V160: Native Bridge
+	nativeBridge engineBridge // V160: Native Bridge
 	logger       *log.Logger
 	hashPattern  *regexp.Regexp // Still useful for fallback
 }
 
 // NewTorrentRemover creates a new torrent remover
-func NewTorrentRemover(nativeBridge *native.NativeClient, logger *log.Logger) *TorrentRemover {
+func NewTorrentRemover(nativeBridge engineBridge, logger *log.Logger) *TorrentRemover {
 	return &TorrentRemover{
 		nativeBridge: nativeBridge,
 		logger:       logger,

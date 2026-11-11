@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"flodni/internal/cache"
-	"flodni/internal/gostorm/native"
 	"flodni/internal/gostorm/torr"
 )
 
@@ -29,7 +28,7 @@ type CleanupManager struct {
 
 	// External components to clean (V238 Audit 1.A)
 	metaCache    *cache.LRUCache
-	nativeBridge *native.NativeClient
+	nativeBridge engineBridge
 
 	// Configuration
 	deletedHashTTL  time.Duration
@@ -52,7 +51,7 @@ type offsetEntry struct {
 }
 
 // NewCleanupManager creates a new cleanup manager with references to components
-func NewCleanupManager(logger *log.Logger, mc *cache.LRUCache, nb *native.NativeClient) *CleanupManager {
+func NewCleanupManager(logger *log.Logger, mc *cache.LRUCache, nb engineBridge) *CleanupManager {
 	return &CleanupManager{
 		deletedHashes:   make(map[string]time.Time),
 		fileOffsets:     make(map[string]*offsetEntry),

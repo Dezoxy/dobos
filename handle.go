@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flodni/internal/gostorm/native"
 	"flodni/internal/gostorm/torr"
 	torrstor "flodni/internal/gostorm/torr/storage/torrstor"
 	"flodni/internal/gostorm/web"
@@ -56,7 +55,7 @@ type MkvHandle struct {
 	monitorStarted   bool
 	lastGlobalUpdate time.Time
 
-	nativeReader *native.NativeReader
+	nativeReader streamReader
 	hash         string
 	magnet       string
 	fileID       int

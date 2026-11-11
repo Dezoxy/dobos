@@ -29,7 +29,7 @@ func useFreshReadPath(t *testing.T) {
 		Logf:   func(string, ...any) {},
 		Go:     func(f func()) { go f() },
 	})
-	nativeBridge = (*native.NativeClient)(nil)
+	nativeBridge = nil
 	t.Cleanup(func() {
 		raCache, nativeBridge, masterDataSemaphore = prevCache, prevBridge, prevSem
 	})
