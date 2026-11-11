@@ -91,3 +91,5 @@ Releases and deployment are scheduled separately.
   without their audio files. Trim to the streaming core is complete.
 - 2026-11-11, own identity step 1: the module, binary, image paths and
   environment variables are named Flodni; old names still work.
+- 2026-11-11, own identity step 2: a release that replaces existing stubs
+  must deliver data first; if it does not, the existing files stay.

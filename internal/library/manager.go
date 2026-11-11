@@ -23,6 +23,16 @@ const (
 	maxMetadataWait     = 300
 )
 
+// replacementReadBytes is how much of a replacing release's first file must arrive
+// before the stubs it replaces may go. 64 KiB is a few pieces: enough to show the
+// swarm delivers, small enough to cost seconds on a live one.
+const replacementReadBytes = 64 << 10
+
+// replacementReadTimeout bounds that read. A release with no seeds would otherwise
+// hold the request open until the client gives up; a minute matches the metadata
+// wait. A variable so tests can shrink it.
+var replacementReadTimeout = 60 * time.Second
+
 var reInfoHash = regexp.MustCompile(`^[a-f0-9]{40}$|^[a-z2-7]{32}$`)
 
 // EpisodeRegistry is the subset of the state DB the manager writes to. A TV stub that
@@ -579,6 +589,34 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 	})
 
 	showDir := filepath.Join(m.cfg.TVDir, ShowFolderName(req.Title, req.FirstAirDate))
+
+	// The new release wins, but only once it has shown it can deliver bytes: a dead
+	// swarm must not cost the files that played. Nothing is written or removed
+	// before this check passes, so a failure needs no rollback. Re-adding a stub at
+	// its own path replaces nothing and is not checked.
+	for _, w := range wanted {
+		path := filepath.Join(showDir, fmt.Sprintf("Season.%02d", w.season),
+			EpisodeFilename(req.Title, w.season, w.episode, hash[:8]))
+		prev, ok, err := m.cfg.Registry.GetEpisode(EpisodeKey(req.Title, w.season, w.episode))
+		if err != nil {
+			return nil, errf(http.StatusServiceUnavailable, "cannot read the registry entry for %s: %v",
+				EpisodeKey(req.Title, w.season, w.episode), err)
+		}
+		if !ok || prev == nil || prev.FilePath == "" || prev.FilePath == path {
+			continue
+		}
+		rctx, cancel := context.WithTimeout(ctx, replacementReadTimeout)
+		err = m.cfg.GoStorm.ReadFileHead(rctx, hash, w.file.ID, min(replacementReadBytes, w.file.Length))
+		cancel()
+		if err != nil {
+			m.cfg.Logger.Printf("[LibraryAPI] replacement %s for %q delivered no data, existing files kept: %v",
+				hash[:8], req.Title, err)
+			return nil, errf(http.StatusUnprocessableEntity,
+				"replacement release did not deliver data within %s; existing files kept", replacementReadTimeout)
+		}
+		break // one readable file proves the release; later episodes need no second read
+	}
+
 	var out []AddedFile
 	// What this call found already in place. The stubs it overwrote must survive a
 	// rollback, and the episodes a previous release left elsewhere are only deleted
