@@ -46,9 +46,6 @@ Bugs and data-loss risks.
 
 - **Characterization tests** around naming, stub creation and replacement,
   so restructuring cannot change behaviour unnoticed.
-- **A test that a private torrent stays private.** No DHT, PEX or added
-  trackers for a torrent flagged private (BEP 27). It is a hard rule with no
-  check behind it.
 - **Stubs outside the mount.** The library writes stubs under the config's
   `physical_source_path`, while FUSE serves the path from the command line.
   A config without it files stubs outside the mount and still returns 201

@@ -136,6 +136,9 @@ func GetTrackerFromFile() []string {
 	return nil
 }
 
+// BuiltinTrackers is the fallback list compiled in, without any downloaded one.
+func BuiltinTrackers() []string { return append([]string(nil), defTrackers...) }
+
 func GetDefTrackers() []string {
 	trackersOnce.Do(func() { go retryLoadTrackers(trackersCtx) })
 
