@@ -23,17 +23,9 @@ type TorrentFile struct {
 	Length int64
 }
 
-// ResolveOpenTarget picks the torrent file an Open serves. Audio takes the
-// registry's index: its name is caller-chosen, so a heuristic can pick another.
-func ResolveOpenTarget(section Section, hash string, urlIndex int, size int64, virtualPath string, files []TorrentFile) (OpenTarget, error) {
-	if IsAudioSection(section) {
-		if urlIndex <= 0 {
-			return OpenTarget{}, ErrOpenTargetUnresolved
-		}
-		return OpenTarget{Hash: hash, FileIndex: urlIndex}, nil
-	}
-
-	// Video keeps the existing heuristic: engine-built names drift when a media
+// ResolveOpenTarget picks the torrent file an Open serves, by size and name.
+func ResolveOpenTarget(hash string, urlIndex int, size int64, virtualPath string, files []TorrentFile) (OpenTarget, error) {
+	// Engine-built names drift when a media
 	// server renames a file, and the index in an older stub can be stale.
 	if index, ok := matchVideoFile(hash, size, virtualPath, files); ok {
 		return OpenTarget{Hash: hash, FileIndex: index}, nil

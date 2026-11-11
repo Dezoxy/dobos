@@ -16,17 +16,6 @@ type Metadata struct {
 	URL, Path, ImdbID string
 	Size              int64
 	Mtime             time.Time
-	// Caller-supplied audio identity, carried so a playback state can remember
-	// what the projection was registered as. Video keeps using ImdbID.
-	ExternalID, ExternalIDNamespace string
-	// Audio marks a projection under music/ or audiobooks/. Audio projections are
-	// read-only to their clients: the mode bits and the mutation refusals key off it.
-	Audio bool
-	// A cue track of a single-file image: SegmentHeader is served first, then the
-	// torrent file from SegmentOffset. Zero for every other file, video included.
-	SegmentTrack  int
-	SegmentOffset int64
-	SegmentHeader []byte
 }
 
 // FileMetadata represents metadata extracted from a virtual .mkv file
@@ -36,12 +25,6 @@ type FileMetadata struct {
 	Mtime  time.Time // File modification time
 	Path   string    // Original file path
 	ImdbID string    // IMDB ID from line 4 (optional)
-
-	// Caller-supplied external identity, engine-opaque. Video carries an IMDb ID;
-	// audio has no single identity space, so the namespace travels with the id.
-	// Both empty when the caller supplied none.
-	ExternalID          string
-	ExternalIDNamespace string
 }
 
 // Validation constants
@@ -65,10 +48,6 @@ type MkvJSON struct {
 	Size   int64  `json:"size"`
 	Magnet string `json:"magnet"`
 	Imdb   string `json:"imdb"`
-	// Omitted entirely when absent: the engine must not write an identity the
-	// caller did not supply.
-	ExternalID          string `json:"external_id,omitempty"`
-	ExternalIDNamespace string `json:"external_id_ns,omitempty"`
 }
 
 // ReadMetadataFromFile reads metadata from a virtual .mkv file.
@@ -124,13 +103,11 @@ func parseJSONFormat(content string, info os.FileInfo, path string, limits SizeL
 	}
 
 	return &FileMetadata{
-		URL:                 url,
-		Size:                j.Size,
-		Mtime:               info.ModTime(),
-		Path:                path,
-		ImdbID:              imdbID,
-		ExternalID:          j.ExternalID,
-		ExternalIDNamespace: j.ExternalIDNamespace,
+		URL:    url,
+		Size:   j.Size,
+		Mtime:  info.ModTime(),
+		Path:   path,
+		ImdbID: imdbID,
 	}, nil
 }
 
