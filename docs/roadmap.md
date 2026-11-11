@@ -53,6 +53,7 @@ a switch or calls out to third parties.
    stubs that played before the new release is known to be readable
    (`internal/library/manager.go`). A pack still wins, but the old stubs go
    only once the new ones are confirmed readable.
+
 3. **Atomic writes and bounded servers.** Stub and config writes go through a
    temporary file, sync and rename; the control HTTP server gets read, write
    and idle timeouts.
@@ -61,7 +62,8 @@ Releases and deployment are scheduled separately.
 
 ## Done
 
-
+- 2026-11-11, own identity step 3: stub and config writes are atomic, and
+  the control server has read, write and idle timeouts.
 - 2026-11-11, trim step 1: telemetry, the update check, the MCP server and
   the pprof endpoints are removed.
 - 2026-11-11, trim step 2: the dashboard, its collector and LAN discovery,
