@@ -49,6 +49,10 @@ Bugs and data-loss risks.
 - **A test that a private torrent stays private.** No DHT, PEX or added
   trackers for a torrent flagged private (BEP 27). It is a hard rule with no
   check behind it.
+- **Stubs outside the mount.** The library writes stubs under the config's
+  `physical_source_path`, while FUSE serves the path from the command line.
+  A config without it files stubs outside the mount and still returns 201
+  (`main.go` around 5261 against 4653).
 - **A health endpoint.** There is none since the dashboard went. One that
   reports the mount, the engine and the stores would let a container health
   check mean more than `mountpoint`.
@@ -56,6 +60,12 @@ Bugs and data-loss risks.
   should be a metric and an API result, not only a log line.
 - **Remove the dead index-seed path** once the supported one is the only
   caller.
+
+- **Reads stall against a seeder with a shallow request pipeline.** In the
+  end-to-end test, a seeder left at the engine's default 1 MiB per-peer
+  request allowance served about 600 kB/s with 35 to 60 s stalls, and a
+  sequential read ended in EIO. Real swarms have such peers; check the
+  leecher's request timeouts against them.
 
 ## Nice to have
 

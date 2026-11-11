@@ -27,12 +27,18 @@ a switch or calls out to third parties.
    `tiramisu.service`. The container image is the only supported install.
 5. **End-to-end streaming test.** A local tracker seeds a small torrent,
    Flodni mounts it and the test reads the file back and compares hashes. It
-   must pass before steps 6 and 7, which touch the read path.
-6. **Remove catalogue sync.** The scheduler, the movie, TV and watchlist
+   must pass before steps 7 and 8, which touch the read path.
+6. **Keep private torrents private.** A library add without a magnet merges
+   public UDP trackers into every release, private or not, and GoStorm's
+   default retracker mode appends public trackers to every torrent; a DHT
+   announce may also start before the private flag is known. Fix all three
+   and pin them with unit tests at those seams. The end-to-end test's
+   private fixture then guards that streaming still works.
+7. **Remove catalogue sync.** The scheduler, the movie, TV and watchlist
    engines, the TMDB, Torrentio and Rotten Tomatoes clients, the built-in
    Prowlarr client, their control panel cards and `Config.LogDir`, which only
    the engines' log files use.
-7. **Remove music and audiobooks.** `internal/musicimport`,
+8. **Remove music and audiobooks.** `internal/musicimport`,
    `cmd/musicimport`, `internal/audio` and the audio parts of
    `internal/library`, `internal/metadb`, `startup.go` and `main.go`.
 
@@ -49,3 +55,5 @@ a switch or calls out to third parties.
   configuration keys are removed.
 - 2026-11-11, trim step 4: the Windows installer, `install.sh` and the
   systemd unit are removed; the container image is the only install.
+- 2026-11-11, trim step 5: `make e2e` and the CI image job seed a private
+  torrent locally and read it back through FUSE in two configurations.

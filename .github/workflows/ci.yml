@@ -175,6 +175,24 @@ jobs:
           docker logs flodni-smoke
           exit 1
 
+      # The seeder is the far side of the end-to-end test; it never ships.
+      - name: Build e2e seeder
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: e2e-seeder
+          platforms: linux/amd64
+          load: true
+          tags: flodni-e2e-seeder:ci
+          cache-from: type=gha
+
+      # A local seeder seeds a private torrent on an internal network; the image adds it
+      # and the file is read back through FUSE and compared by sha256, for two configs.
+      - name: End-to-end stream
+        timeout-minutes: 15
+        run: bash tests/e2e/run.sh flodni:ci flodni-e2e-seeder:ci
+
       - name: Vulnerability scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
