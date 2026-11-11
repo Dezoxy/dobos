@@ -21,8 +21,8 @@ a switch or calls out to third parties.
    macOS toolbar app that wraps it.
 3. **Remove dead and switched-off code.** NAT-PMP (and `iptables` in the
    image), the IP blocklist, index seeding, the Samba watchdog,
-   `internal/preload`, `internal/syncer/statestore`, `Config.EngineScripts`,
-   `Config.LogDir` and the configuration keys nothing reads.
+   `internal/preload`, `internal/syncer/statestore`, `Config.EngineScripts`
+   and the configuration keys nothing reads.
 4. **Remove upstream packaging.** `docker-windows/`, `install.sh`,
    `tiramisu.service`. The container image is the only supported install.
 5. **End-to-end streaming test.** A local tracker seeds a small torrent,
@@ -30,7 +30,8 @@ a switch or calls out to third parties.
    must pass before steps 6 and 7, which touch the read path.
 6. **Remove catalogue sync.** The scheduler, the movie, TV and watchlist
    engines, the TMDB, Torrentio and Rotten Tomatoes clients, the built-in
-   Prowlarr client and their control panel cards.
+   Prowlarr client, their control panel cards and `Config.LogDir`, which only
+   the engines' log files use.
 7. **Remove music and audiobooks.** `internal/musicimport`,
    `cmd/musicimport`, `internal/audio` and the audio parts of
    `internal/library`, `internal/metadb`, `startup.go` and `main.go`.
@@ -42,3 +43,7 @@ a switch or calls out to third parties.
 - 2026-11-11, trim step 2: the dashboard, its collector and LAN discovery,
   and the macOS toolbar app are removed. Done before the dead-code step
   because the collector read NAT-PMP and blocklist state.
+- 2026-11-11, trim step 3: NAT-PMP and `iptables` in the image, the IP
+  blocklist, index seeding, the Samba watchdog, the never-filled preload
+  cache, `syncer/statestore`, `EngineScripts` and seven unread
+  configuration keys are removed.

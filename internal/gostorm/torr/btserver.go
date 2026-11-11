@@ -14,7 +14,6 @@ import (
 	"github.com/anacrolix/dht/v2"
 	"github.com/anacrolix/publicip"
 	"github.com/anacrolix/torrent"
-	"github.com/anacrolix/torrent/iplist"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/anacrolix/torrent/mse"
 	"golang.org/x/time/rate"
@@ -129,18 +128,6 @@ func NewBTS() *BTServer {
 	return bts
 }
 
-// SetIPBlocklist live-swaps the underlying client's blocklist, so a background
-// refresh (see main.updateBlockList) takes effect immediately instead of only on
-// the next Connect(). No-op if the client isn't up yet.
-func (bt *BTServer) SetIPBlocklist(list iplist.Ranger) {
-	bt.mu.Lock()
-	client := bt.client
-	bt.mu.Unlock()
-	if client != nil {
-		client.SetIPBlocklist(list)
-	}
-}
-
 func (bt *BTServer) Connect() error {
 	bt.mu.Lock()
 	var err error
@@ -219,7 +206,6 @@ func (bt *BTServer) Disconnect() {
 }
 
 func (bt *BTServer) configure(ctx context.Context) {
-	blocklist, _ := utils.ReadBlockedIP()
 	bt.config = torrent.NewDefaultClientConfig()
 
 	bt.storage = torrstor.NewStorage(settings.BTsets.CacheSize)
@@ -257,7 +243,6 @@ func (bt *BTServer) configure(ctx context.Context) {
 	}
 
 	bt.config.NoUpload = settings.BTsets.DisableUpload
-	bt.config.IPBlocklist = blocklist
 	bt.config.Bep20 = peerID
 	bt.config.PeerID = utils.PeerIDRandom(peerID)
 	bt.config.UpnpID = upnpID

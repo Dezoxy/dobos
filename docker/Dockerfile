@@ -20,7 +20,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates \
       fuse3 \
-      iptables \
       tini \
     && rm -rf /var/lib/apt/lists/*
 
