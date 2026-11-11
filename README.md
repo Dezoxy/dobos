@@ -56,6 +56,12 @@ paths with `FLODNI_ROOT_PATH`, `FLODNI_SOURCE_PATH`, `FLODNI_MOUNT_PATH`,
 `FLODNI_*` ones. Existing state carries over: the database is still
 `tiramisu.db` and the log file `tiramisu.log`.
 
+Shutdown saves state, then unmounts; a mount that will not unmount is
+detached lazily after 5 s, and the process exits by 8 s at the latest. That
+fits inside Docker's default 10 s `stop_grace_period`. A longer grace period
+is fine; do not set it below 10 s, or Docker kills the process before the
+deadline.
+
 The command-line paths (the entrypoint's `FLODNI_SOURCE_PATH` and
 `FLODNI_MOUNT_PATH`) win over `physical_source_path` and `fuse_mount_path` in
 `config.json`; a different value there is logged and overridden.
