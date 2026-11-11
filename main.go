@@ -737,47 +737,48 @@ func main() {
 	go func() {
 		sig := <-sigChan
 		logger.Printf("Received signal %v, initiating graceful shutdown...", sig)
+		shutdownStarted.Store(true)
 
-		// Save inode map before exit
-		if globalInodeMap != nil {
-			if globalInodeMap.IsDirty() {
-				if err := globalInodeMap.SaveToDisk(); err != nil {
-					logger.Printf("InodeMap: Shutdown save FAILED: %v", err)
-				} else {
-					files, dirs, _, _ := GetInodeMapStats()
-					logger.Printf("InodeMap: Shutdown save complete (%d files, %d dirs)", files, dirs)
+		code := shutdown(shutdownSteps{
+			saveState: func() {
+				if globalInodeMap == nil {
+					return
 				}
-			}
-			ShutdownGlobalInodeMap()
-		}
-
-		// CRITICAL FIX: Stop all background managers explicitly before os.Exit()
-		// because defer statements are bypassed by os.Exit().
-		backgroundStopOnce.Do(func() { close(backgroundStopChan) })
-
-		if globalRateLimiter != nil {
-			globalRateLimiter.Stop()
-		}
-		if globalLockManager != nil {
-			globalLockManager.Stop()
-		}
-		if globalCleanupManager != nil {
-			globalCleanupManager.Stop()
-		}
-
-		// Try to unmount gracefully
-		if server != nil {
-			if err := server.Unmount(); err != nil {
-				logger.Printf("WARNING: unmount failed: %v", err)
-			}
-		}
-
-		if restartRequested.Load() {
-			logger.Printf("Graceful shutdown complete, exiting with %d to request a restart...", restartExitCode)
-			os.Exit(restartExitCode)
-		}
-		logger.Println("Graceful shutdown complete, exiting...")
-		os.Exit(0)
+				if globalInodeMap.IsDirty() {
+					if err := globalInodeMap.SaveToDisk(); err != nil {
+						logger.Printf("InodeMap: Shutdown save FAILED: %v", err)
+					} else {
+						files, dirs, _, _ := GetInodeMapStats()
+						logger.Printf("InodeMap: Shutdown save complete (%d files, %d dirs)", files, dirs)
+					}
+				}
+				ShutdownGlobalInodeMap()
+			},
+			// Stop the managers explicitly: os.Exit bypasses defer statements.
+			stopBackground: func() {
+				backgroundStopOnce.Do(func() { close(backgroundStopChan) })
+				if globalRateLimiter != nil {
+					globalRateLimiter.Stop()
+				}
+				if globalLockManager != nil {
+					globalLockManager.Stop()
+				}
+				if globalCleanupManager != nil {
+					globalCleanupManager.Stop()
+				}
+			},
+			unmount: func() error {
+				if server == nil {
+					return nil
+				}
+				return server.Unmount()
+			},
+			detach:          func() error { return lazyDetach(mount) },
+			restartRequired: restartRequested.Load(),
+			logf:            logger.Printf,
+		}, shutdownDeadline, shutdownDetachAfter)
+		logger.Printf("Graceful shutdown finished, exiting with %d", code)
+		os.Exit(code)
 	}()
 
 	// Crea root node virtuale
@@ -821,6 +822,9 @@ func main() {
 	go ttffCleanupLoop()
 
 	server.Wait()
+	if deferToShutdown() {
+		select {} // the shutdown goroutine exits with the right code by its deadline
+	}
 }
 
 func startHandleGC() {
