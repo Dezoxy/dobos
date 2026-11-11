@@ -115,7 +115,7 @@ func releaseFile(data []byte, hash string) (TorrentSource, error) {
 	return src, nil
 }
 
-// torrentUploader is the engine side that takes a .torrent; *engines.GoStormClient
+// torrentUploader is the engine side that takes a .torrent; *GoStormClient
 // has it.
 type torrentUploader interface {
 	UploadTorrent(ctx context.Context, data []byte, title string) (string, error)

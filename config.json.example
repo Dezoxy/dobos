@@ -23,6 +23,5 @@
     "url": "http://127.0.0.1:32400",
     "token": "",
     "library_id": 0
-  },
-  "tmdb_api_key": ""
+  }
 }

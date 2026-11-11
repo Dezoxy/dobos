@@ -41,12 +41,8 @@ import (
 	"tiramisu/internal/lockmgr"
 	"tiramisu/internal/metadb"
 	"tiramisu/internal/opentracker"
-	"tiramisu/internal/prowlarr"
 	"tiramisu/internal/ratelimit"
 	"tiramisu/internal/registry"
-	syncercache "tiramisu/internal/syncer/cache"
-	"tiramisu/internal/syncer/engines"
-	"tiramisu/internal/syncer/scheduler"
 	"tiramisu/internal/tuner"
 	"tiramisu/internal/vfs"
 	"tiramisu/internal/warmup"
@@ -81,9 +77,6 @@ var globalTorrentRemover *TorrentRemover
 var globalConfig atomic.Pointer[config.Config]
 
 func gc() *config.Config { return globalConfig.Load() }
-
-// Global Prowlarr client for indexer queries (nil when disabled).
-var prowlarrClient *prowlarr.Client
 
 func GetEffectiveConcurrencyLimit() int {
 	return gc().MasterConcurrencyLimit
@@ -227,9 +220,6 @@ func playbackConfirmed(path string) bool {
 	}
 	return false
 }
-
-// Global sync cache manager (FASE 4.13 - Sync Script Caches)
-var globalSyncCacheManager *syncercache.SyncCacheManager
 
 // StateDB is the optional SQLite backend for persistent state.
 var stateDB *metadb.DB
@@ -1115,7 +1105,7 @@ func forceCloseVirtualFile(fullPath string) {
 }
 
 // invalidateSyncRemovedPath drops FUSE-layer state for a stub removed out-of-band by the
-// sync engines: their os.Remove on the physical path bypasses the Unlink handler, so
+// library API: its os.Remove on the physical path bypasses the Unlink handler, so
 // without this the virtual file keeps being listed and served for hours (dircache), and
 // a Plex scan in that window registers the replaced file as a ghost duplicate version
 // that later fails to play once the cache finally expires.
@@ -4667,7 +4657,6 @@ func main() {
 	}
 
 	globalConfig.Store(&cfg)
-	prowlarrClient = prowlarr.NewClient(gc().Prowlarr)
 
 	// CLI args take precedence; fall back to config.json values if omitted
 	if source == "" {
@@ -4803,8 +4792,8 @@ func main() {
 					torrent.V304LoadBans(ips)
 					logger.Printf("[V304] Restored %d persisted peer bans", len(ips))
 				}
-				// Reachability outcomes: the sync engines read the counter to tell a dead
-				// release from a slow one before dropping a title.
+				// Reachability outcomes: the library listing reports the counter so a
+				// client can tell a dead release from a slow one.
 				failDB := stateDB
 				native.ReachabilityOutcome = func(hash string, resolved bool) {
 					var err error
@@ -4855,47 +4844,6 @@ func main() {
 	globalCleanupManager.Start()
 
 	globalTorrentRemover = NewTorrentRemover(nativeBridge, logger)
-	globalSyncCacheManager = syncercache.NewSyncCacheManager(GetStateDir(), logger)
-
-	// V1.7.1: Wire up StateDB to sync cache manager (after it's created)
-	if stateDB != nil {
-		globalSyncCacheManager.SetDB(stateDB)
-	}
-
-	if err := globalSyncCacheManager.LoadCachesFromDisk(); err != nil {
-		logger.Printf("WARNING: Failed to load sync caches from disk: %v", err)
-	}
-
-	// Sync caches to disk every 30s.
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				if err := globalSyncCacheManager.SyncToDisk(); err != nil {
-					logger.Printf("SyncCache: Failed to sync to disk: %v", err)
-				}
-			case <-backgroundStopChan:
-				return
-			}
-		}
-	}()
-
-	// Start periodic cleanup of sync caches (every 1 hour)
-	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				// Cleanup stale entries: negative cache 12h TTL
-				globalSyncCacheManager.CleanupStaleEntries(12 * time.Hour)
-			case <-backgroundStopChan:
-				return
-			}
-		}
-	}()
 
 	http.HandleFunc("/plex/webhook", handlePlexWebhook)
 
@@ -4903,7 +4851,6 @@ func main() {
 		cacheStats := metaCache.Stats()
 		cleanupStats := globalCleanupManager.Stats()
 		lockStats := globalLockManager.Stats()
-		syncCacheStats := globalSyncCacheManager.Stats()
 
 		// Get read-ahead buffer stats (for dashboard FUSE Buffer display)
 		raTotal, raActive, raEntries := raCache.Stats()
@@ -4943,7 +4890,7 @@ func main() {
 		shortStream, shortFetch := native.ShortReadCounts()
 		repairedStream, unfilledStream := native.ShortReadRepairCounts()
 
-		fmt.Fprintf(w, `{"version":"%s", "config_source":"%s", "uptime":"%s", "cache_entries":%d, "cache_size_mb":%.2f, "cleanup_hashes":%d, "cleanup_offsets":%d, "cleanup_activities":%d, "locks_total":%d, "master_concurrency_limit":%d, "negative_cache_entries":%d, "fullpack_cache_entries":%d, "streaming_threshold_kb":%d, "config_preload_workers":%d, "max_conns_per_host":%d, "read_ahead_total_bytes":%d, "read_ahead_active_bytes":%d, "read_ahead_stale_bytes":%d, "read_ahead_entries":%d, "read_ahead_budget":%d, "read_ahead_percent":%.2f, "read_ahead_active_percent":%.2f, "read_ahead_stale_percent":%.2f, "warmup_duration_buckets_lt_2_5_10_15_30_60_120_gte120s":%s, "hedge_trigger_count":%d, "hedge_circuit_open":%t, "fetch_singleflight_dedup":%d, "peer_eject_count":%d, "v304_banned_peers":%d, "fuse_short_reads":%d, "fuse_short_reads_repaired":%d, "fuse_short_reads_failed":%d, "short_read_stream":%d, "short_read_fetch":%d, "short_read_repaired":%d, "short_read_unfilled":%d, "peer_conns_tcp":%d, "peer_conns_utp":%d, "peer_rated_tcp":%d, "peer_rated_utp":%d, "peer_useful_bps_tcp":%.0f, "peer_useful_bps_utp":%.0f, "peer_eject_count_utp":%d, "peer_churn_count":%d, "peer_churn_count_utp":%d, "deadline_pieces":%d, "audio_namespace_state":"%s", "audio_namespace_entries":%d, "gradient2_peers":%d, "gradient2_backing_off":%d, "gradient2_limit_min":%d, "gradient2_limit_max":%d}`,
+		fmt.Fprintf(w, `{"version":"%s", "config_source":"%s", "uptime":"%s", "cache_entries":%d, "cache_size_mb":%.2f, "cleanup_hashes":%d, "cleanup_offsets":%d, "cleanup_activities":%d, "locks_total":%d, "master_concurrency_limit":%d, "streaming_threshold_kb":%d, "config_preload_workers":%d, "max_conns_per_host":%d, "read_ahead_total_bytes":%d, "read_ahead_active_bytes":%d, "read_ahead_stale_bytes":%d, "read_ahead_entries":%d, "read_ahead_budget":%d, "read_ahead_percent":%.2f, "read_ahead_active_percent":%.2f, "read_ahead_stale_percent":%.2f, "warmup_duration_buckets_lt_2_5_10_15_30_60_120_gte120s":%s, "hedge_trigger_count":%d, "hedge_circuit_open":%t, "fetch_singleflight_dedup":%d, "peer_eject_count":%d, "v304_banned_peers":%d, "fuse_short_reads":%d, "fuse_short_reads_repaired":%d, "fuse_short_reads_failed":%d, "short_read_stream":%d, "short_read_fetch":%d, "short_read_repaired":%d, "short_read_unfilled":%d, "peer_conns_tcp":%d, "peer_conns_utp":%d, "peer_rated_tcp":%d, "peer_rated_utp":%d, "peer_useful_bps_tcp":%.0f, "peer_useful_bps_utp":%.0f, "peer_eject_count_utp":%d, "peer_churn_count":%d, "peer_churn_count_utp":%d, "deadline_pieces":%d, "audio_namespace_state":"%s", "audio_namespace_entries":%d, "gradient2_peers":%d, "gradient2_backing_off":%d, "gradient2_limit_min":%d, "gradient2_limit_max":%d}`,
 			AppVersion,
 			gc().ConfigPath,
 			time.Since(startTime),
@@ -4951,8 +4898,6 @@ func main() {
 			cleanupStats.DeletedHashesTotal, cleanupStats.OffsetsTotal, cleanupStats.ActivitiesTotal,
 			lockStats.TotalLocks,
 			gc().MasterConcurrencyLimit,
-			syncCacheStats.NegativeCacheEntries,
-			syncCacheStats.FullpackCacheEntries,
 			gc().StreamingThreshold/1024,
 			gc().PreloadWorkers,
 			gc().MaxConnsPerHost,
@@ -5024,44 +4969,9 @@ func main() {
 			// Reload in memory (V1.4.0 Live Update)
 			cfg := config.LoadConfig()
 			globalConfig.Store(&cfg)
-			prowlarrClient = prowlarr.NewClient(gc().Prowlarr)
 			logger.Printf("[Config] Updated via Dashboard API")
 			w.WriteHeader(200)
 		}
-	})
-
-	http.HandleFunc("/api/prowlarr/search", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "GET" {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		if prowlarrClient == nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(200)
-			w.Write([]byte(`[]`))
-			return
-		}
-		imdbID := r.URL.Query().Get("imdb_id")
-		contentType := r.URL.Query().Get("type")
-		title := r.URL.Query().Get("title")
-		if imdbID == "" {
-			http.Error(w, "missing imdb_id parameter", http.StatusBadRequest)
-			return
-		}
-		if contentType == "" {
-			contentType = "movie"
-		}
-		year, _ := strconv.Atoi(r.URL.Query().Get("year"))
-		streams, err := prowlarrClient.FetchTorrents(r.Context(), imdbID, contentType, title, year)
-		if err != nil {
-			http.Error(w, "prowlarr search failed: "+err.Error(), http.StatusBadGateway)
-			return
-		}
-		if streams == nil {
-			streams = []prowlarr.Stream{}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(streams)
 	})
 
 	// Same-origin proxy to the GoStorm settings API. The Control Panel must not
@@ -5123,133 +5033,8 @@ func main() {
 		}()
 	})
 
-	// Sync Scheduler (Fase 1)
-	// Routes are always registered so the Control Panel's manual "Run now" works
-	// immediately after enabling+saving, without requiring a restart. Only the
-	// automatic cron loop (sched.Run) is gated by Scheduler.Enabled, since that's
-	// what could collide with a user's own external cron setup.
-	{
-		schedCfg := scheduler.SchedulerConfig{
-			Enabled:       gc().Scheduler.Enabled,
-			MoviesSync:    scheduler.DailyJobConfig(gc().Scheduler.MoviesSync),
-			TVSync:        scheduler.DailyJobConfig(gc().Scheduler.TVSync),
-			MusicSync:     scheduler.DailyJobConfig(gc().Scheduler.MusicSync),
-			WatchlistSync: scheduler.WatchlistSyncConfig(gc().Scheduler.WatchlistSync),
-		}
-
-		statePath := filepath.Join(GetStateDir(), "scheduler_state.json")
-
-		logsDir := gc().LogDir
-
-		// Start midnight log truncation
-		engines.StartLogTruncator(logsDir, backgroundStopChan)
-
-		syncers := map[string]scheduler.Syncer{
-			"movies": engines.NewMoviesSyncer(engines.MoviesSyncerConfig{
-				GoStormURL:      gc().GoStormBaseURL,
-				TMDBAPIKey:      gc().TMDBAPIKey,
-				TorrentioURL:    gc().TorrentioURL,
-				PlexURL:         gc().Plex.URL,
-				PlexToken:       gc().Plex.Token,
-				PlexLib:         gc().Plex.LibraryID,
-				MediaServerType: gc().MediaServerType,
-				MoviesDir:       filepath.Join(gc().PhysicalSourcePath, "movies"),
-				StateDir:        GetStateDir(),
-				LogsDir:         logsDir,
-				ProwlarrCfg:     gc().Prowlarr,
-				Language:        gc().Language,
-				QualityScoring:  gc().QualityScoringConfig,
-				InvalidatePath:  invalidateSyncRemovedPath,
-				DB:              stateDB,
-				AudioRegistry:   audioOwnershipRegistry(),
-			}),
-			"tv": engines.NewTVSyncer(engines.TVSyncerConfig{
-				GoStormURL:      gc().GoStormBaseURL,
-				TMDBAPIKey:      gc().TMDBAPIKey,
-				TorrentioURL:    gc().TorrentioURL,
-				PlexURL:         gc().Plex.URL,
-				PlexToken:       gc().Plex.Token,
-				PlexTVLib:       gc().Plex.TVLibraryID,
-				MediaServerType: gc().MediaServerType,
-				TVDir:           filepath.Join(gc().PhysicalSourcePath, "tv"),
-				StateDir:        GetStateDir(),
-				LogsDir:         logsDir,
-				ProwlarrCfg:     gc().Prowlarr,
-				Language:        gc().Language,
-				QualityScoring:  gc().QualityScoringConfig,
-				DB:              stateDB,
-				AudioRegistry:   audioOwnershipRegistry(),
-				InvalidatePath:  invalidateSyncRemovedPath,
-			}),
-			"music": engines.NewMusicSyncEngine(engines.MusicSyncConfig{
-				PlexURL:      gc().Plex.URL,
-				PlexToken:    gc().Plex.Token,
-				PlexMusicLib: strconv.Itoa(gc().Plex.MusicLibraryID),
-				LibraryURL:   fmt.Sprintf("http://127.0.0.1:%d", gc().MetricsPort),
-				StateDir:     GetStateDir(),
-				LogsDir:      logsDir,
-				ProwlarrCfg:  gc().Prowlarr,
-				Discovery:    gc().MusicDiscovery,
-			}),
-			"watchlist": engines.NewWatchlistSyncer(engines.WatchlistSyncerConfig{
-				GoStormURL:      gc().GoStormBaseURL,
-				DB:              stateDB,
-				AudioRegistry:   audioOwnershipRegistry(),
-				TMDBAPIKey:      gc().TMDBAPIKey,
-				TorrentioURL:    gc().TorrentioURL,
-				PlexURL:         gc().Plex.URL,
-				PlexToken:       gc().Plex.Token,
-				PlexSection:     gc().Plex.LibraryID,
-				MoviesDir:       filepath.Join(gc().PhysicalSourcePath, "movies"),
-				MediaServerType: gc().MediaServerType,
-				LogsDir:         logsDir,
-				ProwlarrCfg:     gc().Prowlarr,
-				QualityScoring:  gc().QualityScoringConfig,
-				Language:        gc().Language,
-			}),
-		}
-
-		sched := scheduler.New(schedCfg, syncers, statePath)
-
-		http.HandleFunc("/api/scheduler/status", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(sched.Status())
-		})
-		http.HandleFunc("/api/scheduler/", func(w http.ResponseWriter, r *http.Request) {
-			if r.Method != http.MethodPost {
-				http.Error(w, "POST only", 405)
-				return
-			}
-			path := strings.TrimPrefix(r.URL.Path, "/api/scheduler/")
-			if strings.HasSuffix(path, "/stop") {
-				name := strings.TrimSuffix(path, "/stop")
-				if err := sched.StopJob(name); err != nil {
-					http.Error(w, err.Error(), 409)
-					return
-				}
-				w.WriteHeader(http.StatusAccepted)
-				return
-			}
-			name := strings.TrimSuffix(path, "/run")
-			if err := sched.TriggerRun(name); err != nil {
-				http.Error(w, err.Error(), 409)
-				return
-			}
-			w.WriteHeader(http.StatusAccepted)
-		})
-
-		if gc().Scheduler.Enabled {
-			safeGo(func() {
-				sched.Run(backgroundStopChan)
-			})
-			logger.Printf("[Scheduler] enabled (Go native)")
-		} else {
-			logger.Printf("[Scheduler] auto-run disabled, manual API available")
-		}
-	}
-
 	// Library API (external clients)
-	// Same work the sync engines do for one title, without the discovery: register the
+	// Adds one title without any discovery: register the
 	// torrent, wait for its file list, write the stub. It exists so an agent that has
 	// no access to the filesystem can still file a title into the library.
 	{
@@ -5261,7 +5046,7 @@ func main() {
 			MoviesDir:  filepath.Join(gc().PhysicalSourcePath, "movies"),
 			TVDir:      filepath.Join(gc().PhysicalSourcePath, "tv"),
 			GoStormURL: gc().GoStormBaseURL,
-			GoStorm:    engines.NewGoStormClient(gc().GoStormBaseURL),
+			GoStorm:    library.NewGoStormClient(gc().GoStormBaseURL),
 			Registry:   registry,
 			// Without this the drop path sees only movie and tv stubs, and removing
 			// the last one for a shared hash takes the torrent out from under any
@@ -5302,7 +5087,7 @@ func main() {
 				for _, g := range rows {
 					// Same spelling the sync logs use, so a client and the log agree on
 					// what the show is called.
-					show := engines.ShowNameFromEpisodePath(g.FilePath)
+					show := library.ShowNameFromEpisodePath(g.FilePath)
 					out = append(out, library.Gap{
 						EpisodeKey: g.EpisodeKey, Show: show, Season: g.Season,
 						ShowIMDB: g.ShowIMDB, Path: g.FilePath,
@@ -5312,8 +5097,8 @@ func main() {
 				}
 				return out, nil
 			},
-			// Same record the FUSE unlink handler writes: without it the sync engines
-			// add the title back on their next run.
+			// Same record the FUSE unlink handler writes: without it a later
+			// add can file the title back.
 			Blacklist: func(path, hash string) error {
 				if globalTorrentRemover == nil {
 					return fmt.Errorf("the torrent remover is not running")
@@ -5338,7 +5123,7 @@ func main() {
 
 	go http.ListenAndServe(fmt.Sprintf(":%d", gc().MetricsPort), nil)
 
-	// Graceful shutdown: saves inode map and sync caches before exit.
+	// Graceful shutdown: saves the inode map before exit.
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	var server *fuse.Server // Declare here to be accessible in goroutine
@@ -5358,13 +5143,6 @@ func main() {
 				}
 			}
 			ShutdownGlobalInodeMap()
-		}
-
-		// Clean up sync caches
-		if globalSyncCacheManager != nil {
-			if err := globalSyncCacheManager.SyncToDisk(); err != nil {
-				logger.Printf("SyncCache: Shutdown save FAILED: %v", err)
-			}
 		}
 
 		// CRITICAL FIX: Stop all background managers explicitly before os.Exit()

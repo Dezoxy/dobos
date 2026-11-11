@@ -1,8 +1,7 @@
-// Package library holds the stub-file format and filename conventions shared by the
-// sync engines and by the external /api/library endpoints. Both must agree: a stub
-// created through the API under a different name would be a duplicate of the same
-// title on disk, and a TV episode filed under a different registry key is deleted by
-// the next sync as orphaned.
+// Package library holds the stub-file format and filename conventions used by the
+// external /api/library endpoints. They must agree with the stubs already on disk: a
+// stub created under a different name would be a duplicate of the same title, and a
+// TV episode filed under a different registry key is treated as orphaned.
 package library
 
 import (

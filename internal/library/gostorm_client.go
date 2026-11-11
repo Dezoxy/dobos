@@ -1,4 +1,4 @@
-package engines
+package library
 
 import (
 	"bytes"
@@ -8,13 +8,11 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
 
 	"tiramisu/internal/catalog"
-	"tiramisu/internal/library"
 )
 
 // GoStormClient handles HTTP operations with the GoStorm engine.
@@ -37,13 +35,6 @@ func NewGoStormClient(baseURL string) *GoStormClient {
 		},
 	}
 }
-
-// TorrentStats and FileStat live in internal/library: the same shapes are returned by
-// the /api/library endpoints, and aliasing them lets *GoStormClient satisfy
-// library.GoStorm with no adapter.
-type TorrentStats = library.TorrentStats
-
-type FileStat = library.FileStat
 
 // AddTorrent adds a magnet URL to GoStorm via POST /torrents {"action":"add"}
 // and returns its hash. It hides whether the engine
@@ -252,32 +243,4 @@ func (c *GoStormClient) doTorrents(ctx context.Context, body map[string]string, 
 func (c *GoStormClient) postTorrents(ctx context.Context, body map[string]string) error {
 	_, err := c.doTorrents(ctx, body, false)
 	return err
-}
-
-// TitleFromFilename extracts a clean display title from an MKV filename.
-// e.g. "Your_Friends_Neighbors_S01E09_17361ba1.mkv" → "Your Friends Neighbors S01E09"
-func TitleFromFilename(filename string) string {
-	s := strings.TrimSuffix(filename, filepath.Ext(filename))
-	// Remove trailing _hash8 (8 hex chars)
-	if re := regexp.MustCompile(`(?i)_[a-f0-9]{8}$`); re.MatchString(s) {
-		s = s[:len(s)-9]
-	}
-	s = strings.ReplaceAll(s, "_", " ")
-	s = strings.ReplaceAll(s, ".", " ")
-	return strings.TrimSpace(s)
-}
-
-// BuildMagnet and DefaultTrackers live in internal/library, shared with the
-// /api/library endpoints.
-func BuildMagnet(infoHash, name string, trackers []string) string {
-	return library.BuildMagnet(infoHash, name, trackers)
-}
-
-func DefaultTrackers() []string { return library.DefaultTrackers() }
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

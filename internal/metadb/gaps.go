@@ -1,11 +1,9 @@
 package metadb
 
-import "time"
-
-// EpisodeGap is an episode the reaper removed because its release was dead and
-// nothing live could replace it. The record is what makes the hole recoverable:
-// discovery reaches a fraction of the library, so without it a season nobody
-// re-searches keeps the gap forever.
+// EpisodeGap is an episode a sync removed because its release was dead and nothing
+// live could replace it. Nothing records new gaps since the catalogue sync was
+// removed; the rows already in the database stay readable through the library's gap
+// listing and are cleared when the episode is filed again.
 type EpisodeGap struct {
 	EpisodeKey string
 	ShowIMDB   string
@@ -17,30 +15,9 @@ type EpisodeGap struct {
 	LastAttempt int64
 }
 
-// RecordEpisodeGap remembers one removed episode.
-func (d *DB) RecordEpisodeGap(g EpisodeGap) error {
-	if g.RemovedAt == 0 {
-		g.RemovedAt = time.Now().Unix()
-	}
-	_, err := d.db.Exec(
-		`INSERT OR REPLACE INTO episode_gaps
-		 (episode_key, show_imdb, season, file_path, dead_hash, removed_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		g.EpisodeKey, g.ShowIMDB, g.Season, g.FilePath, g.DeadHash, g.RemovedAt)
-	return err
-}
-
 // ClearEpisodeGap drops the record once the episode is back.
 func (d *DB) ClearEpisodeGap(episodeKey string) error {
 	_, err := d.db.Exec(`DELETE FROM episode_gaps WHERE episode_key = ?`, episodeKey)
-	return err
-}
-
-// MarkGapAttempted stamps a hole as tried, whatever the outcome, so the next run
-// starts from the ones waiting longest instead of the ones that keep failing.
-func (d *DB) MarkGapAttempted(episodeKey string) error {
-	_, err := d.db.Exec(`UPDATE episode_gaps SET last_attempt = ? WHERE episode_key = ?`,
-		time.Now().Unix(), episodeKey)
 	return err
 }
 

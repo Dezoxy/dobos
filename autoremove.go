@@ -266,8 +266,5 @@ func (tr *TorrentRemover) removeTorrent(hash string) (bool, error) {
 	// Use Native Bridge to remove torrent
 	tr.nativeBridge.RemoveTorrent(hash)
 
-	if globalSyncCacheManager != nil {
-		globalSyncCacheManager.ClearNegativeCache(hash)
-	}
 	return true, nil
 }

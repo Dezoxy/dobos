@@ -11,20 +11,6 @@ import (
 	"tiramisu/internal/prowlarr"
 )
 
-// DailyJobConfig: task that can run on specific days of the week.
-// DaysOfWeek uses JS convention: 0=Sunday … 6=Saturday.
-type DailyJobConfig struct {
-	Enabled    bool  `json:"enabled"`
-	DaysOfWeek []int `json:"days_of_week"` // 0=Sun, 1=Mon, …, 6=Sat
-	Hour       int   `json:"hour"`
-	Minute     int   `json:"minute"`
-}
-
-type WatchlistSyncConfig struct {
-	Enabled       bool `json:"enabled"`
-	IntervalHours int  `json:"interval_hours"` // 1,2,3,4,6,8,12,24
-}
-
 // MusicDiscoveryConfig holds the weekly discovery knobs: seed thresholds, the
 // ListenBrainz window and the import pacing. Defaults live in LoadConfig.
 type MusicDiscoveryConfig struct {
@@ -102,122 +88,11 @@ func DefaultMusicDiscovery() MusicDiscoveryConfig {
 	}
 }
 
-type SchedulerConfig struct {
-	Enabled       bool                `json:"enabled"`
-	MoviesSync    DailyJobConfig      `json:"movies_sync"`
-	TVSync        DailyJobConfig      `json:"tv_sync"`
-	MusicSync     DailyJobConfig      `json:"music_sync"`
-	WatchlistSync WatchlistSyncConfig `json:"watchlist_sync"`
-}
-
-// MovieWeights holds the scoring weights and size gates used by the movie engine
-// (and by the watchlist, which is movies-only). Defaults are the values that were
-// compiled into internal/syncer/engines/movie_go.go before they became configurable.
-type MovieWeights struct {
-	Res4K                int `json:"res_4k"`
-	Res1080p             int `json:"res_1080p"`
-	HDR                  int `json:"hdr"`
-	DolbyVision          int `json:"dolby_vision"`
-	Atmos                int `json:"atmos"`
-	Audio51              int `json:"audio_5_1"`
-	StereoPenalty        int `json:"stereo_penalty"`
-	Remux                int `json:"remux"`
-	PreferredLanguage    int `json:"preferred_language"`
-	UnknownSize4KPenalty int `json:"unknown_size_4k_penalty"`
-	SeederCap            int `json:"seeder_cap"`
-	MinSeeders           int `json:"min_seeders"`
-	Min4KGB              int `json:"min_4k_gb"`
-	Max4KGB              int `json:"max_4k_gb"`
-	Min1080pGB           int `json:"min_1080p_gb"`
-	Max1080pGB           int `json:"max_1080p_gb"`
-}
-
-// TVWeights holds the scoring weights and gates used by the TV engine. The seeder
-// bonus is tiered rather than proportional, which is why it does not share a struct
-// with MovieWeights.
-type TVWeights struct {
-	Res4K             int `json:"res_4k"`
-	Res1080p          int `json:"res_1080p"`
-	HDR               int `json:"hdr"`
-	DolbyVision       int `json:"dolby_vision"`
-	Atmos             int `json:"atmos"`
-	Audio51           int `json:"audio_5_1"`
-	PreferredLanguage int `json:"preferred_language"`
-	Fullpack          int `json:"fullpack"`
-	SeederTier100     int `json:"seeder_tier_100"`
-	SeederTier50      int `json:"seeder_tier_50"`
-	SeederTier20      int `json:"seeder_tier_20"`
-	MinSeeders        int `json:"min_seeders"`
-	MinSeeders4K      int `json:"min_seeders_4k"`
-	// SeasonSkipScore is measured against averages of QualityScore, so it must move
-	// with the weights that build that score - a fixed number would drift off the scale.
-	SeasonSkipScore int `json:"season_skip_score"`
-}
-
-// QualityScoringConfig carries optional per-profile overrides. A nil profile means
-// "use the defaults" - that is what keeps existing installs on their current picks
-// without writing anything into their config.json.
-type QualityScoringConfig struct {
-	Movies *MovieWeights `json:"movies,omitempty"`
-	TV     *TVWeights    `json:"tv,omitempty"`
-}
-
-// DefaultMovieWeights returns the shipped movie scoring profile.
-func DefaultMovieWeights() MovieWeights {
-	return MovieWeights{
-		Res4K: 1000, Res1080p: 200, HDR: 60, DolbyVision: 100,
-		Atmos: 50, Audio51: 25, StereoPenalty: -50, Remux: 30,
-		PreferredLanguage: 60, UnknownSize4KPenalty: -5,
-		SeederCap: 50, MinSeeders: 15,
-		Min4KGB: 10, Max4KGB: 40, Min1080pGB: 4, Max1080pGB: 20,
-	}
-}
-
-// DefaultTVWeights returns the shipped TV scoring profile.
-func DefaultTVWeights() TVWeights {
-	return TVWeights{
-		Res4K: 1000, Res1080p: 200, HDR: 100, DolbyVision: 150, Atmos: 50, Audio51: 25,
-		PreferredLanguage: 40, Fullpack: 500,
-		SeederTier100: 100, SeederTier50: 50, SeederTier20: 10, MinSeeders: 5,
-		MinSeeders4K: 5, SeasonSkipScore: 1000,
-	}
-}
-
-// MovieWeights resolves the profile to use: the configured one when present, the
-// defaults otherwise. A present profile is taken verbatim, so an explicit 0 stays 0.
-func (q QualityScoringConfig) MovieWeights() MovieWeights {
-	if q.Movies == nil {
-		return DefaultMovieWeights()
-	}
-	return *q.Movies
-}
-
-// TVWeights resolves the TV profile the same way.
-func (q QualityScoringConfig) TVWeights() TVWeights {
-	if q.TV == nil {
-		return DefaultTVWeights()
-	}
-	return *q.TV
-}
-
-// LanguageConfig controls preferred/excluded audio-language matching used
-// by the Movie and TV sync engines when scoring and filtering torrents.
-type LanguageConfig struct {
-	// PreferredTerms are case-insensitive, word-boundary-matched release-name terms (e.g. "ita", "multi", "dual").
-	PreferredTerms []string `json:"preferred_terms"`
-	// PreferredFlags/ExcludedFlags are ISO 3166-1 alpha-2 codes matched against flag emoji in indexer result lines.
-	PreferredFlags []string `json:"preferred_flags"`
-	ExcludedFlags  []string `json:"excluded_flags"`
-}
-
 // Config holds all configurable parameters for the FUSE proxy
 type Config struct {
 	// --- Internal / Derived Fields ---
 	ConfigPath string `json:"-"`
-	// LogDir holds the log files the dashboard tails. Docker points TIRAMISU_LOG_DIR at
-	// a mounted volume; elsewhere the logs sit next to config.json.
-	LogDir   string `json:"-"`
-	RootPath string `json:"-"` // V138: Root path for state/config (default: /home/pi)
+	RootPath   string `json:"-"` // V138: Root path for state/config (default: /home/pi)
 
 	// --- Core Tuning (JSON Mapped) ---
 	MasterConcurrencyLimit int    `json:"master_concurrency_limit"` // Global limit for concurrent HTTP requests to GoStorm
@@ -295,26 +170,15 @@ type Config struct {
 		TVLibraryID    int    `json:"tv_library_id"`
 		MusicLibraryID int    `json:"music_library_id"`
 	} `json:"plex"`
-	TMDBAPIKey   string `json:"tmdb_api_key"`
-	TorrentioURL string `json:"torrentio_url"` // Torrentio base URL (used when Prowlarr is disabled)
 
-	// --- Prowlarr Indexer ---
+	// --- Prowlarr Indexer (read by cmd/musicimport only) ---
 	Prowlarr prowlarr.ConfigProwlarr `json:"prowlarr"`
-
-	// --- Built-in Sync Scheduler ---
-	Scheduler SchedulerConfig `json:"scheduler"`
 
 	// --- Music Discovery (weekly sync) ---
 	MusicDiscovery MusicDiscoveryConfig `json:"music_discovery"`
 
 	// --- Media Server ---
 	MediaServerType string `json:"media_server_type"` // "plex" | "jellyfin"
-
-	// --- Quality Scoring ---
-	QualityScoringConfig QualityScoringConfig `json:"quality_scoring"`
-
-	// --- Language Matching ---
-	Language LanguageConfig `json:"language"`
 
 	// PumpOnOpen starts the read-ahead pump as soon as a file is opened (upstream's
 	// behaviour). Off, a file opened by a scanner (Plex, Sonarr/Radarr's ffprobe,
@@ -367,26 +231,8 @@ func LoadConfig() Config {
 		WarmupHeadSizeMB:  64,
 		WarmupTailSizeMB:  16,
 
-		Language: LanguageConfig{
-			PreferredTerms: []string{"ita", "multi", "dual"},
-			PreferredFlags: []string{"IT"},
-			ExcludedFlags: []string{
-				"ES", "FR", "DE", "RU", "CN", "JP", "KR", "TH", "PT", "BR",
-				"UA", "PL", "NL", "TR", "SA", "IN", "CZ", "HU", "RO",
-			},
-		},
-
-		Scheduler: SchedulerConfig{
-			Enabled:       false, // off by default — won't break installs using cron
-			MoviesSync:    DailyJobConfig{Enabled: true, DaysOfWeek: []int{1, 4}, Hour: 3, Minute: 0},
-			TVSync:        DailyJobConfig{Enabled: true, DaysOfWeek: []int{3, 5}, Hour: 4, Minute: 0},
-			MusicSync:     DailyJobConfig{Enabled: true, DaysOfWeek: []int{0}, Hour: 15, Minute: 0},
-			WatchlistSync: WatchlistSyncConfig{Enabled: true, IntervalHours: 1},
-		},
-
 		MusicDiscovery: DefaultMusicDiscovery(),
 
-		TorrentioURL:   "https://torrentio.strem.fun",
 		GoStormBaseURL: "http://127.0.0.1:8090",
 		MetricsPort:    9080,
 
@@ -448,10 +294,6 @@ func LoadConfig() Config {
 	// 5. Finalize and map derived fields
 	cfg.finalize()
 
-	if cfg.LogDir == "" {
-		cfg.LogDir = filepath.Join(filepath.Dir(cfg.ConfigPath), "logs")
-	}
-
 	return cfg
 }
 
@@ -495,9 +337,6 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := os.Getenv("MKV_PROXY_GOSTORM_URL"); v != "" {
 		c.GoStormBaseURL = v
-	}
-	if v := firstEnv("TIRAMISU_LOG_DIR", "GOSTREAM_LOG_DIR"); v != "" {
-		c.LogDir = v
 	}
 	if v := firstEnv("TIRAMISU_PLEX_URL", "GOSTREAM_PLEX_URL", "PLEX_URL"); v != "" {
 		c.Plex.URL = v
