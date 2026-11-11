@@ -22,7 +22,7 @@ PORT      ?= 8080
 
 STRUCTURIZR := docker run --rm -v "$(CURDIR)/$(ARCH_DIR):/w:ro"
 
-.PHONY: help go-check go-test validate inspect check docs test view export mermaid-views mermaid-render mermaid pdf clean
+.PHONY: help go-check go-test e2e validate inspect check docs test view export mermaid-views mermaid-render mermaid pdf clean
 .DEFAULT_GOAL := help
 
 ## help            list the targets
@@ -42,6 +42,12 @@ go-check:
 ## go-test         Go tests with the race detector (Linux, libfuse3-dev)
 go-test:
 	go test -race -count=1 $(GO_PKGS)
+
+## e2e             end-to-end stream test: seed a private torrent, read it through FUSE in the real image (Docker, /dev/fuse)
+e2e:
+	docker build -f docker/Dockerfile -t flodni:ci .
+	docker build -f docker/Dockerfile --target e2e-seeder -t flodni-e2e-seeder:ci .
+	bash tests/e2e/run.sh flodni:ci flodni-e2e-seeder:ci
 
 ## validate        parse the workspace with the pinned Structurizr image
 validate:

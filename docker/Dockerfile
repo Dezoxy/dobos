@@ -14,6 +14,13 @@ ARG APP_VERSION=dev
 # -pgo=auto ensures we use profile-guided optimization if default.pgo is present.
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH go build -pgo=auto -ldflags "-X main.AppVersion=${APP_VERSION}" -o /out/tiramisu .
 
+# End-to-end test seeder (tests/e2e). Built only on request (--target e2e-seeder);
+# the runtime stage below stays last so the default target is the shipped image.
+FROM build AS e2e-seeder
+ARG TARGETARCH
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH go build -o /out/seeder ./tests/e2e/seeder
+ENTRYPOINT ["/out/seeder"]
+
 FROM debian:bookworm-slim
 
 RUN apt-get update \

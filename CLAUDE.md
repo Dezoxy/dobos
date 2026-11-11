@@ -63,13 +63,14 @@ A change that violates one is wrong even if it works.
 
 - **Go 1.26**, cgo for FUSE (`libfuse3-dev`, `pkg-config`), Linux only.
   `make go-check` runs gofmt, build and vet; `make go-test` runs the tests
-  with the race detector. The module and the binary are still named
-  `tiramisu`.
+  with the race detector. `make e2e` seeds a private torrent and reads it
+  through FUSE in the built image (needs Docker and `/dev/fuse`). The module
+  and the binary are still named `tiramisu`.
 - **Layout:** `main.go` and the other root `.go` files are the daemon;
   `internal/` holds the packages (`vfs`, `gostorm`, `library`, `warmup`,
   `config` and more); `docker/` the image; `docs/` the roadmap, the ideas
   and the architecture; `scripts/` and `tests/` the documentation tooling
-  from the base.
+  from the base, and `tests/e2e/` the end-to-end stream test (`make e2e`).
 - **Rules** are vendored under `.claude/rules/` from the owner's
   development base (`development-base`): `common/` always loads, `golang/`
   for Go files. Do not edit them here; re-copy them from the base.
