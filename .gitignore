@@ -40,8 +40,6 @@ gha-creds-*.json
 
 # Local user deploy compose (machine-specific paths)
 my-deploy.compose.yaml
-docker-windows/my-deploy/
 
 # Local installer/testing artifacts
-docker-windows/test/
 .sisyphus/
