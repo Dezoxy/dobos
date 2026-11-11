@@ -57,3 +57,6 @@ a switch or calls out to third parties.
   systemd unit are removed; the container image is the only install.
 - 2026-11-11, trim step 5: `make e2e` and the CI image job seed a private
   torrent locally and read it back through FUSE in two configurations.
+- 2026-11-11, trim step 6: private torrents get no public trackers from the
+  library, GoStorm's retrackers or a stored spec on wake, and the engine
+  knows a torrent is private before its DHT announcer can run.

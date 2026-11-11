@@ -64,7 +64,7 @@ func (m *Manager) Inspect(ctx context.Context, req InspectRequest) (*InspectResp
 		return nil, err
 	}
 	if magnet == "" {
-		magnet = BuildMagnet(hash, title, MergeTrackers(DefaultTrackers(), file.Trackers))
+		magnet = releaseMagnet(hash, title, file)
 	}
 
 	// Held across ownership, add and cleanup, keyed on the canonical spelling so a

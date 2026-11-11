@@ -41,9 +41,10 @@ A change that violates one is wrong even if it works.
    and Tiramisu's copyright line stay; code copied in under another licence
    gets a `NOTICE` entry.
 3. **A private torrent stays private.** No DHT, PEX or public-tracker
-   fallback for a torrent flagged private (BEP 27). No test pins this yet
-   (see `docs/ideas.md`), so a change near peer discovery or tracker
-   handling needs one.
+   fallback for a torrent flagged private (BEP 27). Tests pin it in
+   `internal/library/privacy_test.go`, `internal/gostorm/torr/retrack_test.go`
+   and `internal/anacrolix-torrent/private_guard_test.go`; a change near peer
+   discovery or tracker handling extends them.
 4. **The vendored engine is not ours to tidy.**
    `internal/anacrolix-torrent/` takes fixes only: no reformatting, no
    refactors. CI skips it for `gofmt` and `go vet` for that reason.

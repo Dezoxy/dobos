@@ -1589,6 +1589,9 @@ func (cl *Client) AddTorrentSpec(spec *TorrentSpec) (t *Torrent, new bool, err e
 		InfoHash:  spec.InfoHash,
 		Storage:   spec.Storage,
 		ChunkSize: spec.ChunkSize,
+		// With the info set at creation, the DHT announcer started below can never see
+		// a private torrent as public in the gap before MergeSpec sets it (BEP 27).
+		InfoBytes: spec.InfoBytes,
 	})
 	modSpec := *spec
 	if new {

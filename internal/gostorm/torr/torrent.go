@@ -12,6 +12,7 @@ import (
 	utils2 "tiramisu/internal/gostorm/utils"
 
 	"github.com/anacrolix/torrent"
+	"github.com/anacrolix/torrent/bencode"
 	"github.com/anacrolix/torrent/metainfo"
 
 	"tiramisu/internal/gostorm/log"
@@ -59,24 +60,100 @@ type Torrent struct {
 	cachedFileStats []*state.TorrentFileStat
 }
 
+// infoPublic reports metadata that is known and not flagged private (BEP 27).
+// Unknown metadata is not public: a private torrent must not be given public
+// trackers while it could still turn out to be one.
+func infoPublic(info *metainfo.Info) bool {
+	return info != nil && (info.Private == nil || !*info.Private)
+}
+
+// dropPublicTrackers removes from a private torrent's trackers every one of the public
+// lists we add ourselves (hard rule 3), keeping the torrent's own. A stored spec carries
+// whatever trackers the torrent was saved with, which for a torrent added before the
+// retracker gate includes them; a public torrent is left alone.
+func dropPublicTrackers(spec *torrent.TorrentSpec, public func() []string) {
+	var info metainfo.Info
+	if len(spec.InfoBytes) == 0 || bencode.Unmarshal(spec.InfoBytes, &info) != nil || infoPublic(&info) {
+		return
+	}
+	drop := map[string]bool{}
+	for _, tr := range public() {
+		drop[tr] = true
+	}
+	var tiers [][]string
+	for _, tier := range spec.Trackers {
+		var kept []string
+		for _, tr := range tier {
+			if !drop[tr] {
+				kept = append(kept, tr)
+			}
+		}
+		if len(kept) > 0 {
+			tiers = append(tiers, kept)
+		}
+	}
+	spec.Trackers = tiers
+}
+
+// publicTrackers is every tracker we add to torrents on our own account.
+func publicTrackers() []string {
+	return append(append(utils.BuiltinTrackers(), utils.GetDefTrackers()...), utils.GetTrackerFromFile()...)
+}
+
+// retrackSpec applies the retracker mode and trackers.txt to spec, but only when
+// spec carries metadata that is not private. A private torrent keeps exactly the
+// trackers of its own metainfo (hard rule 3). Without metadata the choice waits
+// for it: see retrackWhenPublic.
+func retrackSpec(spec *torrent.TorrentSpec, mode int, defTrackers, fileTrackers func() []string) {
+	var info metainfo.Info
+	if len(spec.InfoBytes) == 0 || bencode.Unmarshal(spec.InfoBytes, &info) != nil || !infoPublic(&info) {
+		return
+	}
+	applyRetrackers(spec, mode, defTrackers, fileTrackers)
+}
+
+func applyRetrackers(spec *torrent.TorrentSpec, mode int, defTrackers, fileTrackers func() []string) {
+	switch mode {
+	case 1:
+		spec.Trackers = append(spec.Trackers, [][]string{defTrackers()}...)
+	case 2:
+		spec.Trackers = nil
+	case 3:
+		spec.Trackers = [][]string{defTrackers()}
+	}
+
+	trackers := fileTrackers()
+	if len(trackers) > 0 {
+		spec.Trackers = append(spec.Trackers, [][]string{trackers}...)
+	}
+}
+
+// retrackWhenPublic gives a torrent added without metadata the public trackers once
+// the metadata shows it is not private, which is when a public torrent added by magnet
+// gets what retrackSpec would have given it at the add.
+func retrackWhenPublic(tor *torrent.Torrent, mode int, defTrackers, fileTrackers func() []string) {
+	select {
+	case <-tor.GotInfo():
+	case <-tor.Closed():
+		return
+	}
+	if !infoPublic(tor.Info()) {
+		return
+	}
+	spec := &torrent.TorrentSpec{}
+	applyRetrackers(spec, mode, defTrackers, fileTrackers)
+	if len(spec.Trackers) > 0 {
+		tor.AddTrackers(spec.Trackers)
+	}
+}
+
 func NewTorrent(spec *torrent.TorrentSpec, bt *BTServer) (*Torrent, error) {
 	// https://github.com/anacrolix/torrent/issues/747
 	if bt == nil {
 		return nil, errors.New("BT client not connected")
 	}
-	switch settings.BTsets.RetrackersMode {
-	case 1:
-		spec.Trackers = append(spec.Trackers, [][]string{utils.GetDefTrackers()}...)
-	case 2:
-		spec.Trackers = nil
-	case 3:
-		spec.Trackers = [][]string{utils.GetDefTrackers()}
-	}
-
-	trackers := utils.GetTrackerFromFile()
-	if len(trackers) > 0 {
-		spec.Trackers = append(spec.Trackers, [][]string{trackers}...)
-	}
+	dropPublicTrackers(spec, publicTrackers)
+	retrackSpec(spec, settings.BTsets.RetrackersMode, utils.GetDefTrackers, utils.GetTrackerFromFile)
 
 	// Disconnect nils bt.client under bt.mu during a settings reconnect: read it under the lock.
 	client, _ := bt.clientAndStorage()
@@ -111,6 +188,9 @@ func NewTorrent(spec *torrent.TorrentSpec, bt *BTServer) (*Torrent, error) {
 	torr.Timestamp = time.Now().Unix()
 
 	bt.torrents[spec.InfoHash] = torr
+	if len(spec.InfoBytes) == 0 {
+		go retrackWhenPublic(goTorrent, settings.BTsets.RetrackersMode, utils.GetDefTrackers, utils.GetTrackerFromFile)
+	}
 	return torr, nil
 }
 

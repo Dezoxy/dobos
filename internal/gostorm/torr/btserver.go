@@ -453,7 +453,9 @@ func (bt *BTServer) applyTrackersToLoadedTorrents(list []string) {
 	}
 	bt.mu.Unlock()
 	for _, t := range torrents {
-		if t != nil && t.Torrent != nil {
+		// A private torrent, or one whose metadata is not in yet, gets none: the
+		// latter is given them by retrackWhenPublic once it is known to be public.
+		if t != nil && t.Torrent != nil && infoPublic(t.Torrent.Info()) {
 			t.Torrent.AddTrackers(tiers)
 		}
 	}

@@ -117,7 +117,7 @@ func (m *Manager) AddAudio(ctx context.Context, req AddRequest) (*AudioAddRespon
 		return nil, err
 	}
 	if magnet == "" {
-		magnet = BuildMagnet(hash, intent.Title, MergeTrackers(DefaultTrackers(), file.Trackers))
+		magnet = releaseMagnet(hash, intent.Title, file)
 	}
 
 	// Locked on the canonical spelling so a base32 magnet and its hex form are one

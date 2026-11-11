@@ -356,7 +356,7 @@ func (m *Manager) Add(ctx context.Context, req AddRequest) (*AddResponse, error)
 	}
 	magnet := req.Magnet
 	if magnet == "" {
-		magnet = BuildMagnet(hash, req.Title, MergeTrackers(DefaultTrackers(), file.Trackers))
+		magnet = releaseMagnet(hash, req.Title, file)
 	}
 
 	requestedHash := hash

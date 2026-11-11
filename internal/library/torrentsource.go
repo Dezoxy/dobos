@@ -20,6 +20,8 @@ type TorrentSource struct {
 	Hash     string
 	Trackers []string
 	File     []byte
+	// Private is the info dict's private flag (BEP 27); only a .torrent carries it.
+	Private bool
 }
 
 // ParseTorrentFile reads a .torrent: its info hash and its announce list.
@@ -28,14 +30,20 @@ func ParseTorrentFile(data []byte) (TorrentSource, error) {
 	if err != nil {
 		return TorrentSource{}, fmt.Errorf("parse .torrent: %w", err)
 	}
-	if _, err := mi.UnmarshalInfo(); err != nil {
+	info, err := mi.UnmarshalInfo()
+	if err != nil {
 		return TorrentSource{}, fmt.Errorf("parse .torrent info: %w", err)
 	}
 	var trackers []string
 	for _, tier := range mi.UpvertedAnnounceList() {
 		trackers = append(trackers, tier...)
 	}
-	return TorrentSource{Hash: mi.HashInfoBytes().HexString(), Trackers: MergeTrackers(trackers), File: data}, nil
+	return TorrentSource{
+		Hash:     mi.HashInfoBytes().HexString(),
+		Trackers: MergeTrackers(trackers),
+		File:     data,
+		Private:  info.Private != nil && *info.Private,
+	}, nil
 }
 
 // ParseMagnetSource reads a magnet: its info hash and its tr= trackers.
@@ -49,6 +57,19 @@ func ParseMagnetSource(magnet string) (TorrentSource, error) {
 		trackers = u.Query()["tr"]
 	}
 	return TorrentSource{Hash: hash, Trackers: MergeTrackers(trackers)}, nil
+}
+
+// releaseMagnet builds the magnet an add hands the engine when the request has none.
+// The public fallback trackers go only on a torrent known to be public, which takes
+// its .torrent: from a bare hash the library cannot tell, and a private torrent must
+// not be announced to a public tracker (hard rule 3). The magnet then carries just the
+// release's own trackers, and the engine adds public ones once the metadata shows the
+// torrent is public.
+func releaseMagnet(hash, title string, file TorrentSource) string {
+	if len(file.File) > 0 && !file.Private {
+		return BuildMagnet(hash, title, MergeTrackers(DefaultTrackers(), file.Trackers))
+	}
+	return BuildMagnet(hash, title, file.Trackers)
 }
 
 // MergeTrackers joins tracker lists in order, dropping blanks and repeats.
