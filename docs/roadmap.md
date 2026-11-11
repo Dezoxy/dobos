@@ -68,9 +68,11 @@ Releases and deployment are scheduled separately.
 2. **End-to-end coverage for replacement.** A second fixture filed over the
    first as the same TV episode, so the readability check before a
    replacement runs against the real engine.
-3. **Break up `main.go`.** Move the FUSE nodes, the read pump, the HTTP
-   routes and the startup wiring into packages behind an `App` struct with
-   its own HTTP mux, replacing the package-level singletons.
+3. **Break up `main.go`.** Phase a: split it into files by concern in the
+   same package, as a pure move. Phase b: move the read-ahead cache into its
+   own package with unit tests, and give the HTTP routes their own mux. The
+   `App` struct that replaces the shared package-level maps waits for tests
+   on the read path (see ideas).
 4. **Make failures visible.** Structured logging with `slog`, no discarded
    errors, and per-file session results through the API.
 
@@ -116,3 +118,7 @@ Releases and deployment are scheduled separately.
   aligned with patched versions (gRPC, OpenTelemetry, x/crypto, websocket),
   its private-torrent tests run in `make go-test` and CI, and the Dependabot
   backlog is merged or superseded.
+- 2026-11-11, maintainability step 3a: `main.go` is split into nine files
+  by concern (FUSE nodes, handle, pump, read-ahead cache, playback, webhook,
+  profiling, inode map, wiring); a line-multiset check proves no code
+  changed.
