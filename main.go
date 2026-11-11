@@ -44,8 +44,6 @@ import (
 	"tiramisu/internal/library"
 	"tiramisu/internal/lockmgr"
 	"tiramisu/internal/metadb"
-	"tiramisu/internal/monitor/collector"
-	"tiramisu/internal/monitor/dashboard"
 	"tiramisu/internal/natpmp"
 	"tiramisu/internal/opentracker"
 	"tiramisu/internal/preload"
@@ -5416,33 +5414,7 @@ func main() {
 		http.HandleFunc("/api/library/inspect", libHandler.Inspect)
 	}
 
-	// Health Monitor + Dashboard (Fase 5)
-	logsDir := gc().LogDir
-	monCollector := collector.New(
-		"http://127.0.0.1:8090",
-		gc().FuseMountPath,
-		physicalSourcePath,
-		gc().NatPMP.VPNInterface,
-		gc().Plex.URL,
-		gc().Plex.Token,
-		gc().NatPMP.LocalPort,
-		gc().MetricsPort,
-		logsDir,
-	)
-	dashHandler := dashboard.New(monCollector, logsDir)
-	http.HandleFunc("/dashboard", dashHandler.Dashboard)
 	http.HandleFunc("/api/index/seed", handleIndexSeed) // Dezoxy fork; off unless configured
-	http.HandleFunc("/api/health", dashHandler.Health)
-	http.HandleFunc("/api/torrents", dashHandler.Torrents)
-	http.HandleFunc("/api/speed-history", dashHandler.SpeedHistory)
-	http.HandleFunc("/api/shield-events", dashHandler.ShieldEvents)
-	http.HandleFunc("/api/logs", dashHandler.Logs)
-	http.HandleFunc("/api/plex-thumb", dashHandler.PlexThumb)
-	http.HandleFunc("/api/kill-stream/", dashHandler.KillStream)
-	safeGo(func() {
-		monCollector.Run(backgroundStopChan)
-	})
-	logger.Printf("[Dashboard] enabled at :%d/dashboard", gc().MetricsPort)
 
 	go http.ListenAndServe(fmt.Sprintf(":%d", gc().MetricsPort), nil)
 
