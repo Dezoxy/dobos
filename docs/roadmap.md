@@ -47,3 +47,5 @@ a switch or calls out to third parties.
   blocklist, index seeding, the Samba watchdog, the never-filled preload
   cache, `syncer/statestore`, `EngineScripts` and seven unread
   configuration keys are removed.
+- 2026-11-11, trim step 4: the Windows installer, `install.sh` and the
+  systemd unit are removed; the container image is the only install.

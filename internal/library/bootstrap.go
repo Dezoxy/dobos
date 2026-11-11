@@ -44,7 +44,7 @@ func AudioCueStubBytes(streamURL string, size int64, magnet, externalID, externa
 
 // EnsureSectionRoots creates the audio section roots under sourcePath when they are
 // missing, so an install that predates audio gains them on update rather than
-// needing a manual step. Video roots are install.sh's job and are left alone.
+// needing a manual step. Video roots belong to the deployment and are left alone.
 func EnsureSectionRoots(sourcePath string) error {
 	if sourcePath == "" {
 		// Not a no-op: an empty path would resolve the sections against the
