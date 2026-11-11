@@ -68,16 +68,17 @@ Releases and deployment are scheduled separately.
 2. **End-to-end coverage for replacement.** A second fixture filed over the
    first as the same TV episode, so the readability check before a
    replacement runs against the real engine.
-3. **Break up `main.go`.** Phase a: split it into files by concern in the
-   same package, as a pure move. Phase b: move the read-ahead cache into its
-   own package with unit tests, and give the HTTP routes their own mux. The
-   `App` struct that replaces the shared package-level maps waits for tests
-   on the read path (see ideas).
+3. **Break up `main.go`.** Phases a and b are done (see Done). The `App`
+   struct that replaces the shared package-level maps waits for tests on the
+   read path (see ideas).
 4. **Make failures visible.** Structured logging with `slog`, no discarded
    errors, and per-file session results through the API.
 
 ## Done
 
+- 2026-11-11, maintainability step 3b: the read-ahead cache is
+  `internal/readahead` with unit tests, and the control routes have their own
+  mux; `/debug/vars` is no longer served.
 - 2026-11-11, maintainability step 2: the end-to-end test files a second
   release over a TV episode and a third that never delivers, checking that
   the first replaces and the second is refused.

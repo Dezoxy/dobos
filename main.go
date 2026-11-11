@@ -22,6 +22,7 @@ import (
 	"flodni/internal/metadb"
 	"flodni/internal/opentracker"
 	"flodni/internal/ratelimit"
+	"flodni/internal/readahead"
 	"flodni/internal/registry"
 	"flodni/internal/tuner"
 	"flodni/internal/vfs"
@@ -58,7 +59,12 @@ var masterDataSemaphore chan struct{}
 
 var startTime = time.Now()
 var metaCache *cache.LRUCache
-var raCache = newReadAheadCache()
+var raCache = readahead.New(readahead.Config{
+	Base:   func() int64 { return gc().ReadAheadBase },
+	Budget: func() int64 { return gc().ReadAheadBudget },
+	Logf:   func(format string, args ...any) { logger.Printf(format, args...) },
+	Go:     safeGo,
+})
 
 var globalRateLimiter *ratelimit.RateLimiter
 var globalLockManager *lockmgr.LockManager
@@ -298,7 +304,7 @@ func main() {
 	logger.Printf("ReadBufferPool initialized with size: %d bytes (matches ReadAheadBase)", poolSize)
 
 	// Config is loaded: anchor the raCache recycled-buffer pool to the budget now (at package
-	// init gc() was nil, so newReadAheadCache kept the static 32-buffer default).
+	// init gc() was nil, so readahead.New kept the static 32-buffer default).
 	raCache.AnchorPoolToConfig()
 
 	catalog.SetRetryDefaults(gc().MaxRetryAttempts, time.Duration(gc().RetryDelayMS)*time.Millisecond)
@@ -403,9 +409,11 @@ func main() {
 
 	globalTorrentRemover = NewTorrentRemover(nativeBridge, logger)
 
-	http.HandleFunc("/plex/webhook", handlePlexWebhook)
+	// Own mux: nothing else in the process (expvar, pprof) can add routes to the control port.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/plex/webhook", handlePlexWebhook)
 
-	http.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		cacheStats := metaCache.Stats()
 		cleanupStats := globalCleanupManager.Stats()
 		lockStats := globalLockManager.Stats()
@@ -470,9 +478,9 @@ func main() {
 			g2Stats.Peers, g2Stats.BackingOff, g2Stats.LimitMin, g2Stats.LimitMax)
 	})
 
-	http.HandleFunc("/webhook", handlePlexWebhook)
+	mux.HandleFunc("/webhook", handlePlexWebhook)
 
-	http.HandleFunc("/metrics/profiling", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/metrics/profiling", func(w http.ResponseWriter, r *http.Request) {
 		totalReads, cacheHits, httpFetches, streamingReads, avgHTTPLatency, avgCacheLatency, cacheHitRate := globalProfilingStats.Stats()
 
 		fmt.Fprintf(w, `{"version":"%s", "total_reads":%d, "cache_hits":%d, "cache_hit_rate_pct":%.2f, "http_fetches":%d, "streaming_reads":%d, "non_streaming_reads":%d, "avg_http_latency_ms":%.2f, "avg_cache_latency_ms":%.2f, "max_conns_per_host":%d}`,
@@ -488,7 +496,7 @@ func main() {
 			gc().MaxConnsPerHost)
 	})
 
-	http.HandleFunc("/metrics/ttff", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/metrics/ttff", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"sessions_completed":%d,"sessions_filtered":%d,`+
 			`"open_to_header_ms":%s,"open_to_deep_read_ms":%s,"seek_latency_ms":%s,`+
 			`"read_latency_ms":{"warmup_head":%s,"warmup_tail":%s,"racache_hit":%s,"fetch_block":%s},`+
@@ -500,12 +508,12 @@ func main() {
 			ttffStats.stallCount.Load(), ttffStats.maxStallMS.Load())
 	})
 
-	http.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Write(settingsHTML)
 	})
 
-	http.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "GET" {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(gc())
@@ -535,7 +543,7 @@ func main() {
 	// build an absolute URL of its own: behind a reverse proxy the GoStorm port is
 	// not exposed, and an http:// call from an https:// page is blocked as mixed
 	// content, which left the whole GoStorm section empty and unsaveable.
-	http.HandleFunc("/api/gostorm/settings", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/gostorm/settings", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -568,7 +576,7 @@ func main() {
 		io.Copy(w, resp.Body)
 	})
 
-	http.HandleFunc("/api/restart", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/restart", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			http.Error(w, "method not allowed", 405)
 			return
@@ -647,10 +655,10 @@ func main() {
 			TVSection:    gc().Plex.TVLibraryID,
 		})
 		libHandler := library.NewHandler(libMgr)
-		http.HandleFunc("/api/library/add", libHandler.Add)
-		http.HandleFunc("/api/library/remove", libHandler.Remove)
-		http.HandleFunc("/api/library/list", libHandler.List)
-		http.HandleFunc("/api/library/inspect", libHandler.Inspect)
+		mux.HandleFunc("/api/library/add", libHandler.Add)
+		mux.HandleFunc("/api/library/remove", libHandler.Remove)
+		mux.HandleFunc("/api/library/list", libHandler.List)
+		mux.HandleFunc("/api/library/inspect", libHandler.Inspect)
 	}
 
 	// Control server: metrics, dashboard API and the library API.
@@ -667,7 +675,7 @@ func main() {
 	// depend on this port, and the process has always run on without it.
 	controlSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", gc().MetricsPort),
-		Handler:           http.DefaultServeMux,
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      600 * time.Second,
