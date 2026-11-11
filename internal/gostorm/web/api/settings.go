@@ -6,8 +6,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/pkg/errors"
 
-	sets "tiramisu/internal/gostorm/settings"
-	"tiramisu/internal/gostorm/torr"
+	sets "flodni/internal/gostorm/settings"
+	"flodni/internal/gostorm/torr"
 )
 
 // Action: get, set, def

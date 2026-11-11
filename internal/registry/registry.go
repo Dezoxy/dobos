@@ -9,7 +9,7 @@ import (
 	"syscall"
 	"time"
 
-	"tiramisu/internal/metadb"
+	"flodni/internal/metadb"
 )
 
 var logger = log.New(os.Stdout, "[Registry] ", log.LstdFlags)

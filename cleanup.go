@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"tiramisu/internal/cache"
-	"tiramisu/internal/gostorm/native"
-	"tiramisu/internal/gostorm/torr"
+	"flodni/internal/cache"
+	"flodni/internal/gostorm/native"
+	"flodni/internal/gostorm/torr"
 )
 
 // CleanupManager provides periodic cleanup of various in-memory structures

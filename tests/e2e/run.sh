@@ -12,8 +12,8 @@ set -euo pipefail
 
 FLODNI_IMAGE=${1:-flodni:ci}
 SEEDER_IMAGE=${2:-flodni-e2e-seeder:ci}
-SOURCE_PATH=/mnt/tiramisu-mkv-real
-MOUNT_PATH=/mnt/tiramisu-mkv-virtual
+SOURCE_PATH=/mnt/flodni-real
+MOUNT_PATH=/mnt/flodni-virtual
 WAIT_SECONDS=180
 READ_TIMEOUT=180
 

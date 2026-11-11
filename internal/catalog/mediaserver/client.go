@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"tiramisu/internal/catalog"
+	"flodni/internal/catalog"
 )
 
 // Client refreshes a media server library section. Each implementation decides what it

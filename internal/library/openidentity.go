@@ -63,7 +63,7 @@ func matchVideoFile(hash string, size int64, virtualPath string, files []Torrent
 	return 0, false
 }
 
-// normaliseVirtualName strips the hash suffix Tiramisu appends and folds the
+// normaliseVirtualName strips the hash suffix Flodni appends and folds the
 // separators a media server may have rewritten.
 func normaliseVirtualName(hash, virtualPath string) string {
 	name := strings.ToLower(filepath.Base(virtualPath))

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"tiramisu/internal/catalog"
+	"flodni/internal/catalog"
 )
 
 // GoStormClient handles HTTP operations with the GoStorm engine.

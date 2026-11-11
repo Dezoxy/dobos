@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"tiramisu/internal/gostorm/log"
-	"tiramisu/internal/gostorm/settings"
+	"flodni/internal/gostorm/log"
+	"flodni/internal/gostorm/settings"
 
 	"golang.org/x/time/rate"
 )

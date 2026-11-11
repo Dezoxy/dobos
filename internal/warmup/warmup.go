@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"tiramisu/internal/gostorm/settings"
+	"flodni/internal/gostorm/settings"
 )
 
 // FileSize is the per-file head cache cap. Set at init from config, default 64 MB.

@@ -17,10 +17,10 @@ import (
 	"github.com/anacrolix/missinggo/v2/httptoo"
 	"github.com/anacrolix/torrent"
 
-	mt "tiramisu/internal/gostorm/mimetype"
-	sets "tiramisu/internal/gostorm/settings"
-	"tiramisu/internal/gostorm/torr/state"
-	"tiramisu/internal/gostorm/torr/storage/torrstor"
+	mt "flodni/internal/gostorm/mimetype"
+	sets "flodni/internal/gostorm/settings"
+	"flodni/internal/gostorm/torr/state"
+	"flodni/internal/gostorm/torr/storage/torrstor"
 )
 
 // Add atomic counter for concurrent streams

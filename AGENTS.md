@@ -66,7 +66,9 @@ A change that violates one is wrong even if it works.
   `make go-check` runs gofmt, build and vet; `make go-test` runs the tests
   with the race detector. `make e2e` seeds a private torrent and reads it
   through FUSE in the built image (needs Docker and `/dev/fuse`). The module
-  and the binary are still named `tiramisu`.
+  and the binary are `flodni`; the `FLODNI_*` environment variables win over
+  the older `TIRAMISU_*` names, and persisted file names (`tiramisu.db`,
+  `tiramisu.log`) stay as they were.
 - **Layout:** `main.go` and the other root `.go` files are the daemon;
   `internal/` holds the packages (`vfs`, `gostorm`, `library`, `warmup`,
   `config` and more); `docker/` the image; `docs/` the roadmap, the ideas

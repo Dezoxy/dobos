@@ -15,9 +15,9 @@ started on 2026-11-10. It no longer follows upstream; the reasons are in
 [ADR 0001](docs/architecture/decisions/0001-hard-fork-tiramisu.md).
 
 The code is Tiramisu's with this fork's reliability changes. The Go module,
-the binary and many paths are still named `tiramisu`; renaming them is on
-the list. It is maintained by one person for their own use. Expect breaking
-changes and no support.
+the binary, the image paths and the environment variables are named Flodni.
+It is maintained by one person for their own use. Expect breaking changes
+and no support.
 
 ## Documentation
 
@@ -44,6 +44,17 @@ The container image builds anywhere Docker runs:
 ```bash
 docker build -f docker/Dockerfile -t flodni:dev .
 ```
+
+## Running
+
+The image mounts the FUSE view at `/mnt/flodni-virtual`, reads library
+files from `/mnt/flodni-real` and keeps its state under `/state`. Set the
+paths with `FLODNI_ROOT_PATH`, `FLODNI_SOURCE_PATH`, `FLODNI_MOUNT_PATH`,
+`FLODNI_STATE_DIR`, `FLODNI_LOG_DIR`, `FLODNI_LOG_FILE` and
+`FLODNI_HOST_MOUNT_HINT`; the Plex settings use `FLODNI_PLEX_URL` and
+`FLODNI_PLEX_TOKEN`. The older `TIRAMISU_*` names still work and lose to the
+`FLODNI_*` ones. Existing state carries over: the database is still
+`tiramisu.db` and the log file `tiramisu.log`.
 
 ## Viewing the model
 

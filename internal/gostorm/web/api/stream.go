@@ -1,16 +1,16 @@
 package api
 
 import (
+	"flodni/internal/gostorm/log"
+	"flodni/internal/gostorm/torrshash"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
-	"tiramisu/internal/gostorm/log"
-	"tiramisu/internal/gostorm/torrshash"
 
-	"tiramisu/internal/gostorm/torr"
-	"tiramisu/internal/gostorm/torr/state"
-	"tiramisu/internal/gostorm/web/api/utils"
+	"flodni/internal/gostorm/torr"
+	"flodni/internal/gostorm/torr/state"
+	"flodni/internal/gostorm/web/api/utils"
 
 	"github.com/anacrolix/torrent"
 	"github.com/gin-gonic/gin"

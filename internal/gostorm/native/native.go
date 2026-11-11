@@ -6,15 +6,15 @@ import (
 	"io"
 	"net/http"
 
+	"flodni/internal/gostorm/settings"
+	"flodni/internal/gostorm/torr"
+	"flodni/internal/gostorm/torr/state"
+	apiUtils "flodni/internal/gostorm/web/api/utils"
+	"flodni/internal/warmup"
 	"log"
 	"sync"
 	"sync/atomic"
 	"time"
-	"tiramisu/internal/gostorm/settings"
-	"tiramisu/internal/gostorm/torr"
-	"tiramisu/internal/gostorm/torr/state"
-	apiUtils "tiramisu/internal/gostorm/web/api/utils"
-	"tiramisu/internal/warmup"
 )
 
 // TorrentStats is used by NativeClient methods to report torrent status.

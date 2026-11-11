@@ -12,7 +12,7 @@ ARG TARGETARCH
 ARG APP_VERSION=dev
 # CGO_ENABLED=1 is required for FUSE integration.
 # -pgo=auto ensures we use profile-guided optimization if default.pgo is present.
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH go build -pgo=auto -ldflags "-X main.AppVersion=${APP_VERSION}" -o /out/tiramisu .
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH go build -pgo=auto -ldflags "-X main.AppVersion=${APP_VERSION}" -o /out/flodni .
 
 # End-to-end test seeder (tests/e2e). Built only on request (--target e2e-seeder);
 # the runtime stage below stays last so the default target is the shipped image.
@@ -32,7 +32,7 @@ RUN apt-get update \
 
 WORKDIR /app
 
-COPY --from=build /out/tiramisu /usr/local/bin/tiramisu
+COPY --from=build /out/flodni /usr/local/bin/flodni
 COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
@@ -42,18 +42,14 @@ ENV MKV_PROXY_CONFIG_PATH=/config.json
 # Everything that must outlive the container lives under /state. It is deliberately
 # a plain directory and not a VOLUME: an anonymous volume looks mounted, so the
 # entrypoint's persistence check would pass while "docker rm" still loses the data.
-ENV TIRAMISU_ROOT_PATH=/state
-ENV TIRAMISU_SOURCE_PATH=/mnt/tiramisu-mkv-real
-ENV TIRAMISU_MOUNT_PATH=/mnt/tiramisu-mkv-virtual
-ENV TIRAMISU_STATE_DIR=/state/STATE
-ENV TIRAMISU_LOG_DIR=/state/logs
-# Deprecated aliases, still honored by docker-entrypoint.sh for existing users
-ENV GOSTREAM_SOURCE_PATH=/mnt/tiramisu-mkv-real
-ENV GOSTREAM_MOUNT_PATH=/mnt/tiramisu-mkv-virtual
+# The path defaults (/state, /mnt/flodni-real, /mnt/flodni-virtual) live in
+# docker-entrypoint.sh, which reads FLODNI_*, then the older TIRAMISU_* and
+# GOSTREAM_* names. They are not baked in as ENV here: an image-level FLODNI_*
+# value would win over TIRAMISU_* set by an existing deployment.
 
 EXPOSE 8090 9080
 
 # tini is used as PID 1 to forward signals (e.g. SIGTERM on docker stop) to
-# tiramisu and reap zombie processes. Without it, the shell entrypoint script
+# flodni and reap zombie processes. Without it, the shell entrypoint script
 # would be PID 1 and would not forward signals, causing an unclean shutdown.
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]

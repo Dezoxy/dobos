@@ -9,8 +9,8 @@ import (
 
 	"github.com/anacrolix/torrent"
 
-	"tiramisu/internal/gostorm/log"
-	"tiramisu/internal/gostorm/settings"
+	"flodni/internal/gostorm/log"
+	"flodni/internal/gostorm/settings"
 )
 
 type Reader struct {

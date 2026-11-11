@@ -44,7 +44,23 @@ a switch or calls out to third parties.
    `internal/prowlarr`, `Config.Prowlarr` and `music_discovery`, which only
    the music import still uses.
 
+## Own identity and must-fix bugs
+
+1. **Rename to Flodni.** Go module, binary, image default paths, `FLODNI_*`
+   environment variables with the old names kept as aliases. Persisted file
+   names stay, so existing state carries over.
+2. **Keep working stubs when a pack replaces them.** Replacing a pack deletes
+   stubs that played before the new release is known to be readable
+   (`internal/library/manager.go`). A pack still wins, but the old stubs go
+   only once the new ones are confirmed readable.
+3. **Atomic writes and bounded servers.** Stub and config writes go through a
+   temporary file, sync and rename; the control HTTP server gets read, write
+   and idle timeouts.
+
+Releases and deployment are scheduled separately.
+
 ## Done
+
 
 - 2026-11-11, trim step 1: telemetry, the update check, the MCP server and
   the pprof endpoints are removed.
@@ -73,3 +89,5 @@ a switch or calls out to third parties.
   and the music-only configuration are removed. Existing `music/` and
   `audiobooks/` folders stay on disk; the mount lists them as directories
   without their audio files. Trim to the streaming core is complete.
+- 2026-11-11, own identity step 1: the module, binary, image paths and
+  environment variables are named Flodni; old names still work.

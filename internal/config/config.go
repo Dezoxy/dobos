@@ -251,10 +251,10 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("MKV_PROXY_GOSTORM_URL"); v != "" {
 		c.GoStormBaseURL = v
 	}
-	if v := firstEnv("TIRAMISU_PLEX_URL", "GOSTREAM_PLEX_URL", "PLEX_URL"); v != "" {
+	if v := firstEnv("FLODNI_PLEX_URL", "TIRAMISU_PLEX_URL", "GOSTREAM_PLEX_URL", "PLEX_URL"); v != "" {
 		c.Plex.URL = v
 	}
-	if v := firstEnv("TIRAMISU_PLEX_TOKEN", "GOSTREAM_PLEX_TOKEN", "PLEX_TOKEN"); v != "" {
+	if v := firstEnv("FLODNI_PLEX_TOKEN", "TIRAMISU_PLEX_TOKEN", "GOSTREAM_PLEX_TOKEN", "PLEX_TOKEN"); v != "" {
 		c.Plex.Token = v
 	}
 	if v := os.Getenv("MKV_PROXY_LOG_LEVEL"); v != "" {
