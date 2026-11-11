@@ -11,6 +11,10 @@ import (
 	"flodni/internal/gostorm/web"
 )
 
+// SetAPIToken makes the HTTP server require this bearer token on every route
+// except GET /echo. Call it before Start; empty leaves the server open.
+func SetAPIToken(token string) { web.APIToken = token }
+
 func Start() {
 	settings.InitSets(settings.Args.RDB, settings.Args.SearchWA)
 	// https checks

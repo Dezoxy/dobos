@@ -24,12 +24,19 @@ route except the static panel page (`GET /control`) needs
 API is open: bind it to loopback or a private network, never to an address
 other people can reach.
 
-Not covered: GoStorm's own server on port 8090 (torrent control and
-shutdown) has no authentication yet; keep it off any network others can
-reach. Flodni does not provide TLS, so the token travels in clear text:
-put the control port behind a TLS proxy on any untrusted network. The token
-is compared in constant time and never logged, but there is no rate limiting
-or lockout.
+The same token also covers GoStorm's own server on port 8090 (torrent
+control, settings, `/stream`, shutdown): every route except `GET /echo`, the
+readiness probe, needs the `Authorization: Bearer` header, and there is no
+query-token form. External clients of 8090 must send it when it is set;
+flodni's own calls to the engine already do. With no token set, 8090 is open
+as before, so keep it off any network others can reach. GoStorm's server
+bounds header reads (10 s) and idle connections (120 s); it sets no read or
+write timeout, because streams and uploads are long-lived.
+
+Flodni does not provide TLS, so the token travels in clear text: put the
+control port behind a TLS proxy on any untrusted network. The token is
+compared in constant time and never logged, but there is no rate limiting or
+lockout.
 
 ## Secrets
 

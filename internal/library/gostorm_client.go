@@ -18,13 +18,16 @@ import (
 // GoStormClient handles HTTP operations with the GoStorm engine.
 type GoStormClient struct {
 	baseURL    string
+	token      string // bearer token for the engine's server; empty sends none
 	httpClient *http.Client
 }
 
-// NewGoStormClient creates a client for GoStorm API operations.
-func NewGoStormClient(baseURL string) *GoStormClient {
+// NewGoStormClient creates a client for GoStorm API operations. A non-empty
+// token is sent as a bearer token on every request.
+func NewGoStormClient(baseURL, token string) *GoStormClient {
 	return &GoStormClient{
 		baseURL: strings.TrimRight(baseURL, "/"),
+		token:   token,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
@@ -72,6 +75,7 @@ func (c *GoStormClient) AddTorrentConfirmed(ctx context.Context, magnet, title s
 		return "", false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -122,6 +126,7 @@ func (c *GoStormClient) UploadTorrent(ctx context.Context, data []byte, title st
 		return "", err
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
+	c.authorize(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", err
@@ -187,6 +192,7 @@ func (c *GoStormClient) ReadFileHead(ctx context.Context, hash string, fileID in
 	if err != nil {
 		return err
 	}
+	c.authorize(req)
 	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", n-1))
 	hc := *c.httpClient
 	hc.Timeout = 0
@@ -254,6 +260,7 @@ func (c *GoStormClient) doTorrents(ctx context.Context, body map[string]string, 
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
 
 	var resp *http.Response
 	if retry {
@@ -276,4 +283,10 @@ func (c *GoStormClient) doTorrents(ctx context.Context, body map[string]string, 
 func (c *GoStormClient) postTorrents(ctx context.Context, body map[string]string) error {
 	_, err := c.doTorrents(ctx, body, false)
 	return err
+}
+
+func (c *GoStormClient) authorize(req *http.Request) {
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
 }
