@@ -48,6 +48,14 @@ type Config struct {
 	GoStormBaseURL string `json:"gostorm_url"`
 	MetricsPort    int    `json:"metrics_port"`
 
+	// APIToken, when set, is required as a bearer token on every control route
+	// except the static panel page (see internal/apiauth). Empty: no auth.
+	// FLODNI_API_TOKEN overrides it. GET /api/config never returns it.
+	APIToken string `json:"api_token"`
+	// fileAPIToken is APIToken as read from config.json, before the environment
+	// override, so a panel save never writes the environment's token to disk.
+	fileAPIToken string
+
 	// --- FUSE Paths ---
 	// Fallback when CLI args are omitted. CLI args always take precedence.
 	PhysicalSourcePath string `json:"physical_source_path"` // Real MKV dir (e.g. /mnt/torrserver)
@@ -121,6 +129,23 @@ func (c *Config) Save() error {
 	return atomicfile.WriteFile(c.ConfigPath, data, 0644)
 }
 
+// Redacted returns a copy that is safe to send to the control panel: the API
+// token is blanked.
+func (c Config) Redacted() Config {
+	c.APIToken = ""
+	return c
+}
+
+// ResolveAPIToken returns the token to persist when the panel posts a config.
+// The panel never sees the token, so an empty value (what GET returns) keeps
+// the one in config.json; anything else is taken as given.
+func (c *Config) ResolveAPIToken(posted string) string {
+	if posted == "" {
+		return c.fileAPIToken
+	}
+	return posted
+}
+
 // LoadConfig loads configuration from environment variables with defaults
 func LoadConfig() Config {
 	// 1. Initial Defaults (V138 Gold Standard)
@@ -187,6 +212,7 @@ func LoadConfig() Config {
 			log.Printf("[Config] WARNING: Failed to parse %s: %v", cfg.ConfigPath, err)
 		} else {
 			log.Printf("[Config] Loaded settings from %s", cfg.ConfigPath)
+			cfg.fileAPIToken = cfg.APIToken
 			// Backward compat: if gostorm_url was not present in config, fall back to legacy torrserver_url key
 			if cfg.GoStormBaseURL == "" {
 				var raw map[string]json.RawMessage
@@ -258,6 +284,9 @@ func (c *Config) applyEnvOverrides() {
 	}
 	if v := firstEnv("FLODNI_PLEX_TOKEN", "TIRAMISU_PLEX_TOKEN", "GOSTREAM_PLEX_TOKEN", "PLEX_TOKEN"); v != "" {
 		c.Plex.Token = v
+	}
+	if v := os.Getenv("FLODNI_API_TOKEN"); v != "" {
+		c.APIToken = v
 	}
 	if v := os.Getenv("MKV_PROXY_LOG_LEVEL"); v != "" {
 		c.LogLevel = v

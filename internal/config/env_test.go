@@ -57,3 +57,32 @@ func TestEnvPrecedencePlex(t *testing.T) {
 		})
 	}
 }
+
+func TestAPITokenEnvAndRedaction(t *testing.T) {
+	t.Setenv("FLODNI_API_TOKEN", "")
+	var c Config
+	c.APIToken, c.fileAPIToken = "from-file", "from-file"
+	c.applyEnvOverrides()
+	if c.APIToken != "from-file" {
+		t.Errorf("empty env must not override: got %q", c.APIToken)
+	}
+	t.Setenv("FLODNI_API_TOKEN", "from-env")
+	c.applyEnvOverrides()
+	if c.APIToken != "from-env" {
+		t.Errorf("env must win: got %q", c.APIToken)
+	}
+	if got := c.Redacted().APIToken; got != "" {
+		t.Errorf("Redacted leaks the token: %q", got)
+	}
+	if c.APIToken != "from-env" {
+		t.Error("Redacted must not modify the receiver")
+	}
+	// A panel save posts the redacted (empty) value: the file's token stays,
+	// never the environment's.
+	if got := c.ResolveAPIToken(""); got != "from-file" {
+		t.Errorf("empty post: got %q, want the file token", got)
+	}
+	if got := c.ResolveAPIToken("new"); got != "new" {
+		t.Errorf("explicit post: got %q", got)
+	}
+}

@@ -130,6 +130,17 @@ func run(out, flodni string, peerPort, trackerPort int) error {
 	if err := mi.Write(&torrentFile); err != nil {
 		return err
 	}
+	if apiToken() != "" {
+		// Auth on: the same add without the header must be refused first.
+		status, _, err := postAddAs(ctx, flodni, "", map[string]any{"type": "movie", "hash": hash.HexString()})
+		if err != nil {
+			return err
+		}
+		if status != http.StatusUnauthorized {
+			return fmt.Errorf("unauthenticated library add: status %d, want 401", status)
+		}
+		log.Printf("unauthenticated library add refused: status %d", status)
+	}
 	fusePath, err := addToLibrary(ctx, flodni, hash.HexString(), torrentFile.Bytes())
 	if err != nil {
 		return err
@@ -362,6 +373,14 @@ func addAccepted(ctx context.Context, flodni string, req map[string]any) (string
 
 // postAdd sends one add request and returns the status and body, whatever the status.
 func postAdd(ctx context.Context, flodni string, req map[string]any) (int, []byte, error) {
+	return postAddAs(ctx, flodni, apiToken(), req)
+}
+
+// apiToken is the control API token the stack runs with; empty means auth is off.
+func apiToken() string { return os.Getenv("FLODNI_API_TOKEN") }
+
+// postAddAs is postAdd with an explicit bearer token; "" sends no header.
+func postAddAs(ctx context.Context, flodni, token string, req map[string]any) (int, []byte, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return 0, nil, err
@@ -372,6 +391,9 @@ func postAdd(ctx context.Context, flodni string, req map[string]any) (int, []byt
 		return 0, nil, err
 	}
 	hreq.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		hreq.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := (&http.Client{Timeout: 2 * time.Minute}).Do(hreq)
 	if err != nil {
 		return 0, nil, fmt.Errorf("library add: %w", err)

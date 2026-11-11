@@ -70,13 +70,11 @@ Bugs and data-loss risks. None open.
 - **A shutdown deadline**, so a hung unmount cannot block a restart forever.
 - **CodeQL.** Left out for now: the cgo FUSE build may defeat its automatic
   build. Needs a manual build step.
-- **A threat model** for the control API before it gains authentication.
+- **A threat model** for the control API for the opt-in token.
 - **An updater for the `Makefile` image pins.** Dependabot does not read
   them.
 
 ## Enterprise-grade, optional
 
-- **Token authentication on the control API.** `/api/restart`, `/api/config`
-  and `/api/library/*` accept any caller that can reach the port.
 - **Less container privilege.** The image runs with `SYS_ADMIN` and AppArmor
   unconfined for the FUSE mount; a narrower profile may be enough.

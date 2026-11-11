@@ -78,7 +78,27 @@ Releases and deployment are scheduled separately.
    sessions where a file was opened but never served bytes through the API.
    Structured logging with `slog` waits (see ideas).
 
+## Hardening
+
+1. **Opt-in token on the control API.** `api_token` or `FLODNI_API_TOKEN`
+   enables bearer-token auth on every control route except the static panel
+   page; webhooks may pass the token as a query parameter. Unset keeps
+   today's open API.
+2. **Unit tests on the read path.** Cover the read decision tree in
+   `handle.go` and the pump's decision helpers, the prerequisite for the
+   `App` struct.
+3. **Stubs land where the mount serves them.** The library writes stubs
+   under the configured `physical_source_path` while FUSE serves the path
+   given on the command line; make them one value, or refuse to start when
+   they differ.
+4. **Bound and protect GoStorm's server.** Read-header and idle timeouts on
+   port 8090, and the same opt-in token, since it exposes torrent control
+   and shutdown.
+
 ## Done
+
+- 2026-11-11, hardening step 1: opt-in bearer-token auth on the control API;
+  the panel asks for the token, webhooks may pass it in the URL.
 
 - 2026-11-11, maintainability step 4b: `GET /api/sessions` lists open
   sessions and the last 200 closed ones, each with bytes served, time to first
