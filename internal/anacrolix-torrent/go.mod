@@ -3,7 +3,7 @@ module github.com/anacrolix/torrent
 go 1.26.0
 
 require (
-	github.com/RoaringBitmap/roaring v1.2.3
+	github.com/RoaringBitmap/roaring v1.9.4
 	github.com/ajwerner/btree v0.0.0-20211221152037-f427b3e689c0
 	github.com/alexflint/go-arg v1.4.3
 	github.com/anacrolix/chansync v0.3.0
@@ -50,7 +50,7 @@ require (
 	github.com/anacrolix/mmsg v1.0.0 // indirect
 	github.com/anacrolix/stm v0.4.0 // indirect
 	github.com/benbjohnson/immutable v0.3.0 // indirect
-	github.com/bits-and-blooms/bitset v1.2.2 // indirect
+	github.com/bits-and-blooms/bitset v1.12.0 // indirect
 	github.com/bradfitz/iter v0.0.0-20191230175014-e8f45d346db8 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/go-llsqlite/crawshaw v0.4.0 // indirect
