@@ -171,6 +171,14 @@ Bugs and data-loss risks. None open.
   playback is cut short in `/api/sessions` and the `[Session]` line. Opening
   a session on the first read after a close would fix it; weigh a new
   session per pause against one long one.
+- **Warmup accounting drift sources left.** The head write and removal race
+  is closed, but `totalSize` can still drift: the eviction walk stores an
+  absolute total outside `tailMu`; `dropResidue` unlinks and subtracts
+  without `tailMu`; `GetAvailableRange`'s unlocked Stat then Store can save
+  a stale-low size (a `CompareAndSwap` on the entry would fix it); a
+  CORRUPT CACHE removal never subtracts; head writes dropped when `writeCh`
+  is full are not counted; and the head create's `handles.Store` should be a
+  `Swap` that closes the old descriptor, or it leaks one.
 
 ## Nice to have
 
