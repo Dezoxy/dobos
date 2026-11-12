@@ -142,10 +142,10 @@ step 6.
    pruned at startup, the endpoint answers 503 when the state database is
    off, and the README documents the fields as the supported contract.
 3. **One log line per closed session.** A JSON line with the hash, file
-   index, path, outcome, bytes served split into swarm and cache, time to
-   first byte and duration, so a log store keeps what the 200-entry ring
-   behind `/api/sessions` forgets. The existing `[DeadSwarm]` and `[TTFF]`
-   lines stay as they are.
+   index, path, outcome, bytes served by serving path, whether the swarm
+   served a read, time to first byte and duration, so a log store keeps
+   what the 200-entry ring behind `/api/sessions` forgets. The existing
+   `[DeadSwarm]` and `[TTFF]` lines stay as they are.
 4. **Scrapeable metrics.** Prometheus text exposition on its own path, next
    to the JSON the panel reads: the time-to-first-byte histograms, dead-swarm
    verdicts, warmup cache hits by source, cache bytes and evictions. Later
@@ -279,3 +279,8 @@ trigger is known.
   close time of the last swarm-served read. A success keeps the row and
   resets the count. Rows of torrents that left the library are pruned at
   startup after a complete library scan; README documents the fields.
+- 2026-11-12, readability evidence step 3: Flodni logs one JSON line per
+  closed session with bytes by serving path and whether the swarm served a
+  read (`swarm_served`), plus the file index and failure reason; the same
+  fields join `/api/sessions`. The bytes are split by the path that
+  answered, not into swarm and cache. README documents the line.

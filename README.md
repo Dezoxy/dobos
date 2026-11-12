@@ -94,7 +94,8 @@ exits 0 on HTTP 200 and 1 otherwise; run it with
 recorded about each torrent's reads. With a token set it needs the bearer
 header (no `?token=`). It answers 503 when the state database is off:
 nothing is recorded then. The fields below are the supported contract for
-outside tools; log wording and stub names are not.
+outside tools; log wording and stub names are not (the `[Session]` log
+line below is the one log format that is).
 
 | Field | Meaning |
 |---|---|
@@ -135,6 +136,66 @@ outside tools; log wording and stub names are not.
   know. `GET /api/library/list` always reports `file_index` (the
   engine's index, starting at 1; 0 means the stub carries none). Per-file
   records are designed, not implemented (ADR 0002).
+
+## Session log
+
+A session covers the reads of one torrent-backed file, from an open until
+the file has been idle for a minute. `GET /api/sessions` lists the open
+sessions and the last 200 closed ones, in memory. Each closed session is
+also written to the log as one line, so a log store keeps the history. The
+image tees the log to `tiramisu.log` under `$FLODNI_LOG_DIR` (default
+`/state/logs`); that file survives a container recreate only when its
+directory is on a mounted volume, and it is not rotated. Without the log FIFO the line
+goes to stdout only.
+
+```text
+[GoProxy] 2026/11/12 09:02:10 [Session] {"path":"/mnt/flodni-real/tv/Example/Example.S01E01_0123abcd.mkv","hash":"0123456789abcdef0123456789abcdef01234567","size":31461601,"opened_at":"2026-11-12T09:00:05Z","closed_at":"2026-11-12T09:02:10Z","bytes_served":31461601,"first_byte_ms":12,"reads":241,"failed_reads":0,"outcome":"served","file_index":1,"bytes_fetch_block":135393,"bytes_racache_hit":31326208,"bytes_warmup_head":0,"bytes_warmup_tail":0,"swarm_served":true,"duration_ms":125000,"failure_reason":null}
+```
+
+Everything after `[Session] ` is one JSON object on one line, the same
+object `/api/sessions` returns; there an open session has outcome `open`,
+no `closed_at` and live counters, so the byte fields can differ from
+`bytes_served` by a read in flight. Parse the JSON; do not grep the path,
+which `json.Marshal` escapes (`&`, `<`, `>`). Key order is not part of the
+contract. The prefix and the fields below are the
+supported contract: fields may be added; none is renamed, retyped or
+removed. Ignore fields and outcome values you do not know. The `[TTFF]`
+and `[DeadSwarm]` lines are unchanged, and their wording is not a contract.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `path` | string | The stub's path in the library. |
+| `hash` | string | Full info hash, lower-case hex. |
+| `file_index` | number | The index the stub carries, as `file_index` in `GET /api/library/list`; 0 if it carries none. |
+| `size` | number | File size in bytes. |
+| `opened_at`, `closed_at` | string | UTC, RFC 3339, whole seconds. |
+| `duration_ms` | number | Open to close, including the idle wait before the close. |
+| `first_byte_ms` | number or null | Open to the first byte served; `null` if none was. |
+| `bytes_served` | number | Bytes handed to the kernel; the sum of the four fields below. |
+| `bytes_fetch_block` | number | Bytes of reads that waited for the engine. |
+| `bytes_racache_hit` | number | Bytes of reads answered from the read-ahead cache in memory. |
+| `bytes_warmup_head`, `bytes_warmup_tail` | number | Bytes of reads answered from the head or tail window on disk. |
+| `swarm_served` | boolean | A read was answered through the engine while a peer was connected: the rule that sets `last_swarm_read_at`. |
+| `reads`, `failed_reads` | number | Reads served, and reads that gave up. |
+| `failure_reason` | string or null | Why the last failed read gave up (the values of `last_failure_reason`); `null` if no read failed. Set whenever a read failed; only `dead_swarm` says the session counted as a failure. |
+| `outcome` | string | `served`: 1 MiB or more, or over 64 KiB with a read past 8 MiB or in the tail window. `probe`: fewer bytes, a scan. `unserved`: no bytes. `dead_swarm`: the session counted as a failure in the readability record, whatever it served; it never appears when the state database is off. The thresholds may change. |
+
+- The four byte fields name the path that answered each read, not where
+  the bytes came from. Bytes fetched from the swarm in a session reappear
+  under the cache fields when later reads find them there, and the engine
+  can answer a fetch from pieces it already holds. Only `swarm_served`
+  says the swarm delivered.
+- `served` means the reader got bytes, not that the swarm sent them.
+- A session is per file, not per open or per playback. Opens that overlap
+  share one. After a session closes, reads on a handle that is still open
+  are not counted until the file is opened again. A playback that pauses
+  for more than a minute (30 s once the session is older than 30 minutes)
+  is cut short in this record, and one whose session ended when another
+  handle closed before the first byte shows as `unserved`.
+- A session still open when Flodni stops gets no line.
+- `bytes_served` counts what Flodni handed to the kernel. The kernel's
+  page cache answers repeated reads without Flodni seeing them.
+- The line carries the library path. Remove it before sharing a log.
 
 ## Viewing the model
 

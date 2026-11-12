@@ -161,8 +161,16 @@ Bugs and data-loss risks. None open.
   prune also needs a per-directory non-empty guard.
 - **Keep verdicts across a shutdown.** Sessions still open at shutdown never
   reach a verdict; only the release path and the cleanup loop close them, so
-  a stop within two minutes of a session loses its evidence. Closing them in
-  the shutdown path would keep it.
+  a stop within two minutes of a session loses its evidence, and its
+  `[Session]` log line is never written. Closing them in the shutdown path
+  would keep both.
+- **Count reads after a session closes.** A session closes after 60 s idle
+  (30 s once it is older than 30 minutes), or when a probe releases while a
+  player without a pump slot has read nothing. Reads on a handle that is
+  still open then find no session and are counted nowhere, so a paused
+  playback is cut short in `/api/sessions` and the `[Session]` line. Opening
+  a session on the first read after a close would fix it; weigh a new
+  session per pause against one long one.
 
 ## Nice to have
 

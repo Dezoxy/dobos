@@ -51,11 +51,21 @@ func TestSessionRecord(t *testing.T) {
 	s.bytesRead.Store(2 << 20)
 	s.reads.Store(3)
 	s.failedReads.Store(1)
+	s.fileIndex = 4
+	s.bytesFetchBlock.Store(1 << 20)
+	s.bytesRACacheHit.Store(1 << 20)
+	s.servedByNet.Store(true)
+	reason := "timeout"
+	s.failReason.Store(&reason)
 	r = s.record(opened.Add(time.Minute), false)
 	if r.Outcome != outcomeServed || r.OpenedAt != "2026-11-11T10:00:00Z" ||
 		r.ClosedAt != "2026-11-11T10:01:00Z" || r.FirstByteMS == nil || *r.FirstByteMS != 250 ||
 		r.BytesServed != 2<<20 || r.Reads != 3 || r.FailedReads != 1 {
 		t.Fatalf("closed: %+v", r)
+	}
+	if r.FileIndex != 4 || r.BytesFetchBlock != 1<<20 || r.BytesRACacheHit != 1<<20 ||
+		!r.SwarmServed || r.DurationMS != 60000 || r.FailureReason == nil || *r.FailureReason != "timeout" {
+		t.Fatalf("closed, new fields: %+v", r)
 	}
 }
 

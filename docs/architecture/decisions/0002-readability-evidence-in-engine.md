@@ -29,8 +29,10 @@ only playback needs that.
 The engine already knows the facts these jobs reconstruct from outside:
 which path served each read (a cache window, the read-ahead cache or the
 engine), whether a session got anything from the swarm, and which sessions
-ended with a failed read and nothing served. It does not yet count swarm
-and cache bytes separately.
+ended with a failed read and nothing served. It counts bytes by serving
+path (the engine, the read-ahead cache, the head and tail windows on disk)
+and records whether the swarm served a read, but it cannot say which bytes
+the swarm delivered: bytes fetched earlier reappear as cache hits.
 
 ## Decision drivers
 
@@ -130,6 +132,7 @@ Status of each part:
 | `[DeadSwarm]` log lines | Exists; the wording is not a contract |
 | `GET /api/torrents/health` with the readability fields | Exists; the fields are in the README |
 | Time of the last swarm-served read, reason and source of the last failure | Exists |
+| One `[Session]` log line per closed session: bytes by serving path, `swarm_served`, file index (the README documents it as a contract) | Exists; sessions open at shutdown and reads after a session closes are not counted |
 | Per-file readability record | **Designed, not implemented** |
 | List of files whose head and tail windows are on disk; background fills never evict | **Designed, not implemented** |
 | Warm on add, catch-up and retries | **Designed, not implemented** |
@@ -151,8 +154,8 @@ What the endpoint does:
 - Rows go when a torrent is removed from the library and are pruned at
   startup, after a complete scan of the library.
 - Per-file records come from the warmer, which records each outcome per
-  file. Sessions carry a path and a hash today, not a file index, and the
-  per-torrent table has no file key.
+  file. Sessions carry a path, a hash and the file index their stub holds,
+  but the per-torrent table has no file key.
 
 The endpoint and the fields landed in the roadmap step
 [Readability evidence](../../roadmap.md#readability-evidence), step 2. The

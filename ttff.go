@@ -130,6 +130,7 @@ type TTFFSession struct {
 	path            string
 	size            int64
 	hash            string
+	fileIndex       int // the index the stub carries (0 = none), for the session log line
 	warmupHeadReady atomic.Bool
 	warmupTailReady atomic.Bool
 
@@ -142,6 +143,12 @@ type TTFFSession struct {
 	lastReadAt      atomic.Int64
 	bytesRead       atomic.Int64
 	reads           atomic.Int64 // served reads, for /api/sessions
+	// Bytes handed to the caller per serving path, for /api/sessions and the
+	// [Session] line. They name the path that answered, not where the bytes came from.
+	bytesFetchBlock atomic.Int64
+	bytesRACacheHit atomic.Int64
+	bytesWarmupHead atomic.Int64
+	bytesWarmupTail atomic.Int64
 	failedReads     atomic.Int64 // reads that gave up with EAGAIN/EIO, for /api/sessions
 	lastOff         atomic.Int64 // start offset of previous read; -1 = none
 	seekCount       atomic.Int64
@@ -181,6 +188,16 @@ func (s *TTFFSession) recordRead(src ttffSource, d time.Duration, n int, off int
 	if n > 0 {
 		s.firstDataAt.CompareAndSwap(0, nowN)
 		s.bytesRead.Add(int64(n))
+		switch src {
+		case srcWarmupHead:
+			s.bytesWarmupHead.Add(int64(n))
+		case srcWarmupTail:
+			s.bytesWarmupTail.Add(int64(n))
+		case srcRACacheHit:
+			s.bytesRACacheHit.Add(int64(n))
+		case srcFetchBlock:
+			s.bytesFetchBlock.Add(int64(n))
+		}
 		// The source alone is not enough: the fetch path also hands back whatever is
 		// already local, and a dead release once returned 38 bytes of residue through
 		// it and acquitted itself with them, wiping six recorded failures. A release
@@ -289,14 +306,18 @@ func (s *TTFFSession) reportSwarmVerdict() bool {
 	return true
 }
 
-// closeSession aggregates the session into the global histograms and logs one
-// [TTFF] line. Idempotent via closeOnce. Removes itself from the registry.
+// closeSession records the session in the ring, writes its [Session] line, then
+// aggregates it into the global histograms and logs one [TTFF] line (real
+// playbacks only). Idempotent via closeOnce. Removes itself from the registry.
 func (s *TTFFSession) closeSession() {
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
 		sessions.CompareAndDelete(s.path, s)
 		dead := s.reportSwarmVerdict()
-		closedSessions.add(s.record(time.Now(), dead))
+		// Before the ttffIsReal filter: probes and unserved sessions get a line too.
+		rec := s.record(time.Now(), dead)
+		closedSessions.add(rec)
+		logSessionRecord(rec)
 		if !ttffIsReal(s.tailOrDeep.Load(), s.bytesRead.Load()) {
 			ttffStats.sessionsFiltered.Add(1)
 			return
@@ -372,12 +393,12 @@ var ttffStats ttffAgg
 // first read would produce a negative or distorted openToHeader (observed
 // header=-75ms: a second Open mid-session refreshed openedAt past firstDataAt).
 // Non-torrent files (hash=="") are skipped.
-func ttffRegister(path string, size int64, hash string, headReady, tailReady bool) {
+func ttffRegister(path string, size int64, hash string, fileIndex int, headReady, tailReady bool) {
 	if hash == "" {
 		return
 	}
 	nowN := time.Now().UnixNano()
-	ns := &TTFFSession{path: path, size: size, hash: hash}
+	ns := &TTFFSession{path: path, size: size, hash: hash, fileIndex: fileIndex}
 	ns.warmupHeadReady.Store(headReady)
 	ns.warmupTailReady.Store(tailReady)
 	ns.openedAt.Store(nowN)

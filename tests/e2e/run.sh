@@ -123,6 +123,52 @@ check_readability() {
   fi
 }
 
+# check_session_line out: after B's session closed, its [Session] log line must exist
+# with outcome served, a file index and a byte split that sums to bytes_served. The
+# split is printed as a measurement; swarm_served false is reported, not failed
+# (a pump-fed session may not set it, README).
+check_session_line() {
+  local out=$1 b_hash logs="" line="" deadline=$((SECONDS + 3))
+  b_hash=$(cat "$out/b.hash")
+  # Read the log once per try: grep -q on a live docker logs pipe fails under pipefail.
+  while :; do
+    logs=$(docker logs "$flodni" 2>&1 || true)
+    line=$(grep -F '[Session] ' <<<"$logs" | grep -F "\"hash\":\"$b_hash\"" | grep -F '"outcome":"served"' | tail -n 1 || true)
+    [ -n "$line" ] || [ "$SECONDS" -ge "$deadline" ] && break
+    sleep 1
+  done
+  if [ -z "$line" ]; then
+    echo "FAIL (replacement): no [Session] line with outcome served for B ($b_hash)" >&2
+    dump_diagnostics
+    return 1
+  fi
+  local json=${line#*\[Session\] } idx served sum f h t r
+  idx=$(grep -o '"file_index":[0-9]*' <<<"$json" | cut -d: -f2)
+  served=$(grep -o '"bytes_served":[0-9]*' <<<"$json" | cut -d: -f2)
+  f=$(grep -o '"bytes_fetch_block":[0-9]*' <<<"$json" | cut -d: -f2)
+  r=$(grep -o '"bytes_racache_hit":[0-9]*' <<<"$json" | cut -d: -f2)
+  h=$(grep -o '"bytes_warmup_head":[0-9]*' <<<"$json" | cut -d: -f2)
+  t=$(grep -o '"bytes_warmup_tail":[0-9]*' <<<"$json" | cut -d: -f2)
+  if [ -z "$idx" ] || [ "$idx" -lt 1 ] || [ -z "$served" ] || [ -z "$f" ] || [ -z "$r" ] || [ -z "$h" ] || [ -z "$t" ]; then
+    echo "FAIL (replacement): [Session] line of B lacks file_index >= 1 or the byte fields: $json" >&2
+    dump_diagnostics
+    return 1
+  fi
+  sum=$((f + r + h + t))
+  if [ "$sum" -ne "$served" ]; then
+    echo "FAIL (replacement): [Session] byte fields sum to $sum, bytes_served is $served: $json" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "SESSION (replacement): B file_index=$idx bytes_served=$served fetch_block=$f racache_hit=$r warmup_head=$h warmup_tail=$t" >&2
+  echo "SESSION (replacement): B line: $json" >&2
+  if grep -q '"swarm_served":true' <<<"$json"; then
+    echo "SESSION (replacement): B swarm_served true" >&2
+  else
+    echo "SESSION (replacement): B swarm_served false" >&2
+  fi
+}
+
 is_running() {
   [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]
 }
@@ -387,6 +433,7 @@ run_replacement() {
     return 1
   fi
   check_readability "$out" || return 1
+  check_session_line "$out" || return 1
   check_sha "B read after refused C" "$path_b" "$(cat "$out/b.sha256")"
   echo "PASS (replacement): A replaced by B, C refused with $status" >&2
 
