@@ -1,0 +1,85 @@
+// Renovate opens version updates as pull requests against main, through the Mend Renovate app.
+// Security fixes come from GitHub's Dependabot alerts, which Renovate reads: keep those alerts on.
+// Nothing automerges.
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  // githubActionsVersions reads a `# renovate:` comment above a `*_VERSION:` key in a workflow.
+  extends: ['config:recommended', 'helpers:pinGitHubActionDigests', 'customManagers:githubActionsVersions'],
+  semanticCommits: 'enabled',
+  timezone: 'Europe/Budapest',
+  schedule: ['* 0-5 * * 1'],
+  // A new release waits a week before it is proposed: time for a compromised one to be pulled.
+  minimumReleaseAge: '7 days',
+  // The vendored engine has its own go.mod and Dockerfile and is patched in-tree, never bumped.
+  // This list replaces the one from config:recommended; no other ignored folder exists here.
+  ignorePaths: ['internal/anacrolix-torrent/**'],
+  postUpdateOptions: ['gomodTidy'],
+  packageRules: [
+    {
+      description: 'The go and toolchain directives are bumped by hand, as before.',
+      matchManagers: ['gomod'],
+      matchDepTypes: ['golang', 'toolchain'],
+      enabled: false,
+    },
+    {
+      description: 'Go module minor, patch and pseudo-version updates land as one pull request.',
+      matchManagers: ['gomod'],
+      matchUpdateTypes: ['minor', 'patch', 'digest'],
+      groupName: 'Go modules',
+    },
+    {
+      description: 'Replaced by the vendored engine in internal/anacrolix-torrent; the require version is a placeholder.',
+      matchPackageNames: ['github.com/anacrolix/torrent'],
+      enabled: false,
+    },
+    {
+      description: 'missinggo 2.11 moves to roaring/v2, which the vendored engine does not build against.',
+      matchPackageNames: ['github.com/anacrolix/missinggo/v2'],
+      allowedVersions: '<2.11.0',
+    },
+    {
+      description: 'The build image and the CI job container are the same Go toolchain: move them together.',
+      matchDatasources: ['docker'],
+      matchPackageNames: ['golang'],
+      groupName: 'golang image',
+    },
+    {
+      description: 'Docker registries and digest refreshes may give no release timestamp. Required, such an update would wait forever; optional, it is proposed without the wait.',
+      matchDatasources: ['docker'],
+      minimumReleaseAgeBehaviour: 'timestamp-optional',
+    },
+    {
+      description: 'Digest refreshes, such as an action re-pinned at the same version, may carry no release timestamp.',
+      matchUpdateTypes: ['digest'],
+      minimumReleaseAgeBehaviour: 'timestamp-optional',
+    },
+    {
+      description: 'The Makefile pin must match the Structurizr server the owner runs.',
+      matchPackageNames: ['structurizr/structurizr'],
+      prBodyNotes: ['Move the Structurizr server to the same image before merging: the Makefile pin must match it.'],
+    },
+  ],
+  customManagers: [
+    {
+      description: 'Tool images pinned in the Makefile, repeated as defaults and examples in the scripts.',
+      customType: 'regex',
+      managerFilePatterns: ['/(^|/)Makefile$/', '/^scripts/architecture-pdf\\.sh$/', '/^scripts/render-mermaid\\.sh$/'],
+      matchStrings: ['(?<depName>structurizr/structurizr|pandoc/extra|minlag/mermaid-cli):(?<currentValue>[0-9][\\w.-]*\\w)'],
+      datasourceTemplate: 'docker',
+    },
+    {
+      description: 'errcheck, run by `make errcheck`. A new release can add findings; its own pull request shows them in CI.',
+      customType: 'regex',
+      managerFilePatterns: ['/(^|/)Makefile$/'],
+      matchStrings: ['ERRCHECK = (?<depName>github\\.com/kisielk/errcheck)@(?<currentValue>v[0-9][\\w.-]*)'],
+      datasourceTemplate: 'go',
+    },
+    {
+      description: 'The actionlint image, run with docker run inside a workflow step.',
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/[^/]+\\.ya?ml$/'],
+      matchStrings: ['(?<depName>rhysd/actionlint):(?<currentValue>[\\w.-]+)@(?<currentDigest>sha256:[a-f0-9]{64})'],
+      datasourceTemplate: 'docker',
+    },
+  ],
+}
