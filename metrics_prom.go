@@ -122,6 +122,7 @@ func collectProm(w *promtext.Writer) {
 
 	collectWarmupProm(w)
 	collectPlaybackProm(w)
+	collectReaderBudgetProm(w)
 	collectReadabilityProm(w)
 	collectReadAheadProm(w)
 
@@ -187,6 +188,20 @@ func collectPlaybackProm(w *promtext.Writer) {
 		"Confirmed plays that opened with no ready head on a file quota eviction had removed, counted once per eviction. previously_played says whether the file had been played before.",
 		promSample(coldReopensPrevPlay.Load(), lbl("previously_played", "true")),
 		promSample(coldReopensNotPlayed.Load(), lbl("previously_played", "false")))
+}
+
+func collectReaderBudgetProm(w *promtext.Writer) {
+	w.Counter("flodni_unconfirmed_read_bytes_total",
+		"Bytes past the head and tail windows that readers took from files with no confirmed playback, whichever path served them.",
+		promSample(unconfirmedReadBytes.Load()))
+	w.Counter("flodni_unconfirmed_read_sessions_total",
+		"Sessions that crossed the unconfirmed-read margin, counted once at close: confirmed_late if a playback webhook confirmed the file afterwards.",
+		promSample(unconfirmedSessions[rbUnconfirmed].Load(), lbl("outcome", "unconfirmed")),
+		promSample(unconfirmedSessions[rbConfirmedLate].Load(), lbl("outcome", "confirmed_late")))
+	w.Counter("flodni_playback_webhooks_received_total",
+		"Playback start and resume webhooks for a movie or an episode, matched to one file or not.",
+		promSample(playbackWebhooksMatched.Load(), lbl("matched", "true")),
+		promSample(playbackWebhooksUnmatched.Load(), lbl("matched", "false")))
 }
 
 func collectReadAheadProm(w *promtext.Writer) {

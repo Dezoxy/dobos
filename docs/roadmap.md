@@ -198,14 +198,17 @@ trigger is known.
    is retried no sooner than most of a day later and a capped number of
    times; after that the record keeps the evidence and the warmer leaves the
    file alone.
-4. **A byte budget for readers that are not playback.** Phase a: count the
-   bytes a file serves from the swarm to a reader with no playback session,
-   past its two windows and a margin, and log each file once. Phase b: an
-   opt-in switch that stops fetching from the swarm for such a reader past
-   the budget and serves only what is cached. The budget lifts as soon as a
-   session registers, applies only once a playback webhook has been seen
-   since start, and a refusal never counts as a failed read in the
-   readability record.
+4. **A byte budget for readers that are not playback.** Phase a is built:
+   Flodni counts the bytes a file serves, from the engine or the read-ahead
+   cache, to a session with no confirmed playback, past its two windows, and
+   logs each session once when it crosses a margin
+   (`unconfirmed_read_margin_mb`); it measures only and refuses nothing.
+   Phase b is designed, not built: an opt-in switch that stops fetching from
+   the swarm for such a reader past the budget and serves only what is
+   cached. The budget lifts as soon as a session registers, applies only once
+   a matched playback webhook has been seen since start
+   (`flodni_playback_webhooks_received_total{matched="true"}`), and a refusal
+   never counts as a failed read in the readability record.
 
 ## Done
 
@@ -323,3 +326,11 @@ trigger is known.
   failed and that were never read, refreshed every 60 s. A head recreated at
   offset 0 over a stale size entry no longer leaves a hole. Warm on add and
   catch-up are not built.
+- 2026-11-12, readiness step 4, phase a: Flodni counts bytes past the head and
+  tail windows that the engine or the read-ahead cache serve to a session with
+  no confirmed playback, logs each session once at the margin
+  (`unconfirmed_read_margin_mb`, default 64) and exports
+  `flodni_unconfirmed_read_bytes_total`,
+  `flodni_unconfirmed_read_sessions_total` and
+  `flodni_playback_webhooks_received_total`. Counting only; refusal (phase b)
+  is designed, not built.

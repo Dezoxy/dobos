@@ -139,7 +139,7 @@ Status of each part:
 | Internal list of files whose head and tail windows are on disk; `flodni_warmup_files{window}` and `flodni_readability_torrents{state}` built on it and on the record | Exists; the per-file list is internal and not served, only the aggregates are exported |
 | Background fills evict only files never played, or nothing | **Designed, not implemented**; the eviction function takes such a policy, and no caller uses it yet |
 | Warm on add, catch-up and retries | **Designed, not implemented** |
-| Byte budget for non-playback readers | **Designed, not implemented** |
+| Byte budget for non-playback readers: bytes past the windows served to unconfirmed sessions are counted and logged (`[ReaderBudget]`, `flodni_unconfirmed_read_*`) | Counting exists; refusal **designed, not implemented** |
 
 What the endpoint does:
 

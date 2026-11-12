@@ -186,6 +186,18 @@ type TTFFSession struct {
 	// clearing its own counter off a 64MB file on local disk.
 	servedByNet atomic.Bool
 
+	// Reader budget (reader_budget.go): bytes outside the head and tail windows taken while
+	// the file had no confirmed playback, split by the read path that answered (engine
+	// or read-ahead cache), for the log line. overMarginAt is when the tally crossed the margin (CAS-once,
+	// unixNano); confirmedLateAt is when a playback webhook then confirmed the file.
+	unconfirmedSwarm atomic.Int64
+	unconfirmedCache atomic.Int64
+	overMarginAt     atomic.Int64
+	confirmedLateAt  atomic.Int64
+	budgetResolved   atomic.Bool   // sessions_total counted (CAS-once)
+	callerPid        atomic.Uint32 // the latest Open's caller, from the FUSE context
+	callerUID        atomic.Uint32
+
 	closeOnce sync.Once
 	closed    atomic.Bool
 }
@@ -212,6 +224,7 @@ func (s *TTFFSession) recordRead(src ttffSource, d time.Duration, n int, off int
 		case srcFetchBlock:
 			s.bytesFetchBlock.Add(int64(n))
 		}
+		s.countUnconfirmed(src, n, off)
 		// The source alone is not enough: the fetch path also hands back whatever is
 		// already local, and a dead release once returned 38 bytes of residue through
 		// it and acquitted itself with them, wiping six recorded failures. A release
@@ -327,6 +340,7 @@ func (s *TTFFSession) closeSession() {
 	s.closeOnce.Do(func() {
 		s.closed.Store(true)
 		sessions.CompareAndDelete(s.path, s)
+		s.resolveReaderBudget()
 		dead := s.reportSwarmVerdict()
 		// Before the ttffIsReal filter: probes and unserved sessions get a line too.
 		rec := s.record(time.Now(), dead)

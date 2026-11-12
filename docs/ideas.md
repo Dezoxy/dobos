@@ -11,6 +11,11 @@ then nothing here is a commitment. Line numbers are as of 2026-11-10.
 - **Leave the engine alone**, except for fixes. Watch advisories for the
   vendored `anacrolix/torrent`.
 
+- **Reader budget follow-ups (not planned).** Attribute pump and prefetch
+  fills to the reader that caused them, after Reliability step 6. For phase
+  b, reset or ignore the tally on `media.stop`: it survives a stop, so a
+  crossed session would be refused again until the next webhook lands.
+
 ## Must fix
 
 Bugs and data-loss risks. None open.
