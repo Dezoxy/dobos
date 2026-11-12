@@ -109,8 +109,12 @@ start_stack() {
     --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
     -v "$dir/config.json:/config.json:ro" -v "$dir/state:/state" \
     -v "$dir/cache:/cache" ${envargs[@]+"${envargs[@]}"} "$FLODNI_IMAGE" >/dev/null
+  local -a seederenv=()
+  if [ -n "${E2E_GOSTORM_CACHE_MB:-}" ]; then
+    seederenv=(-e "E2E_GOSTORM_CACHE_MB=$E2E_GOSTORM_CACHE_MB")
+  fi
   docker run -d --name "$seeder" --network "$network" --network-alias seeder \
-    -v "$dir/out:/e2e" ${envargs[@]+"${envargs[@]}"} "$SEEDER_IMAGE" -out /e2e "$@" >/dev/null
+    -v "$dir/out:/e2e" ${envargs[@]+"${envargs[@]}"} ${seederenv[@]+"${seederenv[@]}"} "$SEEDER_IMAGE" -out /e2e "$@" >/dev/null
 }
 
 stop_stack() {
@@ -185,13 +189,14 @@ run_variant() {
   fi
 
   echo "full read of $path" >&2
-  local actual
+  local actual full_t0=$SECONDS
   if ! actual=$(docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sha256sum "$path"); then
     echo "FAIL ($variant): full read failed or timed out" >&2
     dump_diagnostics
     return 1
   fi
   actual=${actual%% *}
+  echo "full read of $variant took $((SECONDS - full_t0))s" >&2
   if [ "$actual" != "$expected" ]; then
     echo "FAIL ($variant): sha256 mismatch: got $actual, want $expected" >&2
     dump_diagnostics
