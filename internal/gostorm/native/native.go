@@ -10,7 +10,6 @@ import (
 	"flodni/internal/gostorm/torr"
 	"flodni/internal/gostorm/torr/state"
 	apiUtils "flodni/internal/gostorm/web/api/utils"
-	"flodni/internal/warmup"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -736,11 +735,8 @@ func (c *NativeClient) ListTorrents() ([]TorrentStats, error) {
 
 // RemoveTorrent removes a torrent from the server
 func (c *NativeClient) RemoveTorrent(hash string) error {
+	// torr.RemTorrent also removes the torrent's disk warmup files.
 	torr.RemTorrent(hash)
-	// V272: Clean up disk warmup files for this hash
-	if warmup.DiskWarmup != nil && hash != "" {
-		warmup.DiskWarmup.RemoveHash(hash)
-	}
 	return nil
 }
 

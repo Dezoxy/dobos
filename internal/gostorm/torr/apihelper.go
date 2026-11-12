@@ -15,6 +15,7 @@ import (
 	"flodni/internal/gostorm/log"
 	sets "flodni/internal/gostorm/settings"
 	"flodni/internal/gostorm/torr/utils"
+	"flodni/internal/warmup"
 )
 
 // saveDebounce prevents redundant BoltDB writes for the same torrent.
@@ -335,6 +336,11 @@ func RemTorrent(hashHex string) {
 		}
 	}
 	RemTorrentDB(hash)
+	// An explicit removal takes the torrent's head/tail cache with it. Idle expiry and
+	// DropTorrent do not: the cache has to outlive them.
+	if warmup.DiskWarmup != nil {
+		warmup.DiskWarmup.RemoveHash(hashHex)
+	}
 }
 
 func ListTorrent() []*Torrent {
