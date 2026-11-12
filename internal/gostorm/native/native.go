@@ -42,21 +42,45 @@ func NewNativeClient() *NativeClient {
 	}
 }
 
+// OutcomeKind says what a ReachabilityOutcome reports.
+type OutcomeKind uint8
+
+const (
+	// OutcomeSwarmRead: the swarm served a read.
+	OutcomeSwarmRead OutcomeKind = iota
+	// OutcomeMetainfo: the metainfo had to be waited for and arrived from the swarm.
+	// Peers exist, but nothing was read.
+	OutcomeMetainfo
+	// OutcomeFailed: a session ended with a read that gave up and nothing served.
+	OutcomeFailed
+)
+
+// Outcome is one reachability observation. Reason and Source are set for
+// OutcomeFailed only.
+type Outcome struct {
+	Hash   string
+	Kind   OutcomeKind
+	Reason string
+	Source string
+}
+
 // ReachabilityOutcome reports whether a release answered. Injected by main so this
 // package stays unaware of the state DB; nil when no DB is wired.
 //
 // Two reporters, and both watch something a single read cannot show:
 //
-//   - Wake acquits when the metainfo had to be waited for and arrived, which is the
-//     one thing that proves peers are there right now. It never condemns: the Open
-//     that called it registered a session, and that session is what condemns, once.
-//   - The session layer acquits on bytes served straight from the swarm, and condemns
-//     a whole playback session that ends with a read that gave up and nothing served.
+//   - Wake reports the metainfo kind when the metainfo had to be waited for and
+//     arrived, which is the one thing that proves peers are there right now. It
+//     never condemns: a metainfo that never arrives fails the Open with EIO before
+//     any session exists, so that case is not counted.
+//   - The session layer reports a swarm read on bytes served straight from the
+//     swarm, and a failure for a whole playback session that ends with a read that
+//     gave up and nothing served.
 //
 // What neither does is judge one read: the 8s fetch timeout bounds a FUSE read under
 // the smbd D-state watchdog, and a swarm's health was never a question it could
 // answer.
-var ReachabilityOutcome func(hash string, resolved bool)
+var ReachabilityOutcome func(Outcome)
 
 // ActivePeers counts connections that exist for a hash, 0 when the torrent is not
 // hydrated. Deliberately not TotalPeers or PendingPeers: both count t.peers, which
@@ -140,18 +164,18 @@ func (c *NativeClient) Wake(ctx context.Context, magnetUrl string, fileIdx int) 
 				// Below it may just as well have been injected from the DB, which says
 				// nothing about whether anybody is still sharing the release.
 				if ReachabilityOutcome != nil {
-					ReachabilityOutcome(hash, true)
+					ReachabilityOutcome(Outcome{Hash: hash, Kind: OutcomeMetainfo})
 				}
 			case <-tor.Closed():
 				// Dropped while waiting: metadata will never arrive, so stop early
 				// instead of holding the semaphore token for the full 45s.
 				return fmt.Errorf("torrent closed while waiting for metadata: %s", hash)
 			case <-timer.C:
-				// Not reported: the FUSE Open that called this registered a session
-				// first, and that session condemns once when it closes. Reporting here
-				// too made a single playback attempt count three times, because a player
-				// that retries opens again and each 45s wait wrote its own failure. The
-				// counter counts occasions, not attempts.
+				// Not reported: the metainfo never arrived, so the Open fails with EIO
+				// before the FUSE layer registers a session (it registers one only after
+				// a successful wake), and no session exists to condemn. Reporting here
+				// would count every retry of a player, because each 45s wait would write
+				// its own failure; the counter counts occasions, not attempts.
 				log.Printf("[NativeBridge] Metadata timeout for %s", hash)
 				return fmt.Errorf("torrent metadata timeout (45s): %s", hash)
 			case <-ctx.Done():

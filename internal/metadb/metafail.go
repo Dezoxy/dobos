@@ -1,82 +1,143 @@
 package metadb
 
 import (
-	"database/sql"
-	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
 
 // RecordMetadataFailure counts one failed reachability check for a torrent: a
-// metainfo that never arrived, or a read that waited out its timeout against a
-// swarm with nothing connected. first_fail is kept so a burst inside one window
-// cannot reach the threshold: what proves a dead swarm is failures spread over
-// time, not their number. The table name predates the second case and is kept
+// session that ended with a read that gave up and nothing served by the swarm.
+// The reason and source are kept for the last failure. first_fail is the start of
+// the current streak: it is kept while the count runs and restarted after a reset,
+// so a burst inside one window cannot reach a threshold: what proves a dead swarm
+// is failures spread over time, not their number. A metainfo that never arrives is
+// not counted today. The table name predates the readability record and is kept
 // for the databases already in production.
-func (d *DB) RecordMetadataFailure(hash string) error {
-	now := time.Now().Unix()
+func (d *DB) RecordMetadataFailure(hash, reason, source string, at time.Time) error {
+	now := at.Unix()
 	_, err := d.db.Exec(`
-		INSERT INTO metadata_failures (hash, fail_count, first_fail, last_fail)
-		VALUES (?, 1, ?, ?)
+		INSERT INTO metadata_failures (hash, fail_count, first_fail, last_fail, last_fail_reason, last_fail_source)
+		VALUES (?, 1, ?, ?, ?, ?)
 		ON CONFLICT(hash) DO UPDATE SET
-			fail_count = fail_count + 1,
-			last_fail  = excluded.last_fail`,
-		hash, now, now)
+			first_fail       = CASE WHEN fail_count = 0 THEN excluded.first_fail ELSE first_fail END,
+			fail_count       = fail_count + 1,
+			last_fail        = excluded.last_fail,
+			last_fail_reason = excluded.last_fail_reason,
+			last_fail_source = excluded.last_fail_source`,
+		strings.ToLower(hash), now, now, reason, source)
 	return err
 }
 
-// ClearMetadataFailure drops the counter after the swarm answers: one metainfo
-// taken from it, or one byte served, is enough to say the release is alive.
+// RecordSwarmRead notes that the swarm served a read: the streak ends and the time
+// is stamped. The row is kept (inserted when absent) so the time survives; the last
+// failure, its reason and its source stay as history.
+func (d *DB) RecordSwarmRead(hash string, at time.Time) error {
+	_, err := d.db.Exec(`
+		INSERT INTO metadata_failures (hash, fail_count, first_fail, last_fail, last_swarm_read)
+		VALUES (?, 0, 0, 0, ?)
+		ON CONFLICT(hash) DO UPDATE SET
+			fail_count      = 0,
+			first_fail      = 0,
+			last_swarm_read = MAX(last_swarm_read, excluded.last_swarm_read)`,
+		strings.ToLower(hash), at.Unix())
+	return err
+}
+
+// ResetMetadataFailures ends a streak without stamping a read, for a metainfo taken
+// from the swarm: that proves peers exist, not that a file reads. It never inserts.
+func (d *DB) ResetMetadataFailures(hash string) error {
+	_, err := d.db.Exec(`
+		UPDATE metadata_failures SET fail_count = 0, first_fail = 0
+		WHERE hash = ? AND fail_count > 0`, strings.ToLower(hash))
+	return err
+}
+
+// ClearMetadataFailure deletes the whole row, for a torrent that left the library:
+// the same release added again later must not arrive already condemned. The
+// library manager reaches it through an interface assertion on the registry, so the
+// name and signature are pinned by a test.
 func (d *DB) ClearMetadataFailure(hash string) error {
-	_, err := d.db.Exec(`DELETE FROM metadata_failures WHERE hash = ?`, hash)
+	_, err := d.db.Exec(`DELETE FROM metadata_failures WHERE hash = ?`, strings.ToLower(hash))
 	return err
 }
 
-// MetadataFailureCount reports the stored count for one hash, 0 when absent.
-func (d *DB) MetadataFailureCount(hash string) (int, error) {
-	var n int
-	err := d.db.QueryRow(`SELECT fail_count FROM metadata_failures WHERE hash = ?`, hash).Scan(&n)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	return n, nil
+// Readability is one hash's stored record, times in Unix seconds, 0 when unset.
+type Readability struct {
+	Hash          string
+	FailCount     int64
+	FirstFail     int64
+	LastFail      int64
+	LastReason    string
+	LastSource    string
+	LastSwarmRead int64
 }
 
-// FailureStat is one hash's stored reachability record, in Unix seconds.
-type FailureStat struct {
-	FailCount int64
-	FirstFail int64
-	LastFail  int64
-}
-
-// MetadataFailuresFor returns the stats for the given hashes, keyed by hash. It is
-// the read side a controller uses to apply its own threshold, one query per page.
-func (d *DB) MetadataFailuresFor(hashes []string) (map[string]FailureStat, error) {
-	stats := make(map[string]FailureStat, len(hashes))
-	if d == nil || d.db == nil || len(hashes) == 0 {
-		return stats, nil
-	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(hashes)), ",")
-	args := make([]interface{}, 0, len(hashes))
-	for _, hash := range hashes {
-		args = append(args, hash)
-	}
-	rows, err := d.db.Query(`SELECT hash, fail_count, first_fail, last_fail FROM metadata_failures
-		WHERE hash IN (`+placeholders+`)`, args...)
+// ListReadability returns every stored record with at least minFailures consecutive
+// failures (all records when minFailures is 0 or less), ordered by hash.
+func (d *DB) ListReadability(minFailures int) ([]Readability, error) {
+	rows, err := d.db.Query(`
+		SELECT hash, fail_count, first_fail, last_fail, last_fail_reason, last_fail_source, last_swarm_read
+		FROM metadata_failures WHERE fail_count >= ? ORDER BY hash`, max(minFailures, 0))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	out := []Readability{}
 	for rows.Next() {
-		var hash string
-		var stat FailureStat
-		if err := rows.Scan(&hash, &stat.FailCount, &stat.FirstFail, &stat.LastFail); err != nil {
+		var r Readability
+		if err := rows.Scan(&r.Hash, &r.FailCount, &r.FirstFail, &r.LastFail,
+			&r.LastReason, &r.LastSource, &r.LastSwarmRead); err != nil {
 			return nil, err
 		}
-		stats[hash] = stat
+		out = append(out, r)
 	}
-	return stats, rows.Err()
+	return out, rows.Err()
+}
+
+// PruneReadability deletes records whose hash is not in keep (lower-case) and whose
+// last failure and last swarm read are both older than before. The time guard spares
+// a torrent that was added or read while the caller built its set. Returns the number
+// of rows deleted.
+func (d *DB) PruneReadability(keep map[string]bool, before time.Time) (int, error) {
+	cutoff := before.Unix()
+	rows, err := d.db.Query(`SELECT hash FROM metadata_failures WHERE last_fail < ? AND last_swarm_read < ?`, cutoff, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	var drop []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			_ = rows.Close()
+			return 0, err
+		}
+		if !keep[strings.ToLower(h)] {
+			drop = append(drop, h)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	if len(drop) == 0 {
+		return 0, nil
+	}
+	tx, err := d.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	for _, h := range drop {
+		if _, err := tx.Exec(`DELETE FROM metadata_failures WHERE hash = ?`, h); err != nil {
+			_ = tx.Rollback()
+			return 0, fmt.Errorf("prune %s: %w", h, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(drop), nil
 }

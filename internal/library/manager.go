@@ -227,7 +227,7 @@ type Item struct {
 	Size      int64  `json:"size"`
 	Hash      string `json:"hash"`
 	IMDB      string `json:"imdb,omitempty"`
-	FileIndex int    `json:"file_index,omitempty"`
+	FileIndex int    `json:"file_index"`
 	Season    int    `json:"season,omitempty"`
 	Episode   int    `json:"episode,omitempty"`
 }

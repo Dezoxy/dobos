@@ -88,6 +88,54 @@ is set and returns status words only. The image's health check runs
 exits 0 on HTTP 200 and 1 otherwise; run it with
 `docker exec <container> flodni healthcheck`.
 
+## Readability record
+
+`GET /api/torrents/health` on the control port lists what Flodni has
+recorded about each torrent's reads. With a token set it needs the bearer
+header (no `?token=`). It answers 503 when the state database is off:
+nothing is recorded then. The fields below are the supported contract for
+outside tools; log wording and stub names are not.
+
+| Field | Meaning |
+|---|---|
+| `hash` | Full info hash, lower-case hex. Join it with `GET /api/library/list`. |
+| `consecutive_failures` | Sessions in a row that ended with a failed read and nothing served by the swarm. A session counts once, and only if it lasted 25 s. |
+| `first_failure_at` | Start of the current run of failures; `null` when the count is 0. |
+| `last_failure_at` | Last recorded failure; kept after a reset. |
+| `last_failure_reason` | `no_peers`, `timeout` (peers connected, the read gave up), `not_active` (the engine did not have the torrent running), `unknown` (the engine did not answer in time); `null` for older records. |
+| `last_failure_source` | `mount`: a reader through the FUSE mount. |
+| `last_swarm_read_at` | Close time of the last session in which the swarm served a read; `null` if none was recorded. |
+
+`?failing=1` keeps torrents with at least one consecutive failure,
+`?min_failures=N` those with at least N.
+
+- Only bytes from the swarm reset the count. A cache hit never does.
+- No entry means no evidence either way, not that the torrent reads.
+- A `null` `last_swarm_read_at` is not a failure: reads answered from the
+  caches do not set it.
+- A session whose bytes came from the read-ahead pump rather than direct
+  fetches may not set `last_swarm_read_at`; treat a single failure as weak
+  evidence.
+- A wake that had to fetch the metainfo from the swarm resets the count
+  without setting `last_swarm_read_at`.
+- A metainfo that never arrives is not counted: the open fails before a
+  session exists. A cancelled read, a read Flodni refuses, and an open that
+  fails before any read are not recorded either.
+- Times are UTC and are taken when the session closes, up to two minutes
+  after its last read.
+- An entry goes when the last stub of its torrent is removed through the
+  library API. A session still open on that torrent writes the entry back
+  when it closes, and a stub deleted another way leaves it in place. Such
+  entries stay until a startup prunes them. The prune runs only after a
+  complete scan: both `movies` and `tv` exist and every stub was read. It
+  is skipped otherwise, and the log says so.
+- Join from `GET /api/library/list`: an entry whose hash that list does
+  not carry belongs to a torrent that left the library. Ignore it.
+- New reason and source values may appear; ignore the ones you do not
+  know. `GET /api/library/list` always reports `file_index` (the
+  engine's index, starting at 1; 0 means the stub carries none). Per-file
+  records are designed, not implemented (ADR 0002).
+
 ## Viewing the model
 
 `make check` validates the architecture model and `make view` serves it at

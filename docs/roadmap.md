@@ -273,3 +273,9 @@ trigger is known.
 - 2026-11-12, readability evidence step 1: ADR 0002 records that Flodni
   fills and protects its cache and records readability while the choice of
   release stays outside; what is not built yet is labelled designed.
+- 2026-11-12, readability evidence step 2: `GET /api/torrents/health` serves
+  the readability record (state database schema 12): consecutive failures,
+  first and last failure, reason and source of the last failure and the
+  close time of the last swarm-served read. A success keeps the row and
+  resets the count. Rows of torrents that left the library are pruned at
+  startup after a complete library scan; README documents the fields.

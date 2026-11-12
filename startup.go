@@ -26,16 +26,18 @@ type StartupCacheBuilder struct {
 	errors         int
 	startTime      time.Time
 	foundFiles     map[string]bool // V142: Track files for GC
+	foundHashes    map[string]bool // lower-case info hashes of every stub seen, for pruning
 }
 
 // NewStartupCacheBuilder creates a new startup cache builder
 func NewStartupCacheBuilder(sourcePath string, metaCache *cache.LRUCache, logger *log.Logger) *StartupCacheBuilder {
 	return &StartupCacheBuilder{
-		sourcePath: sourcePath,
-		metaCache:  metaCache,
-		logger:     logger,
-		startTime:  time.Now(),
-		foundFiles: make(map[string]bool),
+		sourcePath:  sourcePath,
+		metaCache:   metaCache,
+		logger:      logger,
+		startTime:   time.Now(),
+		foundFiles:  make(map[string]bool),
+		foundHashes: make(map[string]bool),
 	}
 }
 
@@ -46,15 +48,18 @@ func (b *StartupCacheBuilder) Start() {
 
 	go func() {
 		// Process movies directory
+		walked := 0
 		moviesPath := filepath.Join(b.sourcePath, "movies")
 		if _, err := os.Stat(moviesPath); err == nil {
 			b.processDirectory(moviesPath, false) // Not recursive
+			walked++
 		}
 
 		// Process TV directory (recursive for seasons)
 		tvPath := filepath.Join(b.sourcePath, "tv")
 		if _, err := os.Stat(tvPath); err == nil {
 			b.processDirectory(tvPath, true) // Recursive
+			walked++
 		}
 
 		// Log final statistics
@@ -72,6 +77,8 @@ func (b *StartupCacheBuilder) Start() {
 		stats := b.metaCache.Stats()
 		b.logger.Printf("Cache after startup: %d entries, %.2f MB used of %.2f MB capacity",
 			stats.Entries, float64(stats.Size)/(1024*1024), float64(stats.Capacity)/(1024*1024))
+
+		b.pruneReadability(walked == 2)
 
 		// V133: Save inode map after startup scan completes
 		// This ensures the map is persisted even if no background save triggered
@@ -136,7 +143,10 @@ func (b *StartupCacheBuilder) processDirectory(dirPath string, recursive bool) {
 		}
 
 		// Check if already in cache (fast path)
-		if _, ok := b.metaCache.Get(path); ok {
+		if cached, ok := b.metaCache.Get(path); ok {
+			// Skipped files still belong to the library: a FUSE lookup can fill the
+			// cache while this walk runs, and their rows must not be pruned.
+			b.noteHash(cached.URL)
 			b.incrementSkipped()
 			return nil
 		}
@@ -195,7 +205,44 @@ func (b *StartupCacheBuilder) processFile(path string) {
 	// BUG FIX: Pass full path instead of just filename to avoid collisions
 	addFileToInodeMap(path, fileMeta.URL)
 
+	b.noteHash(fileMeta.URL)
 	b.incrementProcessed(path)
+}
+
+// noteHash records the info hash of a stub's stream URL as part of the library.
+func (b *StartupCacheBuilder) noteHash(url string) {
+	hash, _ := vfs.ExtractHashAndIndex(url)
+	if hash == "" {
+		return
+	}
+	b.mu.Lock()
+	b.foundHashes[hash] = true
+	b.mu.Unlock()
+}
+
+// pruneReadability drops readability rows of torrents that left the library. It runs
+// only after a complete walk: a missing source directory, any walk error or an empty
+// result means the library was not seen whole, and an unmounted library must not wipe
+// the table. Rows touched since the process started are kept.
+func (b *StartupCacheBuilder) pruneReadability(complete bool) {
+	if stateDB == nil {
+		return
+	}
+	b.mu.Lock()
+	errs, keep := b.errors, b.foundHashes
+	b.mu.Unlock()
+	if !complete || errs > 0 || len(keep) == 0 {
+		b.logger.Printf("Readability prune skipped: complete=%v errors=%d stubs=%d", complete, errs, len(keep))
+		return
+	}
+	n, err := stateDB.PruneReadability(keep, b.startTime)
+	if err != nil {
+		b.logger.Printf("WARNING: readability prune: %v", err)
+		return
+	}
+	if n > 0 {
+		b.logger.Printf("Readability prune: removed %d records of torrents no longer in the library", n)
+	}
 }
 
 // Statistics helpers (thread-safe)
