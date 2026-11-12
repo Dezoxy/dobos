@@ -116,7 +116,9 @@ func runReplacement(out, flodni string, peerPort, trackerPort int) error {
 	if err != nil {
 		return err
 	}
-	if err := publish(out, map[string]string{"a.sha256": a.sum, "a.path": pathA}); err != nil {
+	if err := publish(out, map[string]string{
+		"a.sha256": a.sum, "a.hash": a.hash, "b.hash": b.hash, "c.hash": c.hash, "a.path": pathA,
+	}); err != nil {
 		return err
 	}
 	if err := waitFile(ctx, filepath.Join(out, "go-b"), handshakeLimit); err != nil {
@@ -217,7 +219,7 @@ func step(name string, fn func() (string, error)) (string, error) {
 // publish writes the given files atomically. The names run.sh waits on (a.path,
 // b.path, c.status) come last, so it never reads a half-published batch.
 func publish(dir string, files map[string]string) error {
-	for _, name := range []string{"a.sha256", "b.sha256", "c.body", "c.seconds", "a.path", "b.path", "c.status"} {
+	for _, name := range []string{"a.sha256", "b.sha256", "a.hash", "b.hash", "c.hash", "c.body", "c.seconds", "a.path", "b.path", "c.status"} {
 		if v, ok := files[name]; ok {
 			if err := writeAtomic(filepath.Join(dir, name), v); err != nil {
 				return err

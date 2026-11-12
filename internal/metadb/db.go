@@ -244,5 +244,19 @@ CREATE TABLE IF NOT EXISTS metadata_failures (
 	}
 	_, _ = d.db.Exec(`INSERT OR IGNORE INTO schema_version (version, description) VALUES (11, 'add playback_states external identity')`)
 
+	// Schema 12, additive: the readability record. The time of the last read the
+	// swarm served, and the reason and source of the last failure. The CREATE TABLE
+	// above stays as it was; a database from an older build gains the columns here.
+	for _, col := range []struct{ name, ddl string }{
+		{"last_swarm_read", `ALTER TABLE metadata_failures ADD COLUMN last_swarm_read INTEGER NOT NULL DEFAULT 0`},
+		{"last_fail_reason", `ALTER TABLE metadata_failures ADD COLUMN last_fail_reason TEXT NOT NULL DEFAULT ''`},
+		{"last_fail_source", `ALTER TABLE metadata_failures ADD COLUMN last_fail_source TEXT NOT NULL DEFAULT ''`},
+	} {
+		if err := d.addColumn("metadata_failures", col.name, col.ddl); err != nil {
+			return err
+		}
+	}
+	_, _ = d.db.Exec(`INSERT OR IGNORE INTO schema_version (version, description) VALUES (12, 'add metadata_failures readability columns')`)
+
 	return nil
 }

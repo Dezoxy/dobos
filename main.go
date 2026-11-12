@@ -372,32 +372,9 @@ func main() {
 					torrent.V304LoadBans(ips)
 					logger.Printf("[V304] Restored %d persisted peer bans", len(ips))
 				}
-				// Reachability outcomes: the library listing reports the counter so a
-				// client can tell a dead release from a slow one.
-				failDB := stateDB
-				native.ReachabilityOutcome = func(hash string, resolved bool) {
-					var err error
-					if resolved {
-						// Success is the common case: read first so the usual read costs a
-						// lookup instead of a write transaction.
-						if n, qerr := failDB.MetadataFailureCount(hash); qerr != nil || n == 0 {
-							return
-						}
-						err = failDB.ClearMetadataFailure(hash)
-					} else {
-						short := hash
-						if len(short) > 8 {
-							short = short[:8]
-						}
-						// Deliberately does not say why: the session layer that condemned
-						// already logged its own reason, with duration and outcome.
-						logger.Printf("[DeadSwarm] %s did not answer", short)
-						err = failDB.RecordMetadataFailure(hash)
-					}
-					if err != nil {
-						logger.Printf("WARNING: reachability bookkeeping for %s: %v", hash, err)
-					}
-				}
+				// Reachability outcomes: the readability record at /api/torrents/health
+				// reports the counter, so a client can tell a dead release from a slow one.
+				native.ReachabilityOutcome = newReachabilityRecorder(stateDB, logger)
 
 				banDB := stateDB
 				torrent.V304SetOnBan(func(ip string) {
@@ -524,6 +501,13 @@ func main() {
 	})
 
 	mux.HandleFunc("/api/sessions", handleSessions)
+	// Assigned only when the database is open: a nil *metadb.DB in the interface
+	// would not compare equal to nil and the handler would never answer 503.
+	var healthStore readabilityLister
+	if stateDB != nil {
+		healthStore = stateDB
+	}
+	mux.HandleFunc("/api/torrents/health", newTorrentsHealthHandler(healthStore, logger))
 	mux.HandleFunc("/api/health", newHealthChecks().handler)
 
 	mux.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {

@@ -154,6 +154,10 @@ type TTFFSession struct {
 	// about the release, and the second fires precisely under the load that would
 	// make a healthy title look dead.
 	readFailed atomic.Bool
+	// failReason is why the last failed read gave up, classified at that read:
+	// by verdict time the engine may have expired the torrent and everything would
+	// read as no peers. Nil until a read fails.
+	failReason atomic.Pointer[string]
 	// servedByNet records that a read was served straight from the swarm
 	// (srcFetchBlock). Its counterpart above condemns; this one acquits. Deliberately
 	// not bytesRead: that counts what the player received, and the SSD warmup and the
@@ -259,7 +263,7 @@ func (s *TTFFSession) reportSwarmVerdict() bool {
 	// count only ever grows, and a release broken for a day by a tracker outage is
 	// reaped after it has already recovered.
 	if s.servedByNet.Load() {
-		native.ReachabilityOutcome(s.hash, true)
+		native.ReachabilityOutcome(native.Outcome{Hash: s.hash, Kind: native.OutcomeSwarmRead})
 		return false
 	}
 	// Deliberately not bytesRead: it counts what the player received, and the SSD
@@ -275,7 +279,13 @@ func (s *TTFFSession) reportSwarmVerdict() bool {
 	}
 	logger.Printf("[DeadSwarm] session of %s ended after %s with a failed read and nothing served",
 		filepath.Base(s.path), time.Since(time.Unix(0, s.openedAt.Load())).Round(time.Second))
-	native.ReachabilityOutcome(s.hash, false)
+	reason := failReasonUnknown
+	if r := s.failReason.Load(); r != nil {
+		reason = *r
+	}
+	native.ReachabilityOutcome(native.Outcome{
+		Hash: s.hash, Kind: native.OutcomeFailed, Reason: reason, Source: failSourceMount,
+	})
 	return true
 }
 
@@ -413,6 +423,10 @@ func ttffReadFailed(path string) {
 	if val, ok := sessions.Load(path); ok {
 		s := val.(*TTFFSession)
 		s.failedReads.Add(1)
+		// Classified before the flag is set: a session closing meanwhile then sees
+		// either no failure or a failure that already has its reason.
+		reason := classifyFailure(s.hash)
+		s.failReason.Store(&reason)
 		s.readFailed.Store(true)
 	}
 }

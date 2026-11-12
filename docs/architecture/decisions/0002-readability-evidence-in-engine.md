@@ -75,8 +75,9 @@ consistent with a table that already holds the same per-torrent key.
 
 **What Flodni does**
 
-- Records readability per torrent (exists as a failure counter; the new
-  fields are designed), later per file (designed).
+- Records readability per torrent (exists: the failure counter, the time of
+  the last swarm-served read, and the reason and source of the last
+  failure), later per file (designed).
 - Fills head and tail cache windows in index mode: today only when a file
   is read; on add and at startup once the warmer ships (designed).
 - Bounds the bytes that readers other than playback may pull from the
@@ -124,35 +125,36 @@ Status of each part:
 
 | Part | Status |
 |---|---|
-| Per-torrent failure counter with first and last failure time, in the state database | Exists; no endpoint serves it, and a success deletes the row |
+| Per-torrent failure counter with first and last failure time, in the state database | Exists; a success keeps the row, resets the count and stamps the time |
 | Session outcomes at `/api/sessions` (the last 200 closed sessions, in memory, lost on restart) | Exists |
 | `[DeadSwarm]` log lines | Exists; the wording is not a contract |
-| `GET /api/torrents/health` with the readability fields | **Designed, not implemented** |
-| Time of the last swarm-served read, reason and source of the last failure | **Designed, not implemented** |
+| `GET /api/torrents/health` with the readability fields | Exists; the fields are in the README |
+| Time of the last swarm-served read, reason and source of the last failure | Exists |
 | Per-file readability record | **Designed, not implemented** |
 | List of files whose head and tail windows are on disk; background fills never evict | **Designed, not implemented** |
 | Warm on add, catch-up and retries | **Designed, not implemented** |
 | Byte budget for non-playback readers | **Designed, not implemented** |
 
-What the designed endpoint will do:
+What the endpoint does:
 
 - It sits behind the same opt-in token as the other control routes: open
   when no token is set, bearer header only when one is. Unlike
   `/api/health` it is not among the routes that stay open.
-- It returns hashes, file indexes, counts and times only.
+- It returns hashes, counts, reasons and times only; file indexes come with
+  the per-file records (designed).
 - It answers 503 when the state database is off. Nothing is recorded then:
   no verdict is written, no `[DeadSwarm]` line is logged and
   `/api/sessions` never reports `dead_swarm`.
 - A torrent with no row has no failure on record. That is not a verdict
-  that it reads: today a success deletes the row, and a torrent nobody
-  opened has none.
-- Rows go when a torrent is removed from the library (exists) and are
-  pruned at startup (designed).
+  that it reads: a torrent nobody opened has none. A success keeps the row
+  with the count at 0 and the time of the read.
+- Rows go when a torrent is removed from the library and are pruned at
+  startup, after a complete scan of the library.
 - Per-file records come from the warmer, which records each outcome per
   file. Sessions carry a path and a hash today, not a file index, and the
   per-torrent table has no file key.
 
-The endpoint and the fields land in the roadmap step
+The endpoint and the fields landed in the roadmap step
 [Readability evidence](../../roadmap.md#readability-evidence), step 2. The
 cache-filling items belong to
 [Readiness and protection](../../roadmap.md#readiness-and-protection).

@@ -210,7 +210,7 @@ func TestCloseSessionOutcome(t *testing.T) {
 			t.Cleanup(func() { native.ReachabilityOutcome = prev })
 			native.ReachabilityOutcome = nil
 			if tt.verdict {
-				native.ReachabilityOutcome = func(string, bool) {}
+				native.ReachabilityOutcome = func(native.Outcome) {}
 			}
 			s := &TTFFSession{path: "/m/x.mkv", size: 1, hash: "h"}
 			s.openedAt.Store(time.Now().Add(-tt.age).UnixNano())

@@ -80,6 +80,49 @@ report_first_byte() {
   echo "first_byte_ms ($variant): $(grep -o '"first_byte_ms":[0-9a-z]*' <<<"$body" | tr '\n' ' ')" >&2
 }
 
+# health_body: Flodni's /api/torrents/health (the replacement variant sets no token).
+health_body() {
+  docker exec "$flodni" bash -c 'exec 3<>/dev/tcp/127.0.0.1/9080 && printf "GET /api/torrents/health HTTP/1.0\r\nHost: x\r\n\r\n" >&3 && cat <&3' 2>/dev/null || true
+}
+
+# check_readability out: B's session closes up to two minutes after its last read, so
+# poll up to 130 s. The endpoint must answer with a record list and C must have no
+# record. B stamped is reported, not asserted: sessions fed by the read-ahead pump
+# may not stamp (README), so B not stamped is the measurement, not a failure.
+check_readability() {
+  local out=$1 a_hash b_hash c_hash body="" deadline=$((SECONDS + 130))
+  a_hash=$(cat "$out/a.hash") b_hash=$(cat "$out/b.hash") c_hash=$(cat "$out/c.hash")
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    body=$(health_body)
+    grep -q "\"hash\":\"$b_hash\"[^}]*\"last_swarm_read_at\":\"" <<<"$body" && break
+    sleep 5
+  done
+  if ! grep -q '"torrents":' <<<"$body"; then
+    echo "FAIL (replacement): /api/torrents/health returned no record list: $body" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if ! grep -q "\"hash\":\"$b_hash\"[^}]*\"last_swarm_read_at\":\"" <<<"$body"; then
+    echo "READABILITY (replacement): B not stamped" >&2
+    echo "READABILITY (replacement): endpoint: $body" >&2
+    return 0
+  fi
+  echo "READABILITY (replacement): B stamped: $(grep -o "{\"hash\":\"$b_hash\"[^}]*}" <<<"$body")" >&2
+  # C never read, so it must have no record. A was read before B replaced it and its
+  # session can close after the library dropped the row, which leaves an orphan until
+  # the next restart's prune: reported, not judged.
+  if grep -q "\"hash\":\"$c_hash\"" <<<"$body"; then
+    echo "FAIL (replacement): readability record of C ($c_hash) exists: $body" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if grep -q "\"hash\":\"$a_hash\"" <<<"$body"; then
+    echo "READABILITY (replacement): A has a record after replacement: $(grep -o "{\"hash\":\"$a_hash\"[^}]*}" <<<"$body")" >&2
+  else
+    echo "READABILITY (replacement): A has no record" >&2
+  fi
+}
+
 is_running() {
   [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]
 }
@@ -343,6 +386,7 @@ run_replacement() {
     dump_diagnostics
     return 1
   fi
+  check_readability "$out" || return 1
   check_sha "B read after refused C" "$path_b" "$(cat "$out/b.sha256")"
   echo "PASS (replacement): A replaced by B, C refused with $status" >&2
 

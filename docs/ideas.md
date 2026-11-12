@@ -147,6 +147,22 @@ Bugs and data-loss risks. None open.
 - **Per-file replacement check for packs.** The check before a replacement
   reads one file of the release; a pack whose other episodes do not read
   passes. Weigh the extra reads against the risk.
+- **Count a metainfo that never arrives.** A torrent whose metainfo times out
+  fails the open with EIO before any session exists, and `Wake` never
+  condemns it, so the readability record shows nothing for it. A failure
+  reason of its own would cover it; weigh the retries of a player counting
+  several times for one occasion.
+- **Stop replaced torrents leaving an entry behind.** A session still open
+  on a replaced torrent writes its readability entry back after the library
+  cleared it. Closing the session where the stub is invalidated
+  (`invalidateSyncRemovedPath`), before the library clears the row, would
+  fix replacement; clearing the row in the FUSE unlink path would cover
+  deleted stubs. If `movies` and `tv` can be separate mounts, the startup
+  prune also needs a per-directory non-empty guard.
+- **Keep verdicts across a shutdown.** Sessions still open at shutdown never
+  reach a verdict; only the release path and the cleanup loop close them, so
+  a stop within two minutes of a session loses its evidence. Closing them in
+  the shutdown path would keep it.
 
 ## Nice to have
 
