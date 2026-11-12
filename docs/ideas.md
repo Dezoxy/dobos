@@ -42,7 +42,7 @@ Bugs and data-loss risks. None open.
   - Episode stubs are matched by the first 8 hash characters; two releases
     with the same prefix are treated as one.
 
-- **A read stalls about 30 s while the pump runs (engine, unresolved).**
+- **A read stalls about 30 s while the pump runs (engine, cause found).**
   Symptom: in `tests/e2e/run.sh` the `default` variant, a 1 MiB tail read
   followed by a full `sha256sum`, takes 33 to 58 s instead of 1 to 5 s in
   roughly half the runs (150 MB file, 1 MiB pieces, 128 MB cache). Reads at
@@ -65,13 +65,21 @@ Bugs and data-loss risks. None open.
   request strategy's storage cap with two readers (`GetRequestablePieces`
   in `internal/anacrolix-torrent/request-strategy/order.go`) and the cache
   completion state in `internal/gostorm/torr/storage/torrstor`; trace per
-  piece completion against the cache's `Complete` flag first. Hypothesis
-  to test next: the test file (150 MB) is larger than GoStorm's default
-  128 MB cache, so two readers can hold pieces up to the cap and leave the
-  strategy nothing to request until a read times out and releases one. The
-  cheap experiment is the `default` variant with GoStorm's `CacheSize` raised
-  to 512 MB (set through its settings API: get, modify, set); if the stall
-  goes away, the fix is in how the cap counts pieces readers still hold.
+  piece completion against the cache's `Complete` flag first.
+  **Cache experiment (2026-11-12): the cache size decides it.** With
+  `E2E_GOSTORM_CACHE_MB` (the seeder sets GoStorm's `CacheSize` before the
+  add), the `default` variant stalled in 8 of 8 runs at the default 128 MB
+  (median 34 s) and in 3 of 3 at 128 MB set through the same API, but in 0
+  of 8 at 512 MB and 0 of 3 at 160 MB (median 1 s). The file is 150 MiB, so
+  the threshold is the file size. Likely mechanism: `GetRequestablePieces`
+  subtracts every piece it walks in priority order from the storage cap,
+  complete or not, and returns once the cap is spent, so pieces the readers
+  already hold use it up and the ones they need are never requested.
+  Fix options, smallest first: let GoStorm's storage report no cap
+  (`torrstor/storage.go` `capFunc`), leaving eviction to its own cache; or,
+  as a fixes-only engine change, stop counting pieces that are complete
+  toward the cap. Larger files than the cache are the normal case, so this
+  matters beyond the test.
   Players probe file ends before playing, so this can delay real starts.
 
 ## Nice to have

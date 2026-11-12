@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -130,6 +131,12 @@ func run(out, flodni string, peerPort, trackerPort int) error {
 	}
 	if err := waitHTTP(ctx, fmt.Sprintf("http://%s:9080/control", flodni), 2*time.Minute); err != nil {
 		return err
+	}
+
+	if mb := os.Getenv("E2E_GOSTORM_CACHE_MB"); mb != "" {
+		if err := setGoStormCache(ctx, flodni, mb); err != nil {
+			return err
+		}
 	}
 
 	var torrentFile bytes.Buffer
@@ -420,6 +427,68 @@ func checkGoStormAuth(ctx context.Context, flodni string) error {
 		return fmt.Errorf("unauthenticated GET :8090/echo: status %d, want 200", status)
 	}
 	log.Printf("unauthenticated GET :8090/echo open: status %d", status)
+	return nil
+}
+
+// setGoStormCache sets GoStorm's CacheSize (MB given, bytes stored) through its
+// settings API: get the whole object, change one field, set it back. A set
+// replaces the struct, drops torrents and reconnects the client, so it must run
+// before the library add; /echo is awaited again afterwards.
+func setGoStormCache(ctx context.Context, flodni, mb string) error {
+	n, err := strconv.ParseInt(mb, 10, 64)
+	if err != nil || n <= 0 {
+		return fmt.Errorf("E2E_GOSTORM_CACHE_MB %q: want a positive integer", mb)
+	}
+	post := func(body []byte) ([]byte, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			"http://"+flodni+":8090/settings", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if tok := apiToken(); tok != "" {
+			req.Header.Set("Authorization", "Bearer "+tok)
+		}
+		resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("POST :8090/settings: status %d: %s", resp.StatusCode, raw)
+		}
+		return raw, nil
+	}
+	raw, err := post([]byte(`{"action":"get"}`))
+	if err != nil {
+		return err
+	}
+	var cur map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &cur); err != nil {
+		return fmt.Errorf("settings get: %w", err)
+	}
+	log.Printf("GoStorm CacheSize before: %s bytes", cur["CacheSize"])
+	cur["CacheSize"] = json.RawMessage(strconv.FormatInt(n*1024*1024, 10))
+	body, err := json.Marshal(map[string]any{"action": "set", "sets": cur})
+	if err != nil {
+		return err
+	}
+	if _, err := post(body); err != nil {
+		return err
+	}
+	if err := waitHTTP(ctx, "http://"+flodni+":8090/echo", 2*time.Minute); err != nil {
+		return err
+	}
+	raw, err = post([]byte(`{"action":"get"}`))
+	if err != nil {
+		return err
+	}
+	var after map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &after); err != nil {
+		return fmt.Errorf("settings get: %w", err)
+	}
+	log.Printf("GoStorm CacheSize after: %s bytes", after["CacheSize"])
 	return nil
 }
 
