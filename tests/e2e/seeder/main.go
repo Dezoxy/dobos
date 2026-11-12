@@ -173,6 +173,12 @@ func run(out, flodni string, peerPort, trackerPort int) error {
 	log.Printf("READY expected.sha256=%s fuse_path=%s", sum, fusePath)
 
 	<-ctx.Done()
+	// Piece data sent over the whole run, against the video size: above 1.0
+	// the leecher fetched pieces more than once (evicted, then requested again).
+	st := t.Stats()
+	sent := st.BytesWrittenData.Int64()
+	log.Printf("upload stats: piece data sent %d bytes, video %d bytes, ratio %.3f",
+		sent, int64(videoSize), float64(sent)/float64(videoSize))
 	log.Printf("stopping")
 	return nil
 }

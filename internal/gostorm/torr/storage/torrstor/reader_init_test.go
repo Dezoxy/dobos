@@ -36,8 +36,8 @@ func TestNewReaderSetsEngineReadaheadImmediately(t *testing.T) {
 		existing int32
 		want     int64
 	}{
-		{"first reader, 75% of 128 MiB", 75, 0, 96 * mib},
-		{"second reader splits it", 100, 1, 64 * mib},
+		{"first reader, 75% of 128 MiB, times 0.85", 75, 0, 85563801},
+		{"second reader splits it", 100, 1, 57042534},
 		{"floor of 8 MiB", 5, 3, 8 * mib},
 	}
 	for _, bounded := range []bool{false, true} {
