@@ -133,6 +133,7 @@ Status of each part:
 | `GET /api/torrents/health` with the readability fields | Exists; the fields are in the README |
 | Time of the last swarm-served read, reason and source of the last failure | Exists |
 | One `[Session]` log line per closed session: bytes by serving path, `swarm_served`, file index (the README documents it as a contract) | Exists; sessions open at shutdown and reads after a session closes are not counted |
+| Prometheus text exposition at `GET /metrics/prometheus`: session latency histograms, read counts and bytes by serving path, session outcomes, dead-swarm verdicts, warmup cache size and evictions (the README lists the series) | Exists |
 | Per-file readability record | **Designed, not implemented** |
 | List of files whose head and tail windows are on disk; background fills never evict | **Designed, not implemented** |
 | Warm on add, catch-up and retries | **Designed, not implemented** |

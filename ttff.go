@@ -69,6 +69,17 @@ func (h *TTFFHistogram) Add(d time.Duration) {
 
 func (h *TTFFHistogram) Count() int64 { return h.total.Load() }
 
+// snapshot copies the per-bucket counts (not cumulative; the last one is everything
+// above the final bound) and the sum in ms. Add updates bucket, total and sum as three
+// separate atomics, so a scrape taking the count from total could disagree with the
+// buckets it just read; callers take the count from these buckets instead.
+func (h *TTFFHistogram) snapshot() (counts [len(ttffBucketsMS) + 1]int64, sumMS int64) {
+	for i := range h.buckets {
+		counts[i] = h.buckets[i].Load()
+	}
+	return counts, h.sumMS.Load()
+}
+
 func (h *TTFFHistogram) Avg() float64 {
 	total := h.total.Load()
 	if total == 0 {
@@ -316,6 +327,7 @@ func (s *TTFFSession) closeSession() {
 		dead := s.reportSwarmVerdict()
 		// Before the ttffIsReal filter: probes and unserved sessions get a line too.
 		rec := s.record(time.Now(), dead)
+		countSessionClosed(rec.Outcome)
 		closedSessions.add(rec)
 		logSessionRecord(rec)
 		if !ttffIsReal(s.tailOrDeep.Load(), s.bytesRead.Load()) {
@@ -383,9 +395,28 @@ type ttffAgg struct {
 	fetchBlock        TTFFHistogram
 	stallCount        atomic.Int64
 	maxStallMS        atomic.Int64
+	// readBytes is what every served read handed to the kernel, per serving path
+	// (indexed by ttffSource). Unlike the per-session byte fields it also counts reads
+	// after a session closed and reads with no session, so it can exceed their sum.
+	readBytes [srcFetchBlock + 1]atomic.Int64
 }
 
 var ttffStats ttffAgg
+
+// sessionOutcomes lists the outcomes a closed session can have, in the order the
+// metrics print them. The open outcome never reaches a close.
+var sessionOutcomes = [...]string{outcomeServed, outcomeProbe, outcomeUnserved, outcomeDeadSwarm}
+
+var sessionsClosedByOutcome [len(sessionOutcomes)]atomic.Int64
+
+func countSessionClosed(outcome string) {
+	for i, o := range sessionOutcomes {
+		if o == outcome {
+			sessionsClosedByOutcome[i].Add(1)
+			return
+		}
+	}
+}
 
 // ttffRegister opens (or reopens) the session for a path. Reopening refreshes
 // lastReadAt and the warmup flags, but openedAt is refreshed only while the
@@ -423,6 +454,9 @@ func ttffRegister(path string, size int64, hash string, fileIndex int, headReady
 // ttffRead records one served read: per-source histogram always; session state
 // when a session exists for the path.
 func ttffRead(path string, src ttffSource, d time.Duration, n int, off int64) {
+	if n > 0 && int(src) < len(ttffStats.readBytes) {
+		ttffStats.readBytes[src].Add(int64(n))
+	}
 	switch src {
 	case srcWarmupHead:
 		ttffStats.warmupHead.Add(d)

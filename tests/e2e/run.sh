@@ -12,7 +12,9 @@
 # E2E_KILL_SEEDER_AFTER_ADD=1 kills the seeder once the add is done (the read must
 # fail within its timeout instead of hanging); E2E_REPLACEMENT_EXPECT_SUCCESS_FOR_C=1
 # expects the undeliverable release to be accepted (the replacement variant must
-# fail); E2E_ONLY=<variant> runs just that variant (default, slow-seeder,
+# fail); E2E_PROM_DUMP=<file> saves the /metrics/prometheus body of each
+# non-replacement variant (the last one wins; a scrape sample for the docs);
+# E2E_ONLY=<variant> runs just that variant (default, slow-seeder,
 # index-cache, replacement). slow-seeder is default with a seeder that keeps the
 # engine's 1 MiB per-peer request allowance. The index-cache variant runs
 # with a random FLODNI_API_TOKEN: the seeder must see 401 without the bearer
@@ -83,6 +85,83 @@ report_first_byte() {
 # health_body: Flodni's /api/torrents/health (the replacement variant sets no token).
 health_body() {
   docker exec "$flodni" bash -c 'exec 3<>/dev/tcp/127.0.0.1/9080 && printf "GET /api/torrents/health HTTP/1.0\r\nHost: x\r\n\r\n" >&3 && cat <&3' 2>/dev/null || true
+}
+
+# prom_raw [noauth]: Flodni's /metrics/prometheus with headers, over /dev/tcp. The
+# container's FLODNI_API_TOKEN is read inside it, so this script never handles the
+# token; the Authorization header goes only when one is set, and not at all with noauth.
+prom_raw() {
+  docker exec "$flodni" bash -c 'h=""
+    if [ -z "$1" ] && [ -n "${FLODNI_API_TOKEN:-}" ]; then h="Authorization: Bearer $FLODNI_API_TOKEN\r\n"; fi
+    exec 3<>/dev/tcp/127.0.0.1/9080 && printf "GET /metrics/prometheus HTTP/1.0\r\nHost: x\r\n${h}\r\n" >&3 && cat <&3' _ "${1:-}" 2>/dev/null || true
+}
+
+# check_prometheus variant: the exposition must answer 200 with the text format's
+# content type, every line must fit the sample grammar, the first-byte histogram must
+# be declared first-class, and the full read must show in the read counts and bytes.
+# Per-source values are printed as a measurement, not asserted. In index-cache (token
+# set) the request without the header must get 401.
+check_prometheus() {
+  local variant=$1 raw body status
+  raw=$(prom_raw)
+  status=$(head -n 1 <<<"$raw" | tr -d '\r')
+  body=${raw#*$'\r\n\r\n'}
+  if [[ "$status" != *" 200 "* ]]; then
+    echo "FAIL ($variant): /metrics/prometheus: $status" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if ! grep -qi '^content-type: text/plain; version=0.0.4; charset=utf-8' <<<"$raw"; then
+    echo "FAIL ($variant): /metrics/prometheus content type is not text format 0.0.4" >&2
+    dump_diagnostics
+    return 1
+  fi
+  local bad
+  bad=$(grep -vE '^(# (HELP|TYPE) [a-zA-Z_:][a-zA-Z0-9_:]* .+|[a-zA-Z_:][a-zA-Z0-9_:]*(\{[^{}]*\})? [-+0-9.eE]+|[a-zA-Z_:][a-zA-Z0-9_:]*(\{[^{}]*\})? (\+Inf|NaN))$' <<<"$body" | head -n 3 || true)
+  if [ -n "$bad" ]; then
+    echo "FAIL ($variant): /metrics/prometheus has lines outside the sample grammar: $bad" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if ! grep -qx '# TYPE flodni_session_first_byte_seconds histogram' <<<"$body"; then
+    echo "FAIL ($variant): /metrics/prometheus lacks the first-byte histogram TYPE line" >&2
+    dump_diagnostics
+    return 1
+  fi
+  local reads bytes
+  reads=$(awk '/^flodni_read_duration_seconds_count\{/ { n += $2 } END { print n + 0 }' <<<"$body")
+  bytes=$(awk '/^flodni_read_bytes_total\{/ { n += $2 } END { print n + 0 }' <<<"$body")
+  if [ "$reads" -le 0 ] || [ "$bytes" -le 0 ]; then
+    echo "FAIL ($variant): after a full read the read counts are $reads and the bytes $bytes" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "PROM ($variant): reads=$reads bytes=$bytes" >&2
+  echo "PROM ($variant): $(grep -E '^flodni_(read_duration_seconds_count|read_bytes_total)\{' <<<"$body" | tr '\n' ' ')" >&2
+  if [ "$variant" = index-cache ]; then
+    status=$(prom_raw noauth | head -n 1 | tr -d '\r')
+    if [[ "$status" != *" 401 "* ]]; then
+      echo "FAIL ($variant): /metrics/prometheus without the token: $status, want 401" >&2
+      dump_diagnostics
+      return 1
+    fi
+    echo "ok ($variant): /metrics/prometheus without token refused with 401" >&2
+  fi
+  if [ -n "${E2E_PROM_DUMP:-}" ]; then printf '%s\n' "$body" >"$E2E_PROM_DUMP"; fi
+}
+
+# check_sessions_closed: after B's session closed, the counter of served sessions must be
+# at least 1 (check_session_line has just found the line, so this is deterministic).
+check_sessions_closed() {
+  local body n
+  body=$(prom_raw)
+  n=$(grep -E '^flodni_sessions_closed_total\{outcome="served"\} ' <<<"$body" | awk '{ print $2 }')
+  if [ -z "$n" ] || [ "$n" -lt 1 ]; then
+    echo "FAIL (replacement): flodni_sessions_closed_total{outcome=\"served\"} is '${n:-absent}', want >= 1" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "PROM (replacement): sessions_closed served=$n" >&2
 }
 
 # check_readability out: B's session closes up to two minutes after its last read, so
@@ -315,6 +394,7 @@ run_variant() {
   local full_s=$((SECONDS - full_t0))
   echo "full read of $variant took ${full_s}s" >&2
   report_first_byte "$variant"
+  check_prometheus "$variant" || return 1
   # Only reported for now: the bound comes once the stall is fixed.
   if [ "$full_s" -gt 20 ]; then slow_diagnostics "$variant" "$full_s"; fi
   if [ "$actual" != "$expected" ]; then
@@ -434,6 +514,7 @@ run_replacement() {
   fi
   check_readability "$out" || return 1
   check_session_line "$out" || return 1
+  check_sessions_closed || return 1
   check_sha "B read after refused C" "$path_b" "$(cat "$out/b.sha256")"
   echo "PASS (replacement): A replaced by B, C refused with $status" >&2
 

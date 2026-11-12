@@ -284,3 +284,7 @@ trigger is known.
   read (`swarm_served`), plus the file index and failure reason; the same
   fields join `/api/sessions`. The bytes are split by the path that
   answered, not into swarm and cache. README documents the line.
+- 2026-11-12, readability evidence step 4: `GET /metrics/prometheus` serves
+  the time-to-first-byte and read histograms, read counts and bytes by
+  serving path, session outcomes, dead-swarm verdicts, warmup cache size,
+  evictions and drops, behind the control token. The README lists the series.

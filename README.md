@@ -197,6 +197,80 @@ and `[DeadSwarm]` lines are unchanged, and their wording is not a contract.
   page cache answers repeated reads without Flodni seeing them.
 - The line carries the library path. Remove it before sharing a log.
 
+## Metrics
+
+`GET /metrics/prometheus` on the control port serves the Prometheus text
+format 0.0.4, next to the JSON at `/metrics` that the control panel reads.
+It follows the token rule of the other control routes: open when no token is
+set, the bearer header only when one is (no `?token=`). It answers `GET`
+only, with 405 and `Allow: GET` otherwise. A scrape reads in-memory counters
+and never calls the torrent engine.
+
+```yaml
+scrape_configs:
+  - job_name: flodni
+    metrics_path: /metrics/prometheus
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/flodni-token
+    static_configs:
+      - targets: ["flodni:9080"]
+```
+
+Drop `authorization` when no token is set. The port has no TLS, so keep the
+scraper on the same host or Docker network.
+
+| Series | Type | Labels | Meaning |
+|---|---|---|---|
+| `flodni_build_info` | gauge | `version` | Always 1. |
+| `process_start_time_seconds` | gauge | none | Start of the process. |
+| `flodni_session_first_byte_seconds` | histogram | none | Open to the first byte served, per real playback. |
+| `flodni_session_first_deep_read_seconds` | histogram | none | Open to the first read at 8 MiB or later or in the tail, per real playback. |
+| `flodni_seek_read_duration_seconds` | histogram | none | Duration of the read that followed a seek. |
+| `flodni_read_duration_seconds` | histogram | `source` | Duration of each served read. Its `_count` is the number of reads each path answered. |
+| `flodni_read_bytes_total` | counter | `source` | Bytes handed to the kernel. |
+| `flodni_sessions_closed_total` | counter | `outcome` | Closed sessions: `served`, `probe`, `unserved`, `dead_swarm`. |
+| `flodni_dead_swarm_verdicts_total` | counter | `reason`, `source` | Dead-swarm verdicts; `reason` as `last_failure_reason`, `source` is `mount`. |
+| `flodni_warmup_cache_bytes` | gauge | none | Approximate size of the warmup cache; only with the cache enabled. |
+| `flodni_warmup_cache_quota_bytes` | gauge | none | Its size limit; only with the cache enabled. |
+| `flodni_warmup_evictions_total` | counter | `window` | Files removed by quota eviction, `head` or `tail`. |
+| `flodni_warmup_evicted_bytes_total` | counter | `window` | Their apparent size in bytes. |
+| `flodni_warmup_unverified_drops_total` | counter | none | Warmup blocks, head or tail, never written because their pieces did not verify in time. |
+| `flodni_warmup_write_queue_drops_total` | counter | none | Head chunks dropped because the warmup write queue was full. |
+| `flodni_readahead_cache_bytes` | gauge | none | Bytes in the read-ahead cache. |
+| `flodni_readahead_cache_active_bytes` | gauge | none | The part that is not stale. |
+| `flodni_readahead_cache_entries` | gauge | none | Entries in the cache. |
+| `flodni_readahead_cache_budget_bytes` | gauge | none | The cache's size budget. |
+| `flodni_fuse_short_reads_total` | counter | none | Reads served with fewer bytes than requested away from EOF. |
+| `flodni_fuse_short_read_results_total` | counter | `result` | Outcome of the refill: `repaired` or `failed`. |
+| `flodni_fetch_dedup_total` | counter | none | Concurrent fetches of one chunk that shared a single fetch. |
+
+`source` is `warmup_head`, `warmup_tail`, `racache_hit` or `fetch_block`.
+Every label value is exported at 0 from the start. Durations are in seconds
+and the buckets are fixed (1 ms to 10 s). Series names and labels are meant
+to be stable; buckets and help text are not.
+
+- Counters reset when Flodni restarts; use `rate()` or `increase()`.
+- `flodni_session_first_byte_seconds` and
+  `flodni_session_first_deep_read_seconds` cover only sessions that reach
+  the `served` thresholds above, not scanner probes, and a session counts
+  when it closes. `flodni_seek_read_duration_seconds` is recorded at the
+  read itself in any open session, scanner probes included.
+- `source` names the path that answered a read, not where the bytes came
+  from: a `racache_hit` may hold bytes the swarm delivered a moment ago.
+- The dead-swarm series stay 0 when the state database is off; nothing is
+  recorded then.
+- Durations are truncated to whole milliseconds: reads under 1 ms land in
+  `le="0.001"` and add nothing to `_sum`.
+- `flodni_read_bytes_total` counts every served read, including reads after
+  a session closed and reads with no session, so it differs from the
+  `[Session]` lines.
+- `flodni_warmup_cache_bytes` is a running total, resynced from the disk on
+  each eviction walk. It can drift in between; the known causes are in
+  `docs/ideas.md`.
+- Engine and peer counters, read-ahead evictions and Go runtime metrics are
+  not exported yet (`docs/ideas.md`).
+
 ## Viewing the model
 
 `make check` validates the architecture model and `make view` serves it at

@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"sync"
 	"time"
 
 	"flodni/internal/gostorm/native"
@@ -25,6 +26,36 @@ const (
 	// Stats() takes an engine lock, and that read is already late.
 	classifyTimeout = time.Second
 )
+
+// deadSwarmVerdicts counts the verdicts the recorder saw since start, by reason and
+// source, for /metrics/prometheus. Verdicts are rare, so a mutex is fine. The
+// recorder is installed only with the state database, so without one these stay 0.
+var deadSwarmVerdicts = struct {
+	sync.Mutex
+	n map[[2]string]int64
+}{n: map[[2]string]int64{
+	{failReasonNoPeers, failSourceMount}:   0,
+	{failReasonTimeout, failSourceMount}:   0,
+	{failReasonNotActive, failSourceMount}: 0,
+	{failReasonUnknown, failSourceMount}:   0,
+}}
+
+func countDeadSwarmVerdict(reason, source string) {
+	deadSwarmVerdicts.Lock()
+	deadSwarmVerdicts.n[[2]string{reason, source}]++
+	deadSwarmVerdicts.Unlock()
+}
+
+// deadSwarmVerdictCounts returns a copy of the counts.
+func deadSwarmVerdictCounts() map[[2]string]int64 {
+	deadSwarmVerdicts.Lock()
+	defer deadSwarmVerdicts.Unlock()
+	out := make(map[[2]string]int64, len(deadSwarmVerdicts.n))
+	for k, v := range deadSwarmVerdicts.n {
+		out[k] = v
+	}
+	return out
+}
 
 // classifyFailure says why a read gave up on hash. It asks the engine under a short
 // bound and answers unknown when the engine does not reply in time.
@@ -78,6 +109,8 @@ func newReachabilityRecorder(store readabilityStore, logger *log.Logger) func(na
 			// Deliberately does not say why: the session layer that condemned
 			// already logged its own reason, with duration and outcome.
 			logger.Printf("[DeadSwarm] %s did not answer", short)
+			// Counted before the store call, so a database error does not hide a verdict.
+			countDeadSwarmVerdict(o.Reason, o.Source)
 			err = store.RecordMetadataFailure(o.Hash, o.Reason, o.Source, time.Now())
 		}
 		if err != nil {
