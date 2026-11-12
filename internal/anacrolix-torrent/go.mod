@@ -26,7 +26,7 @@ require (
 	github.com/bahlo/generic-list-go v0.2.0
 	github.com/cespare/xxhash v1.1.0
 	github.com/davecgh/go-spew v1.1.1
-	github.com/dustin/go-humanize v1.0.0
+	github.com/dustin/go-humanize v1.1.0
 	github.com/elliotchance/orderedmap v1.4.0
 	github.com/frankban/quicktest v1.14.6
 	github.com/fsnotify/fsnotify v1.5.4
