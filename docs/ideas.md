@@ -176,9 +176,33 @@ Bugs and data-loss risks. None open.
   absolute total outside `tailMu`; `dropResidue` unlinks and subtracts
   without `tailMu`; `GetAvailableRange`'s unlocked Stat then Store can save
   a stale-low size (a `CompareAndSwap` on the entry would fix it); a
-  CORRUPT CACHE removal never subtracts; head writes dropped when `writeCh`
-  is full are not counted; and the head create's `handles.Store` should be a
-  `Swap` that closes the old descriptor, or it leaks one.
+  CORRUPT CACHE removal never subtracts; and the head create's
+  `handles.Store` should be a `Swap` that closes the old descriptor, or it
+  leaks one. `flodni_warmup_cache_bytes` exports this total as approximate.
+- **More series on `/metrics/prometheus`.** Left out of the first version,
+  each for its own reason:
+  - Engine and peer series (hedge, eject, churn, the gradient loop). The
+    JSON `/metrics` sums them over the active torrents under engine locks,
+    so a scrape would take those locks, and the sums fall when a torrent
+    expires, which a counter must not do. They need per-process counters
+    in the engine first.
+  - Short reads in the engine (`native.ShortReadCounts`,
+    `ShortReadRepairCounts`). These are already per-process atomic counters
+    with no engine lock, so exporting them is two families and their README
+    rows; not done in the first version.
+  - Read-ahead evictions: needs a counter inside `Put` under the shard
+    lock.
+  - The head-fill duration histogram (`warmupDurationBuckets`): it has no
+    sum, so it cannot be a Prometheus histogram without a new counter.
+  - Go runtime and process gauges (goroutines, memory, descriptors), and a
+    gauge of open sessions. The usual route is `client_golang` with a
+    private registry, which also brings OpenMetrics; weigh the dependency
+    against the hand-written encoder in `internal/promtext`.
+  - Sub-millisecond precision: the histograms keep whole milliseconds, so
+    cache hits add nothing to `_sum`. Changing it means storing
+    microseconds.
+  - `promtool check metrics` in the end-to-end test; needs a new image pin
+    in the `Makefile`.
 
 ## Nice to have
 

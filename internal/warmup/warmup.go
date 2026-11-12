@@ -486,6 +486,7 @@ func (d *DiskWarmupCache) writeChunk(hash string, fileID int, data []byte, off i
 	select {
 	case d.writeCh <- warmupWrite{hash, fileID, bufPtr, len(data), off}:
 	default:
+		writeQueueDrops.Add(1)
 		warmupWritePool.Put(bufPtr)
 	}
 }
@@ -891,11 +892,59 @@ func (d *DiskWarmupCache) RemoveHash(hash string) {
 	}
 }
 
-func (d *DiskWarmupCache) enforceQuotaLocked(needed int64) {
-	quota := warmupQuota
+// quotaBytes is the size limit eviction enforces: the configured quota, or the
+// built-in default before one is set.
+func quotaBytes() int64 {
 	if diskQuotaGB > 0 {
-		quota = diskQuotaGB * 1024 * 1024 * 1024
+		return diskQuotaGB * 1024 * 1024 * 1024
 	}
+	return warmupQuota
+}
+
+// Counters for /metrics/prometheus. They count since the process started, and only
+// quota eviction moves the eviction ones: RemoveHash, dropResidue and the corrupt
+// file removal are not evictions.
+var (
+	evictedHeads, evictedHeadBytes atomic.Int64
+	evictedTails, evictedTailBytes atomic.Int64
+	// writeQueueDrops counts head chunks dropped because writeCh was full.
+	writeQueueDrops atomic.Int64
+)
+
+// Stats is a snapshot of the process-wide warmup counters.
+type Stats struct {
+	QuotaBytes                 int64
+	EvictedHeads, EvictedTails int64
+	EvictedHeadBytes           int64
+	EvictedTailBytes           int64
+	WriteQueueDrops            int64
+}
+
+// CounterStats returns the process-wide counters; they exist whether or not the
+// cache is enabled.
+func CounterStats() Stats {
+	return Stats{
+		QuotaBytes:       quotaBytes(),
+		EvictedHeads:     evictedHeads.Load(),
+		EvictedTails:     evictedTails.Load(),
+		EvictedHeadBytes: evictedHeadBytes.Load(),
+		EvictedTailBytes: evictedTailBytes.Load(),
+		WriteQueueDrops:  writeQueueDrops.Load(),
+	}
+}
+
+// TrackedBytes is the running total the quota is checked against. It is
+// approximate: the remaining drift sources are listed in docs/ideas.md, and the
+// eviction walk resyncs it from the disk. Safe on a nil receiver.
+func (d *DiskWarmupCache) TrackedBytes() int64 {
+	if d == nil {
+		return 0
+	}
+	return atomic.LoadInt64(&d.totalSize)
+}
+
+func (d *DiskWarmupCache) enforceQuotaLocked(needed int64) {
+	quota := quotaBytes()
 
 	totalSize := atomic.LoadInt64(&d.totalSize)
 	if totalSize+needed <= quota {
@@ -940,6 +989,13 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64) {
 		removeFile(fi.path)
 		removeFile(fi.path + coverSuffix)
 		diskTotal -= fi.size
+		if strings.HasSuffix(fi.path, tailSuffix) {
+			evictedTails.Add(1)
+			evictedTailBytes.Add(fi.size)
+		} else {
+			evictedHeads.Add(1)
+			evictedHeadBytes.Add(fi.size)
+		}
 	}
 	atomic.StoreInt64(&d.totalSize, diskTotal)
 }

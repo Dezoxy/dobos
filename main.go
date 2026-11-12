@@ -488,6 +488,8 @@ func main() {
 			gc().MaxConnsPerHost)
 	})
 
+	mux.HandleFunc("/metrics/prometheus", handlePrometheus)
+
 	mux.HandleFunc("/metrics/ttff", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"sessions_completed":%d,"sessions_filtered":%d,`+
 			`"open_to_header_ms":%s,"open_to_deep_read_ms":%s,"seek_latency_ms":%s,`+
