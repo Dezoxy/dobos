@@ -20,7 +20,7 @@ require (
 	github.com/anacrolix/possum/go v0.0.0-20240222034319-2fe0737d4315
 	github.com/anacrolix/squirrel v0.6.0
 	github.com/anacrolix/sync v0.5.1
-	github.com/anacrolix/tagflag v1.3.0
+	github.com/anacrolix/tagflag v1.4.0
 	github.com/anacrolix/upnp v0.1.3-0.20220123035249-922794e51c96
 	github.com/anacrolix/utp v0.1.0
 	github.com/bahlo/generic-list-go v0.2.0
