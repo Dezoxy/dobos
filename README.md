@@ -257,7 +257,11 @@ today. The cache also keeps an in-memory list of which files are warm; it is
 internal and not served, and only the aggregates below are exported
 (`flodni_warmup_files`). What is not built: warm on add (designed in
 `docs/roadmap.md`), and evicting the least recently read file (an idea in
-`docs/ideas.md`, not planned).
+`docs/ideas.md`, not planned). The fill that warm on add will use exists as
+an internal function with no caller: it completes a file's head and tail
+windows in 4 MiB chunks from a torrent the engine already has, writes only
+verified bytes, and makes room first under a policy that evicts only files
+never played or nothing. Nothing starts it, so it changes no behaviour.
 
 - **Played** means a playback confirmed by the media server webhook (Plex or
   Jellyfin), never a scanner's read. A webhook marks at most one file: a

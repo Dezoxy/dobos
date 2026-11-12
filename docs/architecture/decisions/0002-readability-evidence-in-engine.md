@@ -137,8 +137,9 @@ Status of each part:
 | Per-file readability record | **Designed, not implemented** |
 | Played and evicted state per file (state database schema 13); quota eviction takes head and tail together, files never played first, then played files, oldest first; one `[WarmupEvict]` log line per eviction; `flodni_playback_starts_total` and `flodni_warmup_cold_reopen_total` | Exists; "played" is a playback confirmed by the media server webhook, so without webhooks nothing is ever played and the order is oldest first |
 | Internal list of files whose head and tail windows are on disk; `flodni_warmup_files{window}` and `flodni_readability_torrents{state}` built on it and on the record | Exists; the per-file list is internal and not served, only the aggregates are exported |
-| Background fills evict only files never played, or nothing | **Designed, not implemented**; the eviction function takes such a policy, and no caller uses it yet |
-| Warm on add, catch-up and retries | **Designed, not implemented** |
+| Background fills evict only files never played, or nothing | **Designed, not implemented**; the eviction function takes such a policy (and a set of protected files), and nothing outside the fill primitive and the tests uses it yet |
+| The fill primitive: completes one file's head and tail windows in chunks from a torrent the engine already has, writing only verified bytes, with room made first under the policy above | Exists as an internal function with no caller |
+| Warm on add, catch-up and retries | **Designed, not implemented**; the fill primitive above is the only part that exists |
 | Byte budget for non-playback readers: bytes past the windows served to unconfirmed sessions are counted and logged (`[ReaderBudget]`, `flodni_unconfirmed_read_*`) | Counting exists; refusal **designed, not implemented** |
 
 What the endpoint does:

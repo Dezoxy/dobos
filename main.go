@@ -283,6 +283,9 @@ func main() {
 		warmup.RangeVerified = func(hash string, fileID int, off, n int64) bool {
 			return torr.PeekTorrent(hash).RangeVerified(fileID, off, n)
 		}
+		warmup.PiecesVerified = func(hash string, fileID int, off, n int64) (int, int) {
+			return torr.PeekTorrent(hash).VerifiedPieces(fileID, off, n)
+		}
 		warmup.RequestPieces = func(hash string, fileID int, off, n int64) {
 			torr.PeekTorrent(hash).RequestRange(fileID, off, n)
 		}
