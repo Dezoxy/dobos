@@ -64,3 +64,10 @@ func TestVerifiedPiecesNilTorrent(t *testing.T) {
 		t.Fatalf("a missing torrent counted %d of %d pieces", v, total)
 	}
 }
+
+func TestDeliveredAtNilTorrent(t *testing.T) {
+	var tr *Torrent
+	if at, n := tr.DeliveredAt(1, 0, 10); !at.IsZero() || n != 0 {
+		t.Fatalf("a missing torrent reported a delivery: %v, %d", at, n)
+	}
+}

@@ -371,7 +371,13 @@ func main() {
 				}
 				registry.SetRegistryDB(stateDB)
 				if err := fileStates.attach(stateDB); err != nil {
-					logger.Printf("WARNING: Failed to load file state: %v (played marks stay in memory)", err)
+					logger.Printf("WARNING: Failed to load file state: %v (played marks stay in memory, no warm records)", err)
+				} else if gc().WarmupDir != "" {
+					// Index mode only: elsewhere writes are not verified, so nothing is recorded.
+					// Wired only after a successful attach, so a record is never held in memory alone.
+					fileStates.deliveredAt = warmDeliveredAt
+					warmup.OnWindowsCached = fileStates.windowsCached
+					go fileStates.runRecorder(backgroundStopChan)
 				}
 				// V750: Restore playback states from previous sessions
 				restorePlaybackStates(stateDB)
@@ -523,7 +529,7 @@ func main() {
 	if stateDB != nil {
 		healthStore = stateDB
 	}
-	mux.HandleFunc("/api/torrents/health", newTorrentsHealthHandler(healthStore, logger))
+	mux.HandleFunc("/api/torrents/health", newTorrentsHealthHandler(healthStore, fileStates.WarmSnapshot, logger))
 	mux.HandleFunc("/api/health", newHealthChecks().handler)
 
 	mux.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {

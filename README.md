@@ -135,7 +135,41 @@ line below is the one log format that is).
 - New reason and source values may appear; ignore the ones you do not
   know. `GET /api/library/list` always reports `file_index` (the
   engine's index, starting at 1; 0 means the stub carries none). Per-file
-  records are designed, not implemented (ADR 0002).
+  records are the experimental `files` array below.
+
+### Per-file records (experimental)
+
+Each torrent object carries a `files` array, always present (`[]` when empty)
+and always the last key. It is **experimental**: it is outside the contract
+sentence above and the stable-names promise, and its names may change until
+its first consumer runs against it. It is served only with the state database
+on. Two things write it today. In index mode (`warmup_dir` set), a read
+through the mount that leaves a file's head and tail windows both complete
+records the file. In any cache mode, a quota eviction records `cache:
+evicted`, also for a file with no earlier record. Nothing fills windows on its
+own yet, so a file nobody opened has no record. A file whose windows were
+already complete before this version may have none until a later read writes
+to them. A torrent with records and no failure row is
+listed with `consecutive_failures` 0 and nulls, unless `?failing` or
+`?min_failures` is set; those keep their per-torrent meaning.
+
+| Field | Meaning |
+|---|---|
+| `file_index` | The engine's file index, as in `GET /api/library/list`. |
+| `readability` | `warmed`: the swarm delivered a piece under the windows (the engine stamps each piece when it passes its checksum); `present`: complete with no delivery time available; `failed`; `unknown`: no verdict. `present` and `failed` are reserved for the warmer, which is not built; neither is served today. The mount path writes only `warmed` and leaves `unknown` when the engine holds no stamp. |
+| `cache` | State of the windows on disk, separate from `readability`: `cached`, or `evicted` (quota eviction); `unknown` before any record. It is the last recorded event, not a live probe: a cache directory wiped by hand still reads `cached`. |
+| `failed_attempts` | Failed fills in a row; a `warmed` record resets it. Always 0 today. |
+| `first_failed_at`, `last_attempt_at` | Start of the current run of failed fills, and the last attempt; `null` when unset. Always `null` today. |
+| `last_swarm_delivery_at` | When the engine last completed a piece under the windows, not when the windows were written: a fill that read from RAM hours later still carries the delivery time. |
+
+- Eviction changes `cache` only; it never changes `readability`.
+- Times are RFC 3339 UTC or `null`.
+- A scan by a media server that pulls the windows from the swarm counts as a
+  swarm delivery, because the stamp is the fact, not who asked.
+- The mount path does not touch `last_swarm_read_at` or the failure count of
+  the torrent; the session verdict still owns those.
+- The series `flodni_warm_fills_total{trigger="mount",outcome}` counts the
+  records written (`warmed`, or `cached` when no stamp exists).
 
 ## Session log
 
@@ -286,10 +320,11 @@ never played or nothing. Nothing starts it, so it changes no behaviour.
   any read through the mount can evict the oldest played file, because a
   play's first reads cannot be told from a scan before the webhook arrives.
 - **State.** The marks are in the state database table `file_state` (schema
-  13): the last play and whether the quota evicted the file. Eviction
-  removes bytes only; the readability record stays. A torrent removed from
-  the library loses its marks, and a startup prune after a complete library
-  scan drops the marks of torrents that left it.
+  13): the last play and whether the quota evicted the file. Schema 14 adds
+  the experimental per-file record (see "Per-file records") to the same
+  rows. Eviction removes bytes only; the readability record stays. A torrent
+  removed from the library loses its marks, and a startup prune after a
+  complete library scan drops the marks of torrents that left it.
 - **Log line.** Each evicted file logs one line, `[WarmupEvict] ` followed by
   a JSON object: `hash` (full), `file` (index), `head_bytes`, `tail_bytes`
   (0 when that window was not on disk), `age_s` (since the newer window was
@@ -344,6 +379,7 @@ scraper on the same host or Docker network.
 | `flodni_warmup_cache_quota_bytes` | gauge | none | Its size limit; only with the cache enabled. |
 | `flodni_warmup_evictions_total` | counter | `window` | Files removed by quota eviction, `head` or `tail`. |
 | `flodni_warmup_evicted_bytes_total` | counter | `window` | Their apparent size in bytes. |
+| `flodni_warm_fills_total` | counter | `trigger`, `outcome` | Per-file warm records written; only `trigger="mount"` today, `outcome` `warmed` (the engine holds a swarm delivery stamp) or `cached` (it does not). Needs the state database and index mode. |
 | `flodni_warmup_files` | gauge | `window` | Media files with a warm window on disk now: `head` counts heads at or above the 1 MiB ready floor, `tail` counts tails fully covered. Only with the cache enabled. |
 | `flodni_playback_starts_total` | counter | none | Playbacks the media server webhook confirmed (not playing to playing). |
 | `flodni_playback_webhooks_received_total` | counter | `matched` | Play and resume webhooks for a movie or an episode; `matched` is `true` when the webhook resolved to one file, else `false`. |

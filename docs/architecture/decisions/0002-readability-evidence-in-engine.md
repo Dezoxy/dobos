@@ -134,12 +134,12 @@ Status of each part:
 | Time of the last swarm-served read, reason and source of the last failure | Exists |
 | One `[Session]` log line per closed session: bytes by serving path, `swarm_served`, file index (the README documents it as a contract) | Exists; sessions open at shutdown and reads after a session closes are not counted |
 | Prometheus text exposition at `GET /metrics/prometheus`: session latency histograms, read counts and bytes by serving path, session outcomes, dead-swarm verdicts, warmup cache size and evictions (the README lists the series) | Exists |
-| Per-file readability record | **Designed, not implemented** |
+| Per-file warm record: readability and cache state per file, served as the experimental `files` array on `GET /api/torrents/health` (state database schema 14); the engine stamps each piece with its completion time, and a read through the mount that completes a file's windows records it | Exists, **experimental**; written only by the mount path in index mode, `warmed` and `cached` only; the warmer's outcomes (`present`, `failed`, retries) are **designed, not implemented** |
 | Played and evicted state per file (state database schema 13); quota eviction takes head and tail together, files never played first, then played files, oldest first; one `[WarmupEvict]` log line per eviction; `flodni_playback_starts_total` and `flodni_warmup_cold_reopen_total` | Exists; "played" is a playback confirmed by the media server webhook, so without webhooks nothing is ever played and the order is oldest first |
 | Internal list of files whose head and tail windows are on disk; `flodni_warmup_files{window}` and `flodni_readability_torrents{state}` built on it and on the record | Exists; the per-file list is internal and not served, only the aggregates are exported |
 | Background fills evict only files never played, or nothing | **Designed, not implemented**; the eviction function takes such a policy (and a set of protected files), and nothing outside the fill primitive and the tests uses it yet |
 | The fill primitive: completes one file's head and tail windows in chunks from a torrent the engine already has, writing only verified bytes, with room made first under the policy above | Exists as an internal function with no caller |
-| Warm on add, catch-up and retries | **Designed, not implemented**; the fill primitive above is the only part that exists |
+| Warm on add, catch-up and retries | **Designed, not implemented**; the fill primitive and the per-file record above are the only parts that exist |
 | Byte budget for non-playback readers: bytes past the windows served to unconfirmed sessions are counted and logged (`[ReaderBudget]`, `flodni_unconfirmed_read_*`) | Counting exists; refusal **designed, not implemented** |
 
 What the endpoint does:
@@ -147,8 +147,8 @@ What the endpoint does:
 - It sits behind the same opt-in token as the other control routes: open
   when no token is set, bearer header only when one is. Unlike
   `/api/health` it is not among the routes that stay open.
-- It returns hashes, counts, reasons and times only; file indexes come with
-  the per-file records (designed).
+- It returns hashes, counts, reasons and times, plus the experimental
+  per-file records (file index, readability, cache state, times).
 - It answers 503 when the state database is off. Nothing is recorded then:
   no verdict is written, no `[DeadSwarm]` line is logged and
   `/api/sessions` never reports `dead_swarm`.
@@ -157,9 +157,10 @@ What the endpoint does:
   with the count at 0 and the time of the read.
 - Rows go when a torrent is removed from the library and are pruned at
   startup, after a complete scan of the library.
-- Per-file records come from the warmer, which records each outcome per
-  file. Sessions carry a path, a hash and the file index their stub holds,
-  but the per-torrent table has no file key.
+- Per-file records exist (experimental): the mount path writes them today and
+  the warmer, not built, will record each of its outcomes per file. Sessions
+  carry a path, a hash and the file index their stub holds, but the
+  per-torrent table has no file key.
 
 The endpoint and the fields landed in the roadmap step
 [Readability evidence](../../roadmap.md#readability-evidence), step 2. The

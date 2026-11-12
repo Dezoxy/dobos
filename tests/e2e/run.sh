@@ -82,9 +82,26 @@ report_first_byte() {
   echo "first_byte_ms ($variant): $(grep -o '"first_byte_ms":[0-9a-z]*' <<<"$body" | tr '\n' ' ')" >&2
 }
 
-# health_body: Flodni's /api/torrents/health (the replacement variant sets no token).
+# health_body: Flodni's /api/torrents/health. The container's FLODNI_API_TOKEN, when
+# set, is read inside it and sent as the bearer header (the replacement variant sets none).
 health_body() {
-  docker exec "$flodni" bash -c 'exec 3<>/dev/tcp/127.0.0.1/9080 && printf "GET /api/torrents/health HTTP/1.0\r\nHost: x\r\n\r\n" >&3 && cat <&3' 2>/dev/null || true
+  docker exec "$flodni" bash -c 'h=""
+    if [ -n "${FLODNI_API_TOKEN:-}" ]; then h="Authorization: Bearer $FLODNI_API_TOKEN\r\n"; fi
+    exec 3<>/dev/tcp/127.0.0.1/9080 && printf "GET /api/torrents/health HTTP/1.0\r\nHost: x\r\n${h}\r\n" >&3 && cat <&3' 2>/dev/null || true
+}
+
+# check_files_record: after the full read through the mount, the per-file record
+# (experimental `files` array) of the fixture is printed, not asserted: the mount path
+# records a file once the recorder has run, so poll up to 30 s for a non-empty array.
+# The expected measurement is readability warmed and cache cached.
+check_files_record() {
+  local body="" deadline=$((SECONDS + 30))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    body=$(health_body)
+    grep -q '"files":\[{' <<<"$body" && break
+    sleep 2
+  done
+  echo "FILES (index-cache): $(grep -o '"files":\[[^]]*\]' <<<"$body" | tr '\n' ' ')" >&2
 }
 
 # prom_raw [noauth]: Flodni's /metrics/prometheus with headers, over /dev/tcp. The
@@ -483,6 +500,7 @@ run_variant() {
       return 1
     fi
     echo "ok ($variant): GoStorm 8090 refused POST /torrents with 401, /echo open" >&2
+    check_files_record
   fi
   echo "PASS ($variant): sha256 $actual, $((SECONDS - t0))s" >&2
 

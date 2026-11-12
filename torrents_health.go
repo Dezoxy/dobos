@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -23,6 +24,22 @@ type torrentHealth struct {
 	LastFailureReason   *string `json:"last_failure_reason"`
 	LastFailureSource   *string `json:"last_failure_source"`
 	LastSwarmReadAt     *string `json:"last_swarm_read_at"`
+	// Files is EXPERIMENTAL (README) and must stay the last field: the e2e test matches
+	// "hash":"..."[^}]*"last_swarm_read_at", which a nested object before it would break.
+	Files []fileHealth `json:"files"`
+}
+
+// fileHealth is the per-file warm record as served. Times are RFC 3339 or null; an
+// empty readability or cache is served as "unknown". Readability is about the swarm,
+// cache about the windows on disk; eviction changes only cache.
+type fileHealth struct {
+	FileIndex           int     `json:"file_index"`
+	Readability         string  `json:"readability"`
+	Cache               string  `json:"cache"`
+	FailedAttempts      int64   `json:"failed_attempts"`
+	FirstFailedAt       *string `json:"first_failed_at"`
+	LastAttemptAt       *string `json:"last_attempt_at"`
+	LastSwarmDeliveryAt *string `json:"last_swarm_delivery_at"`
 }
 
 func unixOrNil(sec int64) *string {
@@ -33,6 +50,13 @@ func unixOrNil(sec int64) *string {
 	return &s
 }
 
+func filesOrEmpty(fs []fileHealth) []fileHealth {
+	if fs == nil {
+		return []fileHealth{}
+	}
+	return fs
+}
+
 func strOrNil(s string) *string {
 	if s == "" {
 		return nil
@@ -41,9 +65,12 @@ func strOrNil(s string) *string {
 }
 
 // newTorrentsHealthHandler serves GET /api/torrents/health: the readability record
-// as stored, per torrent. A nil store (state database off or failed to open) answers
+// as stored, per torrent, each with its experimental per-file records (files may be nil).
+// A torrent that has file records and no failure row is listed with a count of 0 and
+// nulls, unless a failure filter is set: ?failing and ?min_failures keep their
+// per-torrent meaning. A nil store (state database off or failed to open) answers
 // 503, because nothing is recorded then.
-func newTorrentsHealthHandler(store readabilityLister, logger *log.Logger) http.HandlerFunc {
+func newTorrentsHealthHandler(store readabilityLister, files func() map[string][]fileHealth, logger *log.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -79,8 +106,14 @@ func newTorrentsHealthHandler(store readabilityLister, logger *log.Logger) http.
 			http.Error(w, "cannot read the readability record", http.StatusInternalServerError)
 			return
 		}
+		var byHash map[string][]fileHealth
+		if files != nil {
+			byHash = files()
+		}
 		out := make([]torrentHealth, 0, len(rows))
+		listed := make(map[string]bool, len(rows))
 		for _, row := range rows {
+			listed[row.Hash] = true
 			out = append(out, torrentHealth{
 				Hash:                row.Hash,
 				ConsecutiveFailures: row.FailCount,
@@ -89,7 +122,16 @@ func newTorrentsHealthHandler(store readabilityLister, logger *log.Logger) http.
 				LastFailureReason:   strOrNil(row.LastReason),
 				LastFailureSource:   strOrNil(row.LastSource),
 				LastSwarmReadAt:     unixOrNil(row.LastSwarmRead),
+				Files:               filesOrEmpty(byHash[row.Hash]),
 			})
+		}
+		if minFailures == 0 {
+			for hash, fs := range byHash {
+				if !listed[hash] {
+					out = append(out, torrentHealth{Hash: hash, Files: filesOrEmpty(fs)})
+				}
+			}
+			sort.Slice(out, func(i, j int) bool { return out[i].Hash < out[j].Hash })
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(struct {
