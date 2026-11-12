@@ -92,6 +92,15 @@ Bugs and data-loss risks. None open.
   first byte of the first read, median 9.5 ms both ways. The fix is correct
   but does not touch the stall. In a stall Flodni logs nothing between the
   pump's start and its end about 30 s later.
+  **Read-ahead against the protected range (2026-11-12):** the engine
+  read-ahead (cache size times percent, split across readers) outran the
+  range `torrstor` protects from eviction by the missing 0.85 safety factor
+  (96 MiB against 81.6 MiB for one reader at 128 MiB and 75%). It now
+  applies the factor. The seeder's upload ratio (piece data sent over video
+  size) was 1.000 in 8 of 8 runs before and in 8 of 8 after, so the engine
+  never fetched a piece twice in this test and the mismatch is not the
+  stall. Stalls: 8 of 8 runs before, 6 of 8 after (two fast runs, noise
+  at this sample size); first-byte median 6 ms to 10 ms on `default`.
   Lead from the stall logs (2026-11-12, unverified): during a stall Flodni
   logs nothing for about 30 s, and the next line is GoStorm's second failed
   public tracker-list download. The e2e network has no outside access, so

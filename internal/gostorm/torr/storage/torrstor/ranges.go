@@ -126,15 +126,20 @@ func CacheReadahead() int64 {
 	return adj
 }
 
+// protectedSafetyPct is the share of the cache that getOffsetRange lets the readers' windows
+// cover; the rest stays swappable so cleanPieces always has something to evict.
+const protectedSafetyPct = 85
+
 // perReaderReadahead splits a whole-cache readahead across the active readers, the same divisor
-// getOffsetRange uses for the protected window. Undivided, a second reader asks the torrent to
-// prefetch more than the cache promises to keep, and what arrives outside the window is evictable
-// on arrival - or pinned and unevictable while still incomplete.
+// getOffsetRange uses for the protected window, and applies the same protectedSafetyPct. Without
+// the factor the engine fetches about 0.75 of the cache ahead while only 0.6375 of it is
+// protected, and what arrives in the gap is evictable on arrival and requested again. Undivided,
+// a second reader asks the torrent to prefetch more than the cache promises to keep.
 func perReaderReadahead(total int64, readers int) int64 {
 	if readers < 1 {
 		readers = 1
 	}
-	ra := total / int64(readers)
+	ra := total / int64(readers) * protectedSafetyPct / 100
 	if ra < minPerReaderReadahead {
 		ra = minPerReaderReadahead
 	}

@@ -254,6 +254,9 @@ run_variant() {
   fi
   echo "PASS ($variant): sha256 $actual, $((SECONDS - t0))s" >&2
 
+  # A graceful stop makes the seeder log its upload stats (piece data sent / video size).
+  docker stop -t 10 "$seeder" >/dev/null 2>&1 || true
+  docker logs "$seeder" 2>&1 | grep 'upload stats' | sed "s/^/($variant) /" >&2 || true
   stop_stack
 }
 

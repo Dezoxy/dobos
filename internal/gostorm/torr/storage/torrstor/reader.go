@@ -277,7 +277,7 @@ func (r *Reader) getOffsetRange() (int64, int64) {
 	// V243-Fix: Reader Protected Range Safety Factor (0.85)
 	// We MUST leave room (15%) for swappable chunks, otherwise cleanPieces can't remove anything
 	// when cache is full, leading to deadlock/OOM.
-	safetyFactor := 0.85
+	safetyFactor := float64(protectedSafetyPct) / 100
 
 	beginOffset := currentOffset - int64(float64(r.cache.capacity/readers)*safetyFactor*float64(100-prc)/100.0)
 	endOffset := currentOffset + int64(float64(r.cache.capacity/readers)*safetyFactor*float64(prc)/100.0)
