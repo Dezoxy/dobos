@@ -43,8 +43,34 @@ func (t *Torrent) VerifiedPieces(fileID int, off, n int64) (verified, total int)
 // requested and the block never verifies (Dezoxy fork).
 func (t *Torrent) RequestRange(fileID int, off, n int64) {
 	if tt, first, last, ok := t.rangePieces(fileID, off, n); ok {
-		tt.DownloadPieces(first, last+1)
+		requestIncomplete(tt, first, last)
 	}
+}
+
+// requestIncomplete raises the incomplete pieces of [first, last] to Normal, one
+// DownloadPieces call per contiguous run. DownloadPieces raises complete pieces too, and a
+// priority on a complete piece is never cleared (only MarkComplete or RAM eviction do),
+// while the engine spends its storage cap on it.
+func requestIncomplete(tt *torrent.Torrent, first, last int) {
+	for _, r := range incompleteRuns(first, last, func(i int) bool { return tt.PieceState(i).Complete }) {
+		tt.DownloadPieces(r[0], r[1])
+	}
+}
+
+// incompleteRuns returns the contiguous runs [begin, end) of pieces in [first, last] for
+// which complete is false.
+func incompleteRuns(first, last int, complete func(int) bool) (runs [][2]int) {
+	for i := first; i <= last; i++ {
+		if complete(i) {
+			continue
+		}
+		if n := len(runs); n > 0 && runs[n-1][1] == i {
+			runs[n-1][1] = i + 1
+		} else {
+			runs = append(runs, [2]int{i, i + 1})
+		}
+	}
+	return runs
 }
 
 // rangePieces resolves a file range to its pieces on one snapshot of the torrent.
