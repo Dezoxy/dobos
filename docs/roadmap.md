@@ -12,106 +12,106 @@ API, the index cache, the playback webhook, the control panel and the
 streaming metrics. Everything else is removed, starting with what runs without
 a switch or calls out to third parties.
 
-1. **Stop calling home and close open endpoints.** Remove telemetry (on by
-   default, posts to the upstream project's endpoint), the update check (polls
-   the upstream repository), the MCP server (unauthenticated, always on) and
-   the `net/http/pprof` import (unauthenticated debug endpoints).
-2. **Remove the dashboard.** `/dashboard` and its API routes, the collector
-   (polls every 5 s, looks up the public IP, broadcasts on the LAN) and the
-   macOS toolbar app that wraps it.
-3. **Remove dead and switched-off code.** NAT-PMP (and `iptables` in the
-   image), the IP blocklist, index seeding, the Samba watchdog,
-   `internal/preload`, `internal/syncer/statestore`, `Config.EngineScripts`
-   and the configuration keys nothing reads.
-4. **Remove upstream packaging.** `docker-windows/`, `install.sh`,
+1. **Stop calling home and close open endpoints.** [FINISHED] Remove telemetry
+   (on by default, posts to the upstream project's endpoint), the update check
+   (polls the upstream repository), the MCP server (unauthenticated, always on)
+   and the `net/http/pprof` import (unauthenticated debug endpoints).
+2. **Remove the dashboard.** [FINISHED] `/dashboard` and its API routes, the
+   collector (polls every 5 s, looks up the public IP, broadcasts on the LAN)
+   and the macOS toolbar app that wraps it.
+3. **Remove dead and switched-off code.** [FINISHED] NAT-PMP (and `iptables` in
+   the image), the IP blocklist, index seeding, the Samba watchdog,
+   `internal/preload`, `internal/syncer/statestore`, `Config.EngineScripts` and
+   the configuration keys nothing reads.
+4. **Remove upstream packaging.** [FINISHED] `docker-windows/`, `install.sh`,
    `tiramisu.service`. The container image is the only supported install.
-5. **End-to-end streaming test.** A local tracker seeds a small torrent,
-   Flodni mounts it and the test reads the file back and compares hashes. It
-   must pass before steps 7 and 8, which touch the read path.
-6. **Keep private torrents private.** A library add without a magnet merges
-   public UDP trackers into every release, private or not, and GoStorm's
+5. **End-to-end streaming test.** [FINISHED] A local tracker seeds a small
+   torrent, Flodni mounts it and the test reads the file back and compares
+   hashes. It must pass before steps 7 and 8, which touch the read path.
+6. **Keep private torrents private.** [FINISHED] A library add without a magnet
+   merges public UDP trackers into every release, private or not, and GoStorm's
    default retracker mode appends public trackers to every torrent; a DHT
-   announce may also start before the private flag is known. Fix all three
-   and pin them with unit tests at those seams. The end-to-end test's
-   private fixture then guards that streaming still works.
-7. **Remove catalogue sync.** The scheduler, the movie, TV and watchlist
-   engines, the TMDB, Torrentio and Rotten Tomatoes clients, the built-in
-   Prowlarr client, their control panel cards and `Config.LogDir`, which only
-   the engines' log files use.
-8. **Remove music and audiobooks.** `internal/musicimport`,
+   announce may also start before the private flag is known. Fix all three and
+   pin them with unit tests at those seams. The end-to-end test's private
+   fixture then guards that streaming still works.
+7. **Remove catalogue sync.** [FINISHED] The scheduler, the movie, TV and
+   watchlist engines, the TMDB, Torrentio and Rotten Tomatoes clients, the
+   built-in Prowlarr client, their control panel cards and `Config.LogDir`,
+   which only the engines' log files use.
+8. **Remove music and audiobooks.** [FINISHED] `internal/musicimport`,
    `cmd/musicimport`, `internal/audio` and the audio parts of
    `internal/library`, `internal/metadb`, `startup.go` and `main.go`, then
-   `internal/prowlarr`, `Config.Prowlarr` and `music_discovery`, which only
-   the music import still uses.
+   `internal/prowlarr`, `Config.Prowlarr` and `music_discovery`, which only the
+   music import still uses.
 
 ## Own identity and must-fix bugs
 
-1. **Rename to Flodni.** Go module, binary, image default paths, `FLODNI_*`
-   environment variables with the old names kept as aliases. Persisted file
-   names stay, so existing state carries over.
-2. **Keep working stubs when a pack replaces them.** Replacing a pack deletes
-   stubs that played before the new release is known to be readable
-   (`internal/library/manager.go`). A pack still wins, but the old stubs go
-   only once the new ones are confirmed readable.
+1. **Rename to Flodni.** [FINISHED] Go module, binary, image default paths,
+   `FLODNI_*` environment variables with the old names kept as aliases.
+   Persisted file names stay, so existing state carries over.
+2. **Keep working stubs when a pack replaces them.** [FINISHED] Replacing a pack
+   deletes stubs that played before the new release is known to be readable
+   (`internal/library/manager.go`). A pack still wins, but the old stubs go only
+   once the new ones are confirmed readable.
 
-3. **Atomic writes and bounded servers.** Stub and config writes go through a
-   temporary file, sync and rename; the control HTTP server gets read, write
-   and idle timeouts.
+3. **Atomic writes and bounded servers.** [FINISHED] Stub and config writes go
+   through a temporary file, sync and rename; the control HTTP server gets read,
+   write and idle timeouts.
 
 Releases and deployment are scheduled separately.
 
 ## Maintainability
 
-1. **Clear the dependency backlog.** Merge or supersede the open Dependabot
-   pull requests, align the vendored engine's `go.mod` with patched versions,
-   and run the engine's private-torrent tests in CI.
-2. **End-to-end coverage for replacement.** A second fixture filed over the
-   first as the same TV episode, so the readability check before a
+1. **Clear the dependency backlog.** [FINISHED] Merge or supersede the open
+   Dependabot pull requests, align the vendored engine's `go.mod` with patched
+   versions, and run the engine's private-torrent tests in CI.
+2. **End-to-end coverage for replacement.** [FINISHED] A second fixture filed
+   over the first as the same TV episode, so the readability check before a
    replacement runs against the real engine.
-3. **Break up `main.go`.** Phase a: split it into files by concern in the
-   same package, as a pure move. Phase b: move the read-ahead cache into its
+3. **Break up `main.go`.** [FINISHED] Phase a: split it into files by concern in
+   the same package, as a pure move. Phase b: move the read-ahead cache into its
    own package with unit tests, and give the HTTP routes their own mux. The
-   `App` struct that replaces the shared package-level maps waits for tests
-   on the read path (see ideas).
-4. **Make failures visible.** Phase a: triage every unchecked error, fix the
-   ones that hide failures, and gate new ones with errcheck. Phase b: report
-   sessions where a file was opened but never served bytes through the API.
-   Structured logging with `slog` waits (see ideas).
+   `App` struct that replaces the shared package-level maps waits for tests on
+   the read path (see ideas).
+4. **Make failures visible.** [FINISHED] Phase a: triage every unchecked error,
+   fix the ones that hide failures, and gate new ones with errcheck. Phase b:
+   report sessions where a file was opened but never served bytes through the
+   API. Structured logging with `slog` waits (see ideas).
 
 ## Hardening
 
-1. **Opt-in token on the control API.** `api_token` or `FLODNI_API_TOKEN`
-   enables bearer-token auth on every control route except the static panel
-   page; webhooks may pass the token as a query parameter. Unset keeps
-   today's open API.
-2. **Unit tests on the read path.** Cover the read decision tree in
-   `handle.go` and the pump's decision helpers, the prerequisite for the
-   `App` struct.
-3. **Stubs land where the mount serves them.** The library writes stubs
-   under the configured `physical_source_path` while FUSE serves the path
-   given on the command line; make them one value, or refuse to start when
-   they differ.
-4. **Bound and protect GoStorm's server.** Read-header and idle timeouts on
-   port 8090, and the same opt-in token, since it exposes torrent control
-   and shutdown.
+1. **Opt-in token on the control API.** [FINISHED] `api_token` or
+   `FLODNI_API_TOKEN` enables bearer-token auth on every control route except
+   the static panel page; webhooks may pass the token as a query parameter.
+   Unset keeps today's open API.
+2. **Unit tests on the read path.** [FINISHED] Cover the read decision tree in
+   `handle.go` and the pump's decision helpers, the prerequisite for the `App`
+   struct.
+3. **Stubs land where the mount serves them.** [FINISHED] The library writes
+   stubs under the configured `physical_source_path` while FUSE serves the path
+   given on the command line; make them one value, or refuse to start when they
+   differ.
+4. **Bound and protect GoStorm's server.** [FINISHED] Read-header and idle
+   timeouts on port 8090, and the same opt-in token, since it exposes torrent
+   control and shutdown.
 
 ## Reliability
 
-1. **A health endpoint.** `GET /api/health` reports the mount, the engine and
-   the state database, each with a status and a reason, and the container
-   health check uses it instead of `mountpoint` alone.
-2. **A shutdown deadline.** Shutdown saves state and unmounts within a
-   bounded time and exits even when the unmount hangs, so a restart cannot
+1. **A health endpoint.** [FINISHED] `GET /api/health` reports the mount, the
+   engine and the state database, each with a status and a reason, and the
+   container health check uses it instead of `mountpoint` alone.
+2. **A shutdown deadline.** [FINISHED] Shutdown saves state and unmounts within
+   a bounded time and exits even when the unmount hangs, so a restart cannot
    block forever.
-3. **Reads against slow seeders.** Reproduce in the end-to-end test the
-   stalls seen against a seeder with a shallow request pipeline, then fix the
-   leecher's request timeouts so a sequential read completes.
-4. **Characterization tests for the library.** Pin stub naming, stub
+3. **Reads against slow seeders.** [FINISHED] Reproduce in the end-to-end test
+   the stalls seen against a seeder with a shallow request pipeline, then fix
+   the leecher's request timeouts so a sequential read completes.
+4. **Characterization tests for the library.** [FINISHED] Pin stub naming, stub
    contents and one-stub-per-episode filing for movies, episodes and season
    packs, so later restructuring cannot change them unnoticed.
-5. **An interface for the native bridge.** The read path calls the engine
-   through an interface instead of the concrete client, and tests cover the
-   fetch, prefetch and pump branches that only the end-to-end test reaches
+5. **An interface for the native bridge.** [FINISHED] The read path calls the
+   engine through an interface instead of the concrete client, and tests cover
+   the fetch, prefetch and pump branches that only the end-to-end test reaches
    today. This is the last prerequisite for the `App` struct.
 6. **No stall after a tail probe.** A read that follows a tail read stalls
    for about 30 s in the end-to-end test. The pump's grace period is not the
@@ -126,30 +126,30 @@ it. Which release to replace, and when, is decided by tools outside it.
 These steps do not touch the read path and do not wait for Reliability
 step 6.
 
-1. **Record the decision.** An ADR: Flodni fills and protects its own cache
-   and records whether its files read; choosing and replacing releases
-   stays outside. It weighs an external reader through the mount, warming
-   in process and warming on the media server's first scan, and names what
-   outside tools may rely on. Everything in it is labelled designed until
-   the step that builds it lands.
-2. **A readability record over the API.** The state database already counts
-   sessions that ended with a failed read and nothing served, per torrent,
-   but no endpoint reads it back. Add the time of the last read the swarm
-   served and the reason and source of the last failure, keep the rule
-   that only bytes from the swarm clear it, and serve it read-only at
-   `GET /api/torrents/health` with the full hash, so outside tools stop
-   parsing logs and stub names. Rows of torrents that left the library are
-   pruned at startup, the endpoint answers 503 when the state database is
-   off, and the README documents the fields as the supported contract.
-3. **One log line per closed session.** A JSON line with the hash, file
-   index, path, outcome, bytes served by serving path, whether the swarm
-   served a read, time to first byte and duration, so a log store keeps
-   what the 200-entry ring behind `/api/sessions` forgets. The existing
-   `[DeadSwarm]` and `[TTFF]` lines stay as they are.
-4. **Scrapeable metrics.** Prometheus text exposition on its own path, next
-   to the JSON the panel reads: the time-to-first-byte histograms, dead-swarm
-   verdicts, warmup cache hits by source, cache bytes and evictions. Later
-   steps add their own series in their own pull requests.
+1. **Record the decision.** [FINISHED] An ADR: Flodni fills and protects its own
+   cache and records whether its files read; choosing and replacing releases
+   stays outside. It weighs an external reader through the mount, warming in
+   process and warming on the media server's first scan, and names what outside
+   tools may rely on. Everything in it is labelled designed until the step that
+   builds it lands.
+2. **A readability record over the API.** [FINISHED] The state database already
+   counts sessions that ended with a failed read and nothing served, per
+   torrent, but no endpoint reads it back. Add the time of the last read the
+   swarm served and the reason and source of the last failure, keep the rule
+   that only bytes from the swarm clear it, and serve it read-only at `GET
+   /api/torrents/health` with the full hash, so outside tools stop parsing logs
+   and stub names. Rows of torrents that left the library are pruned at startup,
+   the endpoint answers 503 when the state database is off, and the README
+   documents the fields as the supported contract.
+3. **One log line per closed session.** [FINISHED] A JSON line with the hash,
+   file index, path, outcome, bytes served by serving path, whether the swarm
+   served a read, time to first byte and duration, so a log store keeps what the
+   200-entry ring behind `/api/sessions` forgets. The existing `[DeadSwarm]` and
+   `[TTFF]` lines stay as they are.
+4. **Scrapeable metrics.** [FINISHED] Prometheus text exposition on its own
+   path, next to the JSON the panel reads: the time-to-first-byte histograms,
+   dead-swarm verdicts, warmup cache hits by source, cache bytes and evictions.
+   Later steps add their own series in their own pull requests.
 
 ## Readiness and protection
 
