@@ -67,9 +67,11 @@ var diskQuotaGB int64
 // DiskWarmup is the global instance, nil when disabled.
 var DiskWarmup *DiskWarmupCache
 
-// OnWarmupStateChange, if set, is called synchronously from the single writeWorker goroutine at
-// the exact moment a head warmup fetch starts (active=true) or completes (active=false) - wired
-// up once at startup (main.go) to signal the anacrolix-torrent fork's Torrent.SetWarmupActive.
+// OnWarmupStateChange, if set, is called synchronously from the single writeWorker goroutine
+// when a head warmup starts (active=true, right after the file is created and its first chunk
+// written) or completes (active=false) - wired up once at startup (main.go) to signal the
+// anacrolix-torrent fork's Torrent.SetWarmupActive. It runs after the write's locks are
+// released, so it may call back into the cache.
 // Deliberately synchronous, not polled: WriteChunk() only enqueues onto writeCh and returns
 // immediately, so a caller checking IsWarmingUp() right after WriteChunk() returns can race ahead
 // of this worker actually processing the write - this callback fires precisely when the state
@@ -439,7 +441,7 @@ func (d *DiskWarmupCache) closeHandle(path string) {
 		}
 	}
 	// Aborted warmups (eviction, hash removal, idle close) never reach the
-	// completion branch in processWrite that LoadAndDeletes warmupStarts —
+	// completion branch in writeHeadLocked that LoadAndDeletes warmupStarts —
 	// clear it here so the entry doesn't leak forever under a rotating cache.
 	d.warmupStarts.Delete(path)
 }
@@ -500,6 +502,38 @@ func (d *DiskWarmupCache) processWrite(hash string, fileID int, data []byte, off
 
 	path := d.filePath(hash, fileID)
 
+	// Quota enforcement takes d.mu and then tailMu, so it runs before this write takes
+	// tailMu. The check is advisory: a file created or removed meanwhile only changes
+	// whether eviction ran, never the accounting.
+	// Only a chunk at offset 0 can create the file, so only it may make room for it.
+	if _, err := os.Stat(path); off == 0 && os.IsNotExist(err) {
+		if err := os.MkdirAll(d.dir, 0755); err != nil {
+			logf.Printf("[DiskWarmup] mkdir %s failed: %v", d.dir, err)
+		}
+		d.mu.Lock()
+		d.enforceQuotaLocked(FileSize)
+		d.mu.Unlock()
+	}
+
+	started, completed := d.writeHeadLocked(path, off, data)
+	if started && OnWarmupStateChange != nil {
+		OnWarmupStateChange(hash, fileID, true)
+	}
+	if completed && OnWarmupStateChange != nil {
+		OnWarmupStateChange(hash, fileID, false)
+	}
+}
+
+// writeHeadLocked performs the whole head write - checks, create, WriteAt, size
+// bookkeeping - under tailMu, the lock RemoveHash and quota eviction hold while they
+// unlink and subtract. A removal therefore lands entirely before or after a write: it
+// cannot unlink the file under WriteAt, leave a stale size entry behind, or lose the
+// bytes this write added to totalSize. Lock order stays d.mu -> tailMu -> per-file;
+// nothing here takes d.mu, and the state callbacks run after the caller releases tailMu.
+func (d *DiskWarmupCache) writeHeadLocked(path string, off int64, data []byte) (started, completed bool) {
+	d.tailMu.Lock()
+	defer d.tailMu.Unlock()
+
 	if val, ok := d.sizeCache.Load(path); ok {
 		if entry := val.(sizeEntry); entry.size > FileSize {
 			return
@@ -512,20 +546,20 @@ func (d *DiskWarmupCache) processWrite(hash string, fileID int, data []byte, off
 	// Head files must stay dense: GetAvailableRange reports their on-disk size as
 	// contiguous coverage from 0 (pump start offset, warmup gates, ReadAt), and a hole
 	// below that size reads back as zeros, not as a short read. A write that would leave
-	// one is dropped - the sequential pump rewrites that range in order anyway.
+	// one is dropped - the sequential pump rewrites that range in order anyway. A missing
+	// file has size 0, so a chunk past offset 0 never (re)creates it.
 	prevSize := d.headSize(path)
 	if off > prevSize {
 		return
 	}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if err := os.MkdirAll(d.dir, 0755); err != nil {
-			logf.Printf("[DiskWarmup] mkdir %s failed: %v", d.dir, err)
+		// A head file starts at 0. Whatever size the cache still holds for a vanished
+		// file is stale; creating the file at off > 0 would hide a hole behind it.
+		if off != 0 {
+			d.sizeCache.Delete(path)
+			return
 		}
-
-		d.mu.Lock()
-		d.enforceQuotaLocked(FileSize)
-		d.mu.Unlock()
 		d.missing.Delete(path)
 
 		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
@@ -538,9 +572,7 @@ func (d *DiskWarmupCache) processWrite(hash string, fileID int, data []byte, off
 		d.handles.Store(path, newCh)
 		d.warmupStarts.Store(path, time.Now())
 		logf.Printf("[DiskWarmup] STARTING %s at offset %d", filepath.Base(path), off)
-		if OnWarmupStateChange != nil {
-			OnWarmupStateChange(hash, fileID, true)
-		}
+		started = true
 	}
 
 	ch, err := d.getHandle(path)
@@ -576,10 +608,9 @@ func (d *DiskWarmupCache) processWrite(hash string, fileID int, data []byte, off
 			recordWarmupDuration(time.Since(startVal.(time.Time)))
 		}
 		logf.Printf("[DiskWarmup] COMPLETED %s", filepath.Base(path))
-		if OnWarmupStateChange != nil {
-			OnWarmupStateChange(hash, fileID, false)
-		}
+		completed = true
 	}
+	return
 }
 
 func (d *DiskWarmupCache) filePath(hash string, fileID int) string {

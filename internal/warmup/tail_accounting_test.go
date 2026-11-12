@@ -136,14 +136,13 @@ func TestTailAccountingUnderConcurrency(t *testing.T) {
 			wg.Add(1)
 			go func(g int) {
 				defer wg.Done()
-				// Tails share and split files and race RemoveHash. Heads use hashes
-				// that are never removed: a head write racing RemoveHash on the same
-				// hash already drifts the total (head path, not under tailMu).
+				// Tails and heads share hashes with each other and with RemoveHash, so a
+				// head write races a removal of the very same file.
 				hash := fmt.Sprintf("h%d", g%3)
 				for i := 0; i < 40; i++ {
 					off := tailStart + int64(i%4)*(128<<10)
 					d.writeTail(hash, 1, bytes.Repeat([]byte{byte(g)}, 128<<10), off, fileSize)
-					d.WriteChunk(fmt.Sprintf("head%d", g%3), 2, bytes.Repeat([]byte{byte(g)}, 64<<10), 0)
+					d.WriteChunk(hash, 2, bytes.Repeat([]byte{byte(g)}, 64<<10), int64(i%3)*(64<<10))
 					if i%10 == 9 && g == 0 {
 						d.RemoveHash(hash)
 					}
