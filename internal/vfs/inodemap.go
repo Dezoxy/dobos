@@ -641,6 +641,21 @@ func (im *InodeMap) Stats() (files, dirs, hits, misses int64) {
 	return
 }
 
+// LibraryHashCount returns how many distinct torrents have a stub path in the map. It
+// only reads, under each shard's read lock.
+func (im *InodeMap) LibraryHashCount() int {
+	seen := map[string]struct{}{}
+	for _, s := range im.shards {
+		s.mu.RLock()
+		for _, key := range s.nameMap {
+			h, _ := splitInodeKey(key)
+			seen[h] = struct{}{}
+		}
+		s.mu.RUnlock()
+	}
+	return len(seen)
+}
+
 func (im *InodeMap) PruneMissing(foundFiles map[string]bool) int {
 	var toRemove []string
 

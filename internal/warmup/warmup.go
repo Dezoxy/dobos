@@ -150,6 +150,29 @@ type tailSpan struct{ start, end int64 }
 type tailRange struct {
 	mu     sync.Mutex
 	ranges []tailSpan // disjoint, merged, sorted by start
+	window int64      // length of the tail window; 0 means TailWarmupSize (a short file has less)
+}
+
+// setWindow records the length of the file's tail window, so a file shorter than
+// TailWarmupSize can complete.
+func (tr *tailRange) setWindow(n int64) {
+	tr.mu.Lock()
+	tr.window = n
+	tr.mu.Unlock()
+}
+
+// snapshot returns the covered bytes and the window length, without any syscall.
+func (tr *tailRange) snapshot() (covered, window int64) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	for _, s := range tr.ranges {
+		covered += s.end - s.start
+	}
+	window = tr.window
+	if window <= 0 {
+		window = TailWarmupSize
+	}
+	return covered, window
 }
 
 // add merges [start,end) into the covered set.
@@ -188,7 +211,10 @@ func (tr *tailRange) covers(start, end int64) bool {
 }
 
 // complete reports full coverage of the tail window.
-func (tr *tailRange) complete() bool { return tr.covers(0, TailWarmupSize) }
+func (tr *tailRange) complete() bool {
+	_, window := tr.snapshot()
+	return tr.covers(0, window)
+}
 
 // DiskWarmupCache persists the first 128MB of each streamed file to SSD.
 type DiskWarmupCache struct {
@@ -342,6 +368,7 @@ func (d *DiskWarmupCache) scanExisting(dropHeads bool) (total int64, dropped, re
 				continue
 			}
 			total += info.Size()
+			d.sizeCache.Store(full, sizeEntry{size: info.Size(), updatedAt: time.Now()})
 		}
 	}
 	return total, dropped, residues, nil
@@ -564,6 +591,9 @@ func (d *DiskWarmupCache) writeHeadLocked(path string, off int64, data []byte) (
 			return
 		}
 		d.missing.Delete(path)
+		// The new file holds nothing yet: a size entry left by the vanished file would
+		// be stored as the new coverage and let a later out-of-order chunk leave a hole.
+		prevSize = 0
 
 		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 		if err != nil {
@@ -644,8 +674,9 @@ func (d *DiskWarmupCache) GetAvailableRange(hash string, fileID int) int64 {
 		}
 	}
 
-	if val, ok := d.sizeCache.Load(path); ok {
-		entry := val.(sizeEntry)
+	cached, hadEntry := d.sizeCache.Load(path)
+	if hadEntry {
+		entry := cached.(sizeEntry)
 		if time.Since(entry.updatedAt) < 10*time.Second {
 			return entry.size
 		}
@@ -653,6 +684,10 @@ func (d *DiskWarmupCache) GetAvailableRange(hash string, fileID int) int64 {
 
 	fi, err := os.Stat(path)
 	if err != nil {
+		// Only the entry that was seen: a writer may have stored a newer one since.
+		if hadEntry {
+			d.sizeCache.CompareAndDelete(path, cached)
+		}
 		d.missing.Store(path, time.Now())
 		return 0
 	}
@@ -666,7 +701,19 @@ func (d *DiskWarmupCache) GetAvailableRange(hash string, fileID int) int64 {
 		return 0
 	}
 
-	d.sizeCache.Store(path, sizeEntry{size: fi.Size(), updatedAt: time.Now()})
+	// The stat above ran without a lock, so a writer may have stored a newer size
+	// meanwhile: replace only the entry that was seen, and otherwise believe the writer.
+	fresh := sizeEntry{size: fi.Size(), updatedAt: time.Now()}
+	if hadEntry {
+		if !d.sizeCache.CompareAndSwap(path, cached, fresh) {
+			if cur, ok := d.sizeCache.Load(path); ok {
+				return cur.(sizeEntry).size
+			}
+			return 0 // the entry was deleted meanwhile: the file was removed or evicted
+		}
+	} else if actual, loaded := d.sizeCache.LoadOrStore(path, fresh); loaded {
+		return actual.(sizeEntry).size
+	}
 	return fi.Size()
 }
 
@@ -772,6 +819,7 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 	defer d.tailMu.Unlock()
 
 	tr := d.tailRangeFor(path)
+	tr.setWindow(tailLen)
 	if tr.complete() {
 		return
 	}
@@ -791,6 +839,7 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 		d.tailCoverage.Delete(path)
 		removeFile(path + coverSuffix)
 		tr = d.tailRangeFor(path)
+		tr.setWindow(tailLen)
 		tailCh := &cachedHandle{f: f}
 		tailCh.lastUsedNano.Store(time.Now().UnixNano())
 		if old, loaded := d.handles.Swap(path, tailCh); loaded {
@@ -998,6 +1047,7 @@ func (d *DiskWarmupCache) EnsureTail(hash string, fileID int, fileSize int64) {
 		}
 		tailLen := fileSize - tailStart
 		tr := d.tailRangeFor(path)
+		tr.setWindow(tailLen)
 
 		started := time.Now()
 		var fetched int64
@@ -1171,7 +1221,7 @@ func (d *DiskWarmupCache) loadCoverage(path string) bool {
 	if err != nil {
 		return false
 	}
-	tr := &tailRange{}
+	tr := &tailRange{window: cf.TailLen}
 	for _, sp := range cf.Spans {
 		if sp[0] < 0 || sp[1] <= sp[0] || sp[1] > cf.TailLen || sp[1] > fi.Size() {
 			return false

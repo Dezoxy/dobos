@@ -385,6 +385,7 @@ func main() {
 				// Reachability outcomes: the readability record at /api/torrents/health
 				// reports the counter, so a client can tell a dead release from a slow one.
 				native.ReachabilityOutcome = newReachabilityRecorder(stateDB, logger)
+				startReadabilityGauge(stateDB, globalInodeMap.LibraryHashCount, backgroundStopChan, logger)
 
 				banDB := stateDB
 				torrent.V304SetOnBan(func(ip string) {

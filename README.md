@@ -202,9 +202,11 @@ and `[DeadSwarm]` lines are unchanged, and their wording is not a contract.
 With the warmup cache on, a new head file that would pass the quota evicts
 whole media files, head and tail together. Files never played go first, then
 played files; each class goes oldest written first. This is built and runs
-today. What is not built: the list of which files are warm and warm on add
-(both designed in `docs/roadmap.md`), and evicting the least recently read
-file (an idea in `docs/ideas.md`, not planned).
+today. The cache also keeps an in-memory list of which files are warm; it is
+internal and not served, and only the aggregates below are exported
+(`flodni_warmup_files`). What is not built: warm on add (designed in
+`docs/roadmap.md`), and evicting the least recently read file (an idea in
+`docs/ideas.md`, not planned).
 
 - **Played** means a playback confirmed by the media server webhook (Plex or
   Jellyfin), never a scanner's read. A webhook marks at most one file: a
@@ -287,10 +289,12 @@ scraper on the same host or Docker network.
 | `flodni_warmup_cache_quota_bytes` | gauge | none | Its size limit; only with the cache enabled. |
 | `flodni_warmup_evictions_total` | counter | `window` | Files removed by quota eviction, `head` or `tail`. |
 | `flodni_warmup_evicted_bytes_total` | counter | `window` | Their apparent size in bytes. |
+| `flodni_warmup_files` | gauge | `window` | Media files with a warm window on disk now: `head` counts heads at or above the 1 MiB ready floor, `tail` counts tails fully covered. Only with the cache enabled. |
 | `flodni_playback_starts_total` | counter | none | Playbacks the media server webhook confirmed (not playing to playing). |
 | `flodni_warmup_cold_reopen_total` | counter | `previously_played` | Confirmed plays that opened cold on a file quota eviction had removed, `true` or `false` by whether it had been played before. |
 | `flodni_warmup_unverified_drops_total` | counter | none | Warmup blocks, head or tail, never written because their pieces did not verify in time. |
 | `flodni_warmup_write_queue_drops_total` | counter | none | Head chunks dropped because the warmup write queue was full. |
+| `flodni_readability_torrents` | gauge | `state` | Library torrents by readability: `failed` has a failure streak, `ok` has none and a read served by the swarm, `never_read` is the rest (no record, or a streak reset by a metainfo without a read). Not exported when the state database is off. |
 | `flodni_readahead_cache_bytes` | gauge | none | Bytes in the read-ahead cache. |
 | `flodni_readahead_cache_active_bytes` | gauge | none | The part that is not stale. |
 | `flodni_readahead_cache_entries` | gauge | none | Entries in the cache. |
@@ -322,6 +326,17 @@ to be stable; buckets and help text are not.
 - `flodni_warmup_cache_bytes` is a running total, resynced from the disk on
   each eviction walk. It can drift in between; the known causes are in
   `docs/ideas.md`.
+- `flodni_warmup_files` reads the cache's in-memory index. A head removed
+  behind the cache's back shows until the next lookup of it, a tail until
+  the next restart. Warm bytes are `flodni_warmup_cache_bytes`. The series is a count of files, not of
+  complete media files: a head counts once it holds 1 MiB, whatever the
+  head window size.
+- `flodni_readability_torrents` is recomputed every 60 s, so a scrape stays
+  in memory. The library size is the number of distinct torrents
+  looked up through the mount, so a new torrent counts once it appears
+  there. Records of torrents that left the library are not subtracted (a
+  startup prune removes them), and `never_read` stops at 0 rather than
+  going negative.
 - Engine and peer counters, read-ahead evictions and Go runtime metrics are
   not exported yet (`docs/ideas.md`).
 

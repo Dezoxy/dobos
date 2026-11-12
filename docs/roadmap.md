@@ -160,7 +160,7 @@ only hash-checked data reaches the cache and tail coverage survives a
 restart. Steps 2 and 3 wait until Reliability step 6 is fixed or its
 trigger is known.
 
-1. **Honest cache state and eviction.** Phase a [FINISHED]: the cache
+1. **Honest cache state and eviction.** [FINISHED] Phase a: the cache
    remembers per file when a playback confirmed by the media server's
    webhook last played it, and whether the quota evicted it; the state
    database keeps both across restarts. A scanner's read does not mark a
@@ -172,12 +172,13 @@ trigger is known.
    written first, then played files, oldest first. It removes bytes only;
    the readability record stays. Each eviction is logged, and two counters
    report how many plays started on a file the quota had evicted, out of how
-   many plays. Phase b: one internal call lists
-   which files have their head and tail windows on disk now, without a
-   `stat` per file. It is not served; it feeds gauges of warm files next to
-   the cache bytes, quota and evictions, and gauges of torrents by
-   readability (read, failed, never read). Evicting the least recently read
-   file is not built: it waits for those counters (see ideas).
+   many plays. Phase b: one internal call lists which files have their head
+   and tail windows on disk now, without a `stat` per file. It is not
+   served; it feeds a gauge of warm files by window, next to the cache
+   bytes, quota and evictions. A gauge of torrents by readability (ok,
+   failed, never read) is built on the readability record. Evicting the
+   least recently read file is not built: it waits for those counters (see
+   ideas).
 2. **Warm on add.** After a library add returns, a background queue with a
    small fixed worker pool fills the head and tail windows of each new file
    through the verified path, straight from the engine and not through the
@@ -314,3 +315,11 @@ trigger is known.
   `flodni_playback_starts_total` and `flodni_warmup_cold_reopen_total`
   report plays and plays that opened on an evicted file. The per-file listing
   and its gauges (phase b), warm on add and catch-up are not built.
+- 2026-11-12, readiness step 1, phase b: the cache keeps an internal
+  in-memory list of which files have their head and tail windows on disk (not
+  served), and a tail of a file shorter than the tail window can now complete.
+  `flodni_warmup_files{window}` counts warm heads and fully covered tails, and
+  `flodni_readability_torrents{state}` counts library torrents that read, that
+  failed and that were never read, refreshed every 60 s. A head recreated at
+  offset 0 over a stale size entry no longer leaves a hole. Warm on add and
+  catch-up are not built.
