@@ -23,7 +23,7 @@ and no support.
 
 | Document | What it holds |
 |---|---|
-| [docs/roadmap.md](docs/roadmap.md) | What is planned. Empty for now. |
+| [docs/roadmap.md](docs/roadmap.md) | What is planned, in order, and what is done. |
 | [docs/ideas.md](docs/ideas.md) | What could be improved, not yet planned. |
 | [docs/architecture/README.md](docs/architecture/README.md) | The C4 model, its views and the decisions. |
 | [README.upstream.md](README.upstream.md) | Tiramisu's user guide as inherited: install, configuration, API. |

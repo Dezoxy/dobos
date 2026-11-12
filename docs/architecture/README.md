@@ -26,6 +26,7 @@ to a media server.
 ## Key decisions
 
 - [0001 Hard-fork Tiramisu as Flodni](decisions/0001-hard-fork-tiramisu.md)
+- [0002 Record readability in Flodni, choose releases outside it](decisions/0002-readability-evidence-in-engine.md)
 
 New ADR: copy [templates/adr.md](templates/adr.md) to
 `decisions/NNNN-short-title.md`. Keep this index up to date; there is

@@ -270,3 +270,6 @@ trigger is known.
 - 2026-11-11, reliability step 5: the read path reaches the engine through an
   interface, and tests with a fake engine cover fetch, singleflight, prefetch
   and the pump; handle.go and pump.go coverage went from 32% to 80%.
+- 2026-11-12, readability evidence step 1: ADR 0002 records that Flodni
+  fills and protects its cache and records readability while the choice of
+  release stays outside; what is not built yet is labelled designed.
