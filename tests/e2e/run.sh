@@ -53,6 +53,33 @@ dump_diagnostics() {
   docker logs --tail 200 "$seeder" >&2 || true
 }
 
+# diag_dir is created on first use and, unlike $work, survives the run.
+diag_dir=""
+
+# slow_diagnostics variant seconds: print and save both containers' recent logs.
+slow_diagnostics() {
+  local variant=$1 seconds=$2 file
+  [ -n "$diag_dir" ] || diag_dir=$(mktemp -d)
+  file="$diag_dir/slow-$variant-$(date +%H%M%S).log"
+  echo "SLOW ($variant): full read ${seconds}s" >&2
+  {
+    echo "=== flodni $flodni: last 300 lines ==="
+    docker logs --tail 300 "$flodni" 2>&1 || true
+    echo "=== seeder $seeder: last 300 lines ==="
+    docker logs --tail 300 "$seeder" 2>&1 || true
+  } >"$file"
+  cat "$file" >&2
+  echo "SLOW ($variant): diagnostics saved to $file" >&2
+}
+
+# report_first_byte variant: the first_byte_ms of the stub's sessions, read from
+# Flodni's /api/sessions on its metrics port (no curl in the image, so bash's /dev/tcp).
+report_first_byte() {
+  local variant=$1 body
+  body=$(docker exec "$flodni" bash -c 'exec 3<>/dev/tcp/127.0.0.1/9080 && printf "GET /api/sessions HTTP/1.0\r\nHost: x\r\n\r\n" >&3 && cat <&3' 2>/dev/null || true)
+  echo "first_byte_ms ($variant): $(grep -o '"first_byte_ms":[0-9a-z]*' <<<"$body" | tr '\n' ' ')" >&2
+}
+
 is_running() {
   [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]
 }
@@ -196,7 +223,11 @@ run_variant() {
     return 1
   fi
   actual=${actual%% *}
-  echo "full read of $variant took $((SECONDS - full_t0))s" >&2
+  local full_s=$((SECONDS - full_t0))
+  echo "full read of $variant took ${full_s}s" >&2
+  report_first_byte "$variant"
+  # Only reported for now: the bound comes once the stall is fixed.
+  if [ "$full_s" -gt 20 ]; then slow_diagnostics "$variant" "$full_s"; fi
   if [ "$actual" != "$expected" ]; then
     echo "FAIL ($variant): sha256 mismatch: got $actual, want $expected" >&2
     dump_diagnostics

@@ -45,22 +45,30 @@ func newReader(file *torrent.File, cache *Cache) *Reader {
 	r := new(Reader)
 	r.file = file
 	r.Reader = file.NewReader()
+	r.attach(cache)
+	return r
+}
 
+// attach wires a reader to its cache. The cache and isUse must be set before
+// SetReadahead: it returns early without them, and the anacrolix reader kept its default
+// 48 MiB read-ahead until the next stats tick (about 1 s), enough with a second reader to
+// overrun the cache. The initial value is what that tick would set: the cache read-ahead
+// split across the active readers.
+func (r *Reader) attach(cache *Cache) {
 	// V231: Activate Aggressive mode immediately on reader creation
 	// to boost initial buffering before the Plex webhook triggers.
 	cache.SetAggressive(true, 0)
 
-	r.SetReadahead(0)
 	r.cache = cache
 	r.isUse = true
-	cache.activeReaders.Add(1)
+	n := cache.activeReaders.Add(1)
+	r.SetReadahead(perReaderReadahead(CacheReadahead(), int(n)))
 
 	cache.muReaders.Lock()
 	if cache.readers != nil {
 		cache.readers[r] = struct{}{}
 	}
 	cache.muReaders.Unlock()
-	return r
 }
 
 func (r *Reader) Seek(offset int64, whence int) (n int64, err error) {

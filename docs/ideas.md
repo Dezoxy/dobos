@@ -80,6 +80,27 @@ Bugs and data-loss risks. None open.
   as a fixes-only engine change, stop counting pieces that are complete
   toward the cap. Larger files than the cache are the normal case, so this
   matters beyond the test.
+  **Uncapped-storage experiment (2026-11-12):** with GoStorm's storage
+  capacity removed (`capFunc` reporting no cap) the stall dropped to 3 of 8
+  runs, at 58 to 59 s, but did not go away; reverted. So the cap is not the
+  whole cause. **New readers' read-ahead (2026-11-12):** `newReader` called
+  `SetReadahead` before `cache` was set, so it returned early and a new
+  reader ran with the engine's default 48 MiB until the next 1 s stats
+  tick. It now starts with the tick's value (cache size times read-ahead
+  percent, split across the active readers). Measured on `default`, 8 runs
+  each: 7 of 8 stalled before (33 to 34 s) and 7 of 8 after (33 to 42 s);
+  first byte of the first read, median 9.5 ms both ways. The fix is correct
+  but does not touch the stall. In a stall Flodni logs nothing between the
+  pump's start and its end about 30 s later.
+  Lead from the stall logs (2026-11-12, unverified): during a stall Flodni
+  logs nothing for about 30 s, and the next line is GoStorm's second failed
+  public tracker-list download. The e2e network has no outside access, so
+  every download attempt waits out its timeout; if that refresh holds a lock
+  the read path needs, the stall is an artifact of the offline test network,
+  which would also explain why deployments with internet access have not
+  shown it. Check what the tracker-list refresh locks
+  (`internal/gostorm/torr/utils`) and rerun the variant with the refresh
+  disabled.
   Players probe file ends before playing, so this can delay real starts.
 
 ## Nice to have
