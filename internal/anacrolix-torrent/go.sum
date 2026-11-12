@@ -35,6 +35,8 @@ github.com/anacrolix/chansync v0.3.0 h1:lRu9tbeuw3wl+PhMu/r+JJCRu5ArFXIluOgdF0ao
 github.com/anacrolix/chansync v0.3.0/go.mod h1:DZsatdsdXxD0WiwcGl0nJVwyjCKMDv+knl1q2iBjA2k=
 github.com/anacrolix/dht/v2 v2.19.2-0.20221121215055-066ad8494444 h1:8V0K09lrGoeT2KRJNOtspA7q+OMxGwQqK/Ug0IiaaRE=
 github.com/anacrolix/dht/v2 v2.19.2-0.20221121215055-066ad8494444/go.mod h1:MctKM1HS5YYDb3F30NGJxLE+QPuqWoT5ReW/4jt8xew=
+github.com/anacrolix/dht/v2 v2.24.0 h1:qKIZKmJjW0y/LoqeMPPQ99JBy3Op15voFZrR7OpeOh8=
+github.com/anacrolix/dht/v2 v2.24.0/go.mod h1:0IpTSbqYnFcjmexGvnINUGq/kbx93S5cKIryH4oJL8U=
 github.com/anacrolix/envpprof v0.0.0-20180404065416-323002cec2fa/go.mod h1:KgHhUaQMc8cC0+cEflSgCFNFbKwi5h54gqtVn8yhP7c=
 github.com/anacrolix/envpprof v1.0.0/go.mod h1:KgHhUaQMc8cC0+cEflSgCFNFbKwi5h54gqtVn8yhP7c=
 github.com/anacrolix/envpprof v1.1.0/go.mod h1:My7T5oSqVfEn4MD4Meczkw/f5lSIndGAKu/0SM/rkf4=
@@ -52,6 +54,8 @@ github.com/anacrolix/log v0.10.1-0.20220123034749-3920702c17f8/go.mod h1:GmnE2c0
 github.com/anacrolix/log v0.13.1/go.mod h1:D4+CvN8SnruK6zIFS/xPoRJmtvtnxs+CSfDQ+BFxZ68=
 github.com/anacrolix/log v0.14.6-0.20231202035202-ed7a02cad0b4 h1:CdVK9IoqoqklXQQ4+L2aew64xsz14KdOD+rnKdTQajg=
 github.com/anacrolix/log v0.14.6-0.20231202035202-ed7a02cad0b4/go.mod h1:1OmJESOtxQGNMlUO5rcv96Vpp9mfMqXXbe2RdinFLdY=
+github.com/anacrolix/log v0.15.2 h1:LTSf5Wm6Q4GNWPFMBP7NPYV6UBVZzZLKckL+/Lj72Oo=
+github.com/anacrolix/log v0.15.2/go.mod h1:m0poRtlr41mriZlXBQ9SOVZ8yZBkLjOkDhd5Li5pITA=
 github.com/anacrolix/lsan v0.0.0-20211126052245-807000409a62 h1:P04VG6Td13FHMgS5ZBcJX23NPC/fiC4cp9bXwYujdYM=
 github.com/anacrolix/lsan v0.0.0-20211126052245-807000409a62/go.mod h1:66cFKPCO7Sl4vbFnAaSq7e4OXtdMhRSBagJGWgmpJbM=
 github.com/anacrolix/missinggo v0.0.0-20180725070939-60ef2fbf63df/go.mod h1:kwGiTUTZ0+p4vAz3VbAI5a30t2YbvemcmspjKwrAz5s=
@@ -72,6 +76,8 @@ github.com/anacrolix/mmsg v1.0.0 h1:btC7YLjOn29aTUAExJiVUhQOuf/8rhm+/nWCMAnL3Hg=
 github.com/anacrolix/mmsg v1.0.0/go.mod h1:x8kRaJY/dCrY9Al0PEcj1mb/uFHwP6GCJ9fLl4thEPc=
 github.com/anacrolix/multiless v0.3.0 h1:5Bu0DZncjE4e06b9r1Ap2tUY4Au0NToBP5RpuEngSis=
 github.com/anacrolix/multiless v0.3.0/go.mod h1:TrCLEZfIDbMVfLoQt5tOoiBS/uq4y8+ojuEVVvTNPX4=
+github.com/anacrolix/multiless v0.3.1-0.20221221005021-2d12701f83f7 h1:lOtCD+LzoD1g7bowhYJNR++uV+FyY5bTZXKwnPex9S8=
+github.com/anacrolix/multiless v0.3.1-0.20221221005021-2d12701f83f7/go.mod h1:zJv1JF9AqdZiHwxqPgjuOZDGWER6nyE48WBCi/OOrMM=
 github.com/anacrolix/possum/go v0.0.0-20240222034319-2fe0737d4315 h1:bwdpi8LWvEHrNgsu44SKmCzLeZ5iEH4rwmNafDdRHJ4=
 github.com/anacrolix/possum/go v0.0.0-20240222034319-2fe0737d4315/go.mod h1:pw5HEMBSiL+otYzHe4q5jGaVuy5unl+Mt4Bx6SDemW8=
 github.com/anacrolix/squirrel v0.6.0 h1:ovfWW42wcGzrVYYI9s56pEYzfeTwtXxCCvSd+KwvUEA=
@@ -79,6 +85,8 @@ github.com/anacrolix/squirrel v0.6.0/go.mod h1:60vdNPUbK1jYWePp39Wqn9whHm12Yb9JE
 github.com/anacrolix/stm v0.2.0/go.mod h1:zoVQRvSiGjGoTmbM0vSLIiaKjWtNPeTvXUSdJQA4hsg=
 github.com/anacrolix/stm v0.4.0 h1:tOGvuFwaBjeu1u9X1eIh9TX8OEedEiEQ1se1FjhFnXY=
 github.com/anacrolix/stm v0.4.0/go.mod h1:GCkwqWoAsP7RfLW+jw+Z0ovrt2OO7wRzcTtFYMYY5t8=
+github.com/anacrolix/stm v0.4.1-0.20221221005312-96d17df0e496 h1:aMiRi2kOOd+nG64suAmFMVnNK2E6GsnLif7ia9tI3cA=
+github.com/anacrolix/stm v0.4.1-0.20221221005312-96d17df0e496/go.mod h1:DBm8/1OXm4A4RZ6Xa9u/eOsjeAXCaoRYvd2JzlskXeM=
 github.com/anacrolix/sync v0.0.0-20180808010631-44578de4e778/go.mod h1:s735Etp3joe/voe2sdaXLcqDdJSay1O0OPnM0ystjqk=
 github.com/anacrolix/sync v0.3.0/go.mod h1:BbecHL6jDSExojhNtgTFSBcdGerzNc64tz3DCOj/I0g=
 github.com/anacrolix/sync v0.5.1 h1:FbGju6GqSjzVoTgcXTUKkF041lnZkG5P0C3T5RL3SGc=
@@ -98,6 +106,8 @@ github.com/bahlo/generic-list-go v0.2.0/go.mod h1:2KvAjgMlE5NNynlg/5iLrrCCZ2+5xW
 github.com/benbjohnson/immutable v0.2.0/go.mod h1:uc6OHo6PN2++n98KHLxW8ef4W42ylHiQSENghE1ezxI=
 github.com/benbjohnson/immutable v0.3.0 h1:TVRhuZx2wG9SZ0LRdqlbs9S5BZ6Y24hJEHTCgWHZEIw=
 github.com/benbjohnson/immutable v0.3.0/go.mod h1:uc6OHo6PN2++n98KHLxW8ef4W42ylHiQSENghE1ezxI=
+github.com/benbjohnson/immutable v0.4.1-0.20221220213129-8932b999621d h1:2qVb9bsAMtmAfnxXltm+6eBzrrS7SZ52c3SedsulaMI=
+github.com/benbjohnson/immutable v0.4.1-0.20221220213129-8932b999621d/go.mod h1:iAr8OjJGLnLmVUr9MZ/rz4PWUy6Ouc2JLYuMArmvAJM=
 github.com/beorn7/perks v0.0.0-20180321164747-3a771d992973/go.mod h1:Dwedo/Wpr24TaqPxmxbtue+5NUziq4I4S80YR8gNf3Q=
 github.com/beorn7/perks v1.0.0/go.mod h1:KWe93zE9D1o94FZ5RNwFwVgaQK1VOXiVxmqh+CedLV8=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
