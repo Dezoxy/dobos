@@ -208,7 +208,12 @@ trigger is known.
    cached. The budget lifts as soon as a session registers, applies only once
    a matched playback webhook has been seen since start
    (`flodni_playback_webhooks_received_total{matched="true"}`), and a refusal
-   never counts as a failed read in the readability record.
+   never counts as a failed read in the readability record. Entry condition
+   for phase b: the end-to-end test sends a play webhook in the middle of an
+   unconfirmed read that has crossed the margin, and shows the read
+   completes, `flodni_unconfirmed_read_sessions_total{outcome="confirmed_late"}`
+   counts it and `flodni_playback_webhooks_received_total{matched="true"}`
+   counts the webhook. Until then those counters rest on unit tests only.
 
 ## Done
 
