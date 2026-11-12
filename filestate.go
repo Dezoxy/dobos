@@ -1,0 +1,264 @@
+package main
+
+import (
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"flodni/internal/metadb"
+	"flodni/internal/warmup"
+)
+
+// defaultPlayedProtectionDays is how long a confirmed play keeps its file out of the
+// first rounds of quota eviction.
+const defaultPlayedProtectionDays = 90
+
+// fileStateStore is the part of the state database the index writes to.
+type fileStateStore interface {
+	MarkFilePlayed(hash string, fileIdx int, at time.Time) error
+	MarkFilesEvicted(keys []metadb.FileKey, at time.Time) error
+	ClearFileEvicted(hash string, fileIdx int) error
+	DeleteFileStates(hash string) error
+	LoadFileStates() ([]metadb.FileState, error)
+}
+
+type fileStateEntry struct {
+	lastPlayed time.Time // zero = never played
+	evicted    bool
+}
+
+// fileStateIndex is the in-memory view of what the cache remembers per media file:
+// when a playback confirmed by the media server last played it, and whether quota
+// eviction removed its windows since. Eviction reads it under the cache's quota lock,
+// so every read here is memory only; writes to the store happen after the mutex is
+// released. With no store the marks live in memory and are gone at restart.
+type fileStateIndex struct {
+	mu      sync.Mutex
+	store   fileStateStore
+	protect time.Duration // 0 = a play protects forever
+	now     func() time.Time
+	logf    func(format string, v ...interface{})
+	m       map[warmup.FileKey]*fileStateEntry
+}
+
+func newFileStateIndex(store fileStateStore, protectionDays int) *fileStateIndex {
+	return &fileStateIndex{
+		store:   store,
+		protect: time.Duration(protectionDays) * 24 * time.Hour,
+		now:     time.Now,
+		logf:    func(string, ...interface{}) {},
+		m:       map[warmup.FileKey]*fileStateEntry{},
+	}
+}
+
+func normKey(k warmup.FileKey) warmup.FileKey {
+	k.Hash = strings.ToLower(k.Hash)
+	return k
+}
+
+func (x *fileStateIndex) storeRef() fileStateStore {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.store
+}
+
+// attach connects the state database and merges its rows into memory. The index is
+// usable before it (marks then live in memory only), because the cache can evict
+// before the database has opened.
+func (x *fileStateIndex) attach(store fileStateStore) error {
+	rows, err := store.LoadFileStates()
+	if err != nil {
+		return err
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.store = store
+	for _, r := range rows {
+		k := normKey(warmup.FileKey{Hash: r.Hash, FileIdx: r.FileIdx})
+		e := x.m[k]
+		if e == nil {
+			e = &fileStateEntry{}
+			x.m[k] = e
+		}
+		e.evicted = e.evicted || r.EvictedAt > 0
+		if t := time.Unix(r.LastPlayedAt, 0); r.LastPlayedAt > 0 && t.After(e.lastPlayed) {
+			e.lastPlayed = t
+		}
+	}
+	return nil
+}
+
+// setProtectionDays sets how long a play protects its file; 0 means forever.
+func (x *fileStateIndex) setProtectionDays(days int) {
+	x.mu.Lock()
+	x.protect = time.Duration(days) * 24 * time.Hour
+	x.mu.Unlock()
+}
+
+// IsPlayed reports whether a confirmed play protects the file now. After the
+// protection time the file ranks as never played.
+func (x *fileStateIndex) IsPlayed(k warmup.FileKey) bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	e := x.m[normKey(k)]
+	if e == nil || e.lastPlayed.IsZero() {
+		return false
+	}
+	return x.protect == 0 || x.now().Sub(e.lastPlayed) < x.protect
+}
+
+// EverPlayed reports whether any confirmed play was ever recorded for the file, expired
+// or not.
+func (x *fileStateIndex) EverPlayed(k warmup.FileKey) bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	e := x.m[normKey(k)]
+	return e != nil && !e.lastPlayed.IsZero()
+}
+
+// HasEvictedMark reports whether quota eviction removed the file and no play has been
+// counted for it since.
+func (x *fileStateIndex) HasEvictedMark(k warmup.FileKey) bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	e := x.m[normKey(k)]
+	return e != nil && e.evicted
+}
+
+// MarkPlayed records a confirmed play.
+func (x *fileStateIndex) MarkPlayed(k warmup.FileKey) {
+	k = normKey(k)
+	now := x.now()
+	x.mu.Lock()
+	e := x.m[k]
+	if e == nil {
+		e = &fileStateEntry{}
+		x.m[k] = e
+	}
+	e.lastPlayed = now
+	st := x.store
+	x.mu.Unlock()
+	if st != nil {
+		if err := st.MarkFilePlayed(k.Hash, k.FileIdx, now); err != nil {
+			x.logf("WARNING: file state: cannot store the play of %s/%d: %v", k.Hash, k.FileIdx, err)
+		}
+	}
+}
+
+// OnEvicted records a batch of quota evictions. The played time stays: the mark
+// outlives the bytes.
+func (x *fileStateIndex) OnEvicted(evs []warmup.Eviction) {
+	now := x.now()
+	keys := make([]metadb.FileKey, 0, len(evs))
+	x.mu.Lock()
+	for _, ev := range evs {
+		k := normKey(ev.Key)
+		if k.FileIdx < 0 {
+			continue // a file name that is not <hash>-<index>
+		}
+		e := x.m[k]
+		if e == nil {
+			e = &fileStateEntry{}
+			x.m[k] = e
+		}
+		e.evicted = true
+		keys = append(keys, metadb.FileKey{Hash: k.Hash, FileIdx: k.FileIdx})
+	}
+	st := x.store
+	x.mu.Unlock()
+	if st != nil && len(keys) > 0 {
+		if err := st.MarkFilesEvicted(keys, now); err != nil {
+			x.logf("WARNING: file state: cannot store %d evictions: %v", len(keys), err)
+		}
+	}
+}
+
+// ClearEvicted drops the eviction mark and reports whether there was one, so a cold
+// reopen is counted once per eviction.
+func (x *fileStateIndex) ClearEvicted(k warmup.FileKey) bool {
+	k = normKey(k)
+	x.mu.Lock()
+	e := x.m[k]
+	had := e != nil && e.evicted
+	if had {
+		e.evicted = false
+	}
+	st := x.store
+	x.mu.Unlock()
+	if had && st != nil {
+		if err := st.ClearFileEvicted(k.Hash, k.FileIdx); err != nil {
+			x.logf("WARNING: file state: cannot clear the eviction of %s/%d: %v", k.Hash, k.FileIdx, err)
+		}
+	}
+	return had
+}
+
+// ForgetMemory drops the in-memory entries of a torrent.
+func (x *fileStateIndex) ForgetMemory(hash string) {
+	hash = strings.ToLower(hash)
+	x.mu.Lock()
+	for k := range x.m {
+		if k.Hash == hash {
+			delete(x.m, k)
+		}
+	}
+	x.mu.Unlock()
+}
+
+// ForgetHash drops a torrent that left the library, in memory and in the store.
+func (x *fileStateIndex) ForgetHash(hash string) {
+	x.ForgetMemory(hash)
+	if st := x.storeRef(); st != nil {
+		if err := st.DeleteFileStates(strings.ToLower(hash)); err != nil {
+			x.logf("WARNING: file state: cannot delete the rows of %s: %v", hash, err)
+		}
+	}
+}
+
+// fileStates is the process-wide index. main sets its protection time and logger and
+// attaches the state database once it is open. The cache hooks are bound to this
+// instance, so nothing but a test may replace it.
+var fileStates = newFileStateIndex(nil, defaultPlayedProtectionDays)
+
+// Counters for /metrics/prometheus; they count since the process started.
+var (
+	playbackStarts       atomic.Int64
+	coldReopensPrevPlay  atomic.Int64 // cold reopens of a file that had been played before
+	coldReopensNotPlayed atomic.Int64 // cold reopens of a file never played
+)
+
+// markColdOpen latches on the path's session that it opened with no ready head on a
+// file the quota had evicted. Call it from Open, after the index is resolved.
+func markColdOpen(path string, k warmup.FileKey, headReady bool) {
+	if headReady || !fileStates.HasEvictedMark(k) {
+		return
+	}
+	if v, ok := sessions.Load(path); ok {
+		v.(*TTFFSession).coldEvicted.Store(true)
+	}
+}
+
+// countConfirmedPlay is called when a webhook moved a path from not playing to
+// playing, with the single file the webhook was resolved to (ok false: none). It
+// counts the start, a cold reopen when the session opened cold on an evicted file,
+// and records the play.
+func countConfirmedPlay(path string, k warmup.FileKey, ok bool) {
+	playbackStarts.Add(1)
+	if !ok {
+		logger.Printf("[PLEX] Playback start resolved to no single file: not marked, no cold reopen counted (%s)", filepath.Base(path))
+		return
+	}
+	if v, found := sessions.Load(path); found && v.(*TTFFSession).coldEvicted.Swap(false) {
+		prev := fileStates.EverPlayed(k)
+		if fileStates.ClearEvicted(k) {
+			if prev {
+				coldReopensPrevPlay.Add(1)
+			} else {
+				coldReopensNotPlayed.Add(1)
+			}
+		}
+	}
+	fileStates.MarkPlayed(k)
+}

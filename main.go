@@ -264,6 +264,13 @@ func main() {
 	// Give engine a moment to init (hash maps etc)
 	time.Sleep(2 * time.Second)
 
+	// Before the cache can evict: the played state it orders victims by. The state
+	// database attaches below once it is open.
+	fileStates.setProtectionDays(gc().PlayedProtectionDays)
+	fileStates.logf = logger.Printf
+	warmup.IsPlayed = fileStates.IsPlayed
+	warmup.OnEvicted = fileStates.OnEvicted
+	warmup.OnHashRemoved = fileStates.ForgetHash
 	warmup.InitDiskWarmup(warmup.Options{
 		QuotaGB: gc().DiskWarmupQuotaGB,
 		Dir:     gc().WarmupDir,
@@ -360,6 +367,9 @@ func main() {
 					logger.Printf("WARNING: Failed to reload InodeMap from DB: %v", err)
 				}
 				registry.SetRegistryDB(stateDB)
+				if err := fileStates.attach(stateDB); err != nil {
+					logger.Printf("WARNING: Failed to load file state: %v (played marks stay in memory)", err)
+				}
 				// V750: Restore playback states from previous sessions
 				restorePlaybackStates(stateDB)
 				registry.SetStateDir(GetStateDir())

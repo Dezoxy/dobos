@@ -512,8 +512,10 @@ func (d *DiskWarmupCache) processWrite(hash string, fileID int, data []byte, off
 			logf.Printf("[DiskWarmup] mkdir %s failed: %v", d.dir, err)
 		}
 		d.mu.Lock()
-		d.enforceQuotaLocked(FileSize)
+		evicted, _ := d.enforceQuotaLocked(FileSize, evictOpts{
+			exclude: FileKey{hash, fileID}, trigger: TriggerHeadCreate})
 		d.mu.Unlock()
+		reportEvictions(evicted) // after the locks: it may write to a database
 	}
 
 	started, completed := d.writeHeadLocked(path, off, data)
@@ -869,6 +871,17 @@ func (d *DiskWarmupCache) ReadTail(hash string, fileID int, buf []byte, absolute
 }
 
 func (d *DiskWarmupCache) RemoveHash(hash string) {
+	d.removeHashFiles(hash)
+	if OnHashRemoved != nil {
+		OnHashRemoved(hash) // after tailMu: it may write to a database
+	}
+}
+
+// OnHashRemoved, if set, is called after RemoveHash deleted a torrent's cache files, so
+// the state kept per file (played, evicted) follows the torrent out of the library.
+var OnHashRemoved func(hash string)
+
+func (d *DiskWarmupCache) removeHashFiles(hash string) {
 	d.tailMu.Lock()
 	defer d.tailMu.Unlock()
 	d.removals.Add(1)
@@ -941,63 +954,6 @@ func (d *DiskWarmupCache) TrackedBytes() int64 {
 		return 0
 	}
 	return atomic.LoadInt64(&d.totalSize)
-}
-
-func (d *DiskWarmupCache) enforceQuotaLocked(needed int64) {
-	quota := quotaBytes()
-
-	totalSize := atomic.LoadInt64(&d.totalSize)
-	if totalSize+needed <= quota {
-		return
-	}
-
-	entries, _ := os.ReadDir(d.dir)
-	type wFile struct {
-		path    string
-		size    int64
-		modTime int64
-	}
-	var files []wFile
-	var diskTotal int64
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, warmupSuffix) && !strings.HasSuffix(name, tailSuffix) {
-			continue
-		}
-		if info, err := e.Info(); err == nil {
-			files = append(files, wFile{filepath.Join(d.dir, name), info.Size(), info.ModTime().Unix()})
-			diskTotal += info.Size()
-		}
-	}
-
-	atomic.StoreInt64(&d.totalSize, diskTotal)
-	if diskTotal+needed <= quota {
-		return
-	}
-
-	sort.Slice(files, func(i, j int) bool { return files[i].modTime < files[j].modTime })
-	d.tailMu.Lock()
-	defer d.tailMu.Unlock()
-	d.removals.Add(1)
-	for _, fi := range files {
-		if diskTotal+needed <= quota {
-			break
-		}
-		d.closeHandle(fi.path)
-		d.sizeCache.Delete(fi.path)
-		d.tailCoverage.Delete(fi.path)
-		removeFile(fi.path)
-		removeFile(fi.path + coverSuffix)
-		diskTotal -= fi.size
-		if strings.HasSuffix(fi.path, tailSuffix) {
-			evictedTails.Add(1)
-			evictedTailBytes.Add(fi.size)
-		} else {
-			evictedHeads.Add(1)
-			evictedHeadBytes.Add(fi.size)
-		}
-	}
-	atomic.StoreInt64(&d.totalSize, diskTotal)
 }
 
 // TailFetch fetches bytes from the torrent. Wired at startup to the native bridge: the

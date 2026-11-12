@@ -121,6 +121,7 @@ func collectProm(w *promtext.Writer) {
 		verdictSamples...)
 
 	collectWarmupProm(w)
+	collectPlaybackProm(w)
 	collectReadAheadProm(w)
 
 	w.Counter("flodni_fuse_short_reads_total",
@@ -155,6 +156,16 @@ func collectWarmupProm(w *promtext.Writer) {
 	w.Counter("flodni_warmup_write_queue_drops_total",
 		"Head chunks dropped because the warmup write queue was full.",
 		promSample(st.WriteQueueDrops))
+}
+
+func collectPlaybackProm(w *promtext.Writer) {
+	w.Counter("flodni_playback_starts_total",
+		"Playbacks the media server webhook confirmed (not playing to playing).",
+		promSample(playbackStarts.Load()))
+	w.Counter("flodni_warmup_cold_reopen_total",
+		"Confirmed plays that opened with no ready head on a file quota eviction had removed, counted once per eviction. previously_played says whether the file had been played before.",
+		promSample(coldReopensPrevPlay.Load(), lbl("previously_played", "true")),
+		promSample(coldReopensNotPlayed.Load(), lbl("previously_played", "false")))
 }
 
 func collectReadAheadProm(w *promtext.Writer) {

@@ -1,0 +1,244 @@
+package warmup
+
+import (
+	"encoding/json"
+	"log"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"time"
+)
+
+// FileKey names one media file of a torrent: the unit eviction removes, with its head
+// and its tail window together.
+type FileKey struct {
+	Hash    string
+	FileIdx int
+}
+
+// EvictPolicy says which files one quota check may evict. EvictAny is the zero value
+// and what every caller uses today. The other two are the seam for background warming
+// (see docs/roadmap.md, Readiness steps 2 and 3); nothing outside the tests asks for
+// them yet.
+type EvictPolicy int
+
+const (
+	// EvictAny takes files never played first, then played files, oldest first.
+	EvictAny EvictPolicy = iota
+	// EvictNeverPlayed takes only files never played, and nothing at all when they
+	// cannot make enough room.
+	EvictNeverPlayed
+	// EvictNone never evicts: over the quota it only reports that there is no room.
+	EvictNone
+)
+
+// TriggerHeadCreate is the trigger of an eviction made to make room for a new head file.
+const TriggerHeadCreate = "head_create"
+
+// IsPlayed, if set, reports whether a playback confirmed by the media server protects
+// the file now (a play inside the configured protection time). It runs under the
+// cache's quota lock, so it must read memory only and never block. Nil: nothing is
+// played, and eviction degenerates to oldest first.
+var IsPlayed func(FileKey) bool
+
+// OnEvicted, if set, receives the files one quota check evicted. It runs after the
+// cache's locks are released, so it may write to a database.
+var OnEvicted func([]Eviction)
+
+// Eviction describes one evicted media file.
+type Eviction struct {
+	Key       FileKey
+	HeadBytes int64 // apparent size of the head window removed, 0 when it had none
+	TailBytes int64
+	Age       time.Duration // since the newest write of the two windows
+	Played    bool          // the file was inside its played protection
+	Trigger   string
+}
+
+// evictOpts is what one quota check needs to know about its caller.
+type evictOpts struct {
+	policy  EvictPolicy
+	exclude FileKey // the file being created; never a victim
+	trigger string
+}
+
+// evictLog writes one JSON line per evicted file. The prefix is stable so a log
+// search can find them.
+var evictLog = log.New(os.Stdout, "[WarmupEvict] ", log.LstdFlags)
+
+type evictLine struct {
+	Hash      string `json:"hash"`
+	File      int    `json:"file"`
+	HeadBytes int64  `json:"head_bytes"`
+	TailBytes int64  `json:"tail_bytes"`
+	AgeSec    int64  `json:"age_s"`
+	Played    bool   `json:"played"`
+	Trigger   string `json:"trigger"`
+}
+
+// reportEvictions logs each eviction and hands the batch to OnEvicted. Callers hold
+// no cache lock.
+func reportEvictions(evs []Eviction) {
+	if len(evs) == 0 {
+		return
+	}
+	for _, e := range evs {
+		b, err := json.Marshal(evictLine{e.Key.Hash, e.Key.FileIdx, e.HeadBytes, e.TailBytes,
+			int64(e.Age.Seconds()), e.Played, e.Trigger})
+		if err != nil {
+			continue
+		}
+		evictLog.Print(string(b))
+	}
+	if OnEvicted != nil {
+		OnEvicted(evs)
+	}
+}
+
+// evictUnit is one media file's windows on disk.
+type evictUnit struct {
+	key       FileKey
+	headPath  string
+	tailPath  string
+	headBytes int64
+	tailBytes int64
+	newest    time.Time
+	played    bool
+}
+
+func (u *evictUnit) size() int64 { return u.headBytes + u.tailBytes }
+
+// splitCacheName parses "<hash>-<idx>" from a cache file name without its suffix.
+func splitCacheName(stem string) FileKey {
+	i := strings.LastIndexByte(stem, '-')
+	if i < 0 {
+		return FileKey{Hash: stem, FileIdx: -1}
+	}
+	idx, err := strconv.Atoi(stem[i+1:])
+	if err != nil {
+		return FileKey{Hash: stem, FileIdx: -1}
+	}
+	return FileKey{Hash: stem[:i], FileIdx: idx}
+}
+
+// enforceQuotaLocked makes room for needed bytes, and reports the evictions it made and
+// whether the room exists afterwards. The caller holds d.mu, and reports the evictions
+// with reportEvictions once it has released it.
+//
+// A victim is a whole media file, head and tail together. Files never played go first,
+// then played files, each class oldest first by the newer of its two windows. The file
+// in opts.exclude is never a victim. The verdict follows the disk walk, which also
+// resyncs totalSize.
+func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evicted []Eviction, room bool) {
+	quota := quotaBytes()
+
+	totalSize := atomic.LoadInt64(&d.totalSize)
+	if totalSize+needed <= quota {
+		return nil, true
+	}
+
+	entries, _ := os.ReadDir(d.dir)
+	units := map[string]*evictUnit{}
+	var diskTotal int64
+	for _, e := range entries {
+		name := e.Name()
+		isTail := strings.HasSuffix(name, tailSuffix)
+		if !isTail && !strings.HasSuffix(name, warmupSuffix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		stem := strings.TrimSuffix(strings.TrimSuffix(name, tailSuffix), warmupSuffix)
+		u := units[stem]
+		if u == nil {
+			u = &evictUnit{key: splitCacheName(stem)}
+			units[stem] = u
+		}
+		full := filepath.Join(d.dir, name)
+		if isTail {
+			u.tailPath, u.tailBytes = full, info.Size()
+		} else {
+			u.headPath, u.headBytes = full, info.Size()
+		}
+		if info.ModTime().After(u.newest) {
+			u.newest = info.ModTime()
+		}
+		diskTotal += info.Size()
+	}
+
+	atomic.StoreInt64(&d.totalSize, diskTotal)
+	if diskTotal+needed <= quota {
+		return nil, true
+	}
+	if opts.policy == EvictNone {
+		return nil, false
+	}
+
+	var victims []*evictUnit
+	var neverPlayedBytes int64
+	for _, u := range units {
+		if u.key == opts.exclude {
+			continue
+		}
+		u.played = IsPlayed != nil && u.key.FileIdx >= 0 && IsPlayed(u.key)
+		if u.played && opts.policy == EvictNeverPlayed {
+			continue
+		}
+		if !u.played {
+			neverPlayedBytes += u.size()
+		}
+		victims = append(victims, u)
+	}
+	over := diskTotal + needed - quota
+	if opts.policy == EvictNeverPlayed && neverPlayedBytes < over {
+		return nil, false
+	}
+	sort.Slice(victims, func(i, j int) bool {
+		a, b := victims[i], victims[j]
+		if a.played != b.played {
+			return !a.played
+		}
+		if !a.newest.Equal(b.newest) {
+			return a.newest.Before(b.newest)
+		}
+		return a.key.Hash+"-"+strconv.Itoa(a.key.FileIdx) < b.key.Hash+"-"+strconv.Itoa(b.key.FileIdx)
+	})
+
+	now := time.Now()
+	d.tailMu.Lock()
+	defer d.tailMu.Unlock()
+	d.removals.Add(1)
+	for _, u := range victims {
+		if diskTotal+needed <= quota {
+			break
+		}
+		for _, p := range []string{u.headPath, u.tailPath} {
+			if p == "" {
+				continue
+			}
+			d.closeHandle(p)
+			d.sizeCache.Delete(p)
+			d.tailCoverage.Delete(p)
+			removeFile(p)
+			removeFile(p + coverSuffix)
+		}
+		diskTotal -= u.size()
+		if u.tailPath != "" {
+			evictedTails.Add(1)
+			evictedTailBytes.Add(u.tailBytes)
+		}
+		if u.headPath != "" {
+			evictedHeads.Add(1)
+			evictedHeadBytes.Add(u.headBytes)
+		}
+		evicted = append(evicted, Eviction{Key: u.key, HeadBytes: u.headBytes, TailBytes: u.tailBytes,
+			Age: now.Sub(u.newest), Played: u.played, Trigger: opts.trigger})
+	}
+	atomic.StoreInt64(&d.totalSize, diskTotal)
+	return evicted, diskTotal+needed <= quota
+}

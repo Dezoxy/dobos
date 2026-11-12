@@ -258,5 +258,21 @@ CREATE TABLE IF NOT EXISTS metadata_failures (
 	}
 	_, _ = d.db.Exec(`INSERT OR IGNORE INTO schema_version (version, description) VALUES (12, 'add metadata_failures readability columns')`)
 
+	// Schema 13, additive: what the warmup cache remembers per media file. The time of
+	// the last play a media server webhook confirmed, and the time quota eviction last
+	// removed the file's windows (0 = no pending eviction mark). Rows appear on the
+	// first play or eviction.
+	if _, err := d.db.Exec(`
+		CREATE TABLE IF NOT EXISTS file_state (
+		    hash           TEXT NOT NULL,
+		    file_idx       INTEGER NOT NULL,
+		    last_played_at INTEGER NOT NULL DEFAULT 0,
+		    evicted_at     INTEGER NOT NULL DEFAULT 0,
+		    PRIMARY KEY (hash, file_idx)
+		)`); err != nil {
+		return err
+	}
+	_, _ = d.db.Exec(`INSERT OR IGNORE INTO schema_version (version, description) VALUES (13, 'add file_state table')`)
+
 	return nil
 }

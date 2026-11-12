@@ -79,6 +79,7 @@ func (b *StartupCacheBuilder) Start() {
 			stats.Entries, float64(stats.Size)/(1024*1024), float64(stats.Capacity)/(1024*1024))
 
 		b.pruneReadability(walked == 2)
+		b.pruneFileState(walked == 2)
 
 		// V133: Save inode map after startup scan completes
 		// This ensures the map is persisted even if no background save triggered
@@ -220,19 +221,28 @@ func (b *StartupCacheBuilder) noteHash(url string) {
 	b.mu.Unlock()
 }
 
-// pruneReadability drops readability rows of torrents that left the library. It runs
-// only after a complete walk: a missing source directory, any walk error or an empty
-// result means the library was not seen whole, and an unmounted library must not wipe
-// the table. Rows touched since the process started are kept.
-func (b *StartupCacheBuilder) pruneReadability(complete bool) {
-	if stateDB == nil {
-		return
-	}
+// libraryIfWhole returns the hashes of the stubs the walk found, only when the walk saw
+// the library whole: a missing source directory, any walk error or an empty result
+// means it did not, and an unmounted library must not wipe a table.
+func (b *StartupCacheBuilder) libraryIfWhole(what string, complete bool) (map[string]bool, bool) {
 	b.mu.Lock()
 	errs, keep := b.errors, b.foundHashes
 	b.mu.Unlock()
 	if !complete || errs > 0 || len(keep) == 0 {
-		b.logger.Printf("Readability prune skipped: complete=%v errors=%d stubs=%d", complete, errs, len(keep))
+		b.logger.Printf("%s prune skipped: complete=%v errors=%d stubs=%d", what, complete, errs, len(keep))
+		return nil, false
+	}
+	return keep, true
+}
+
+// pruneReadability drops readability rows of torrents that left the library. It runs
+// only after a complete walk. Rows touched since the process started are kept.
+func (b *StartupCacheBuilder) pruneReadability(complete bool) {
+	if stateDB == nil {
+		return
+	}
+	keep, ok := b.libraryIfWhole("Readability", complete)
+	if !ok {
 		return
 	}
 	n, err := stateDB.PruneReadability(keep, b.startTime)
@@ -242,6 +252,29 @@ func (b *StartupCacheBuilder) pruneReadability(complete bool) {
 	}
 	if n > 0 {
 		b.logger.Printf("Readability prune: removed %d records of torrents no longer in the library", n)
+	}
+}
+
+// pruneFileState drops the played and evicted marks of torrents that left the library,
+// under the same guard as pruneReadability.
+func (b *StartupCacheBuilder) pruneFileState(complete bool) {
+	if stateDB == nil {
+		return
+	}
+	keep, ok := b.libraryIfWhole("File state", complete)
+	if !ok {
+		return
+	}
+	dropped, err := stateDB.PruneFileStates(keep, b.startTime)
+	if err != nil {
+		b.logger.Printf("WARNING: file state prune: %v", err)
+		return
+	}
+	for _, h := range dropped {
+		fileStates.ForgetMemory(h)
+	}
+	if len(dropped) > 0 {
+		b.logger.Printf("File state prune: removed the marks of %d torrents no longer in the library", len(dropped))
 	}
 }
 

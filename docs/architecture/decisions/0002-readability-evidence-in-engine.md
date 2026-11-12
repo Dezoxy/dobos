@@ -135,7 +135,9 @@ Status of each part:
 | One `[Session]` log line per closed session: bytes by serving path, `swarm_served`, file index (the README documents it as a contract) | Exists; sessions open at shutdown and reads after a session closes are not counted |
 | Prometheus text exposition at `GET /metrics/prometheus`: session latency histograms, read counts and bytes by serving path, session outcomes, dead-swarm verdicts, warmup cache size and evictions (the README lists the series) | Exists |
 | Per-file readability record | **Designed, not implemented** |
-| List of files whose head and tail windows are on disk; background fills never evict | **Designed, not implemented** |
+| Played and evicted state per file (state database schema 13); quota eviction takes head and tail together, files never played first, then played files, oldest first; one `[WarmupEvict]` log line per eviction; `flodni_playback_starts_total` and `flodni_warmup_cold_reopen_total` | Exists; "played" is a playback confirmed by the media server webhook, so without webhooks nothing is ever played and the order is oldest first |
+| Internal list of files whose head and tail windows are on disk, and the gauges built on it | **Designed, not implemented** |
+| Background fills evict only files never played, or nothing | **Designed, not implemented**; the eviction function takes such a policy, and no caller uses it yet |
 | Warm on add, catch-up and retries | **Designed, not implemented** |
 | Byte budget for non-playback readers | **Designed, not implemented** |
 
@@ -178,8 +180,9 @@ is updated when it does.
 - Negative: warming puts load on swarms and adds announces and downloads
   nobody requested, which is why it is off by default.
 - Negative: warming competes for the cache quota. The rule that background
-  fills stop at a full quota instead of evicting is designed; today a new
-  head file evicts the oldest-written one.
+  fills evict only files never played, or stop at a full quota, is designed.
+  Today a new head file evicts files never played first, then played files,
+  each oldest first; a play protects its file for 90 days by default.
 - Negative: Flodni grows a public read-only contract that has to stay
   stable, and the success rule has to be kept by every writer of the
   record.
