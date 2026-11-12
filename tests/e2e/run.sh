@@ -152,6 +152,48 @@ check_prometheus() {
   if [ -n "${E2E_PROM_DUMP:-}" ]; then printf '%s\n' "$body" >"$E2E_PROM_DUMP"; fi
 }
 
+# check_reader_budget variant path: the full sha256sum read is a reader no webhook
+# confirmed, so past the windows it must show in flodni_unconfirmed_read_bytes_total
+# (printed in every variant, with the session and webhook series and the log line,
+# whose swarm_bytes/cache_bytes split is a measurement). In
+# index-cache (4 MB windows, 150 MiB fixture, default 64 MiB margin) the bytes must sum
+# to at least 64 MiB and exactly one over_margin [ReaderBudget] line must exist,
+# without the file's name, with a caller pid. The other variants only print.
+check_reader_budget() {
+  local variant=$1 path=$2 body logs lines
+  body=$(prom_raw)
+  body=${body#*$'\r\n\r\n'}
+  echo "PROM ($variant): $(grep -E '^flodni_(unconfirmed_read_bytes_total|unconfirmed_read_sessions_total|playback_webhooks_received_total)[{ ]' <<<"$body" | tr '\n' ' ')" >&2
+  logs=$(docker logs "$flodni" 2>&1 || true)
+  lines=$(grep -F '[ReaderBudget] ' <<<"$logs" || true)
+  echo "ReaderBudget ($variant): ${lines:-none}" >&2
+  [ "$variant" = index-cache ] || return 0
+  local total
+  total=$(awk '/^flodni_unconfirmed_read_bytes_total / { printf "%d", $2 }' <<<"$body")
+  total=${total:-0}
+  if [ "$total" -lt $((64 * 1048576)) ]; then
+    echo "FAIL ($variant): flodni_unconfirmed_read_bytes_total sums to $total, want at least 64 MiB" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if [ "$(grep -c '"event":"over_margin"' <<<"$lines")" != 1 ]; then
+    echo "FAIL ($variant): want exactly one over_margin [ReaderBudget] line" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if grep -qF "$(basename "$path")" <<<"$lines" || grep -qF "$(basename "$path" .mkv)" <<<"$lines"; then
+    echo "FAIL ($variant): the [ReaderBudget] line carries the file name" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if ! grep -Eq '"pid":[1-9]' <<<"$lines"; then
+    echo "FAIL ($variant): the [ReaderBudget] line has no caller pid" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($variant): $total unconfirmed bytes counted, one [ReaderBudget] line, no file name" >&2
+}
+
 # check_sessions_closed: after B's session closed, the counter of served sessions must be
 # at least 1 (check_session_line has just found the line, so this is deterministic).
 check_sessions_closed() {
@@ -415,6 +457,7 @@ run_variant() {
   echo "full read of $variant took ${full_s}s" >&2
   report_first_byte "$variant"
   check_prometheus "$variant" || return 1
+  check_reader_budget "$variant" "$path" || return 1
   # Only reported for now: the bound comes once the stall is fixed.
   if [ "$full_s" -gt 20 ]; then slow_diagnostics "$variant" "$full_s"; fi
   if [ "$actual" != "$expected" ]; then

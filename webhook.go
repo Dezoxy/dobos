@@ -247,9 +247,13 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			exactState = bestState
 		}
 
+		// Counted after the library-type filter: a movie or episode play or resume,
+		// matched when it resolved to the one file that gets confirmed below.
+		countPlaybackWebhook(exactMatch != "" && exactState != nil)
 		if exactMatch != "" && exactState != nil {
 			wasPlaying := exactState.GetStatus()
 			exactState.SetHealthy(true)
+			noteConfirmedLate(exactMatch)
 			if !wasPlaying {
 				// A confirmed start. What gets marked played is decided separately and
 				// narrowly (played_mark.go); it never changes which file plays.

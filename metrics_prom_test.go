@@ -72,6 +72,8 @@ func TestHandlePrometheus(t *testing.T) {
 		"flodni_warmup_unverified_drops_total", "flodni_warmup_write_queue_drops_total",
 		"flodni_readahead_cache_bytes", "flodni_readahead_cache_active_bytes", "flodni_readahead_cache_entries",
 		"flodni_fuse_short_reads_total", "flodni_fuse_short_read_results_total", "flodni_fetch_dedup_total",
+		"flodni_unconfirmed_read_bytes_total", "flodni_unconfirmed_read_sessions_total",
+		"flodni_playback_webhooks_received_total",
 	} {
 		if !strings.Contains(body, "# TYPE "+fam+" ") {
 			t.Errorf("family %s missing", fam)
@@ -86,6 +88,11 @@ func TestHandlePrometheus(t *testing.T) {
 		`flodni_warmup_cold_reopen_total{previously_played="true"}`,
 		`flodni_warmup_cold_reopen_total{previously_played="false"}`,
 		`flodni_playback_starts_total`,
+		`flodni_unconfirmed_read_bytes_total`,
+		`flodni_unconfirmed_read_sessions_total{outcome="unconfirmed"}`,
+		`flodni_unconfirmed_read_sessions_total{outcome="confirmed_late"}`,
+		`flodni_playback_webhooks_received_total{matched="true"}`,
+		`flodni_playback_webhooks_received_total{matched="false"}`,
 	} {
 		if !strings.Contains(body, want+" ") {
 			t.Errorf("series %s missing", want)

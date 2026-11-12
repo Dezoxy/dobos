@@ -668,6 +668,9 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 	// Registered only once activation succeeded: a session for an Open that is
 	// about to fail outlives the call and is never closed.
 	ttffRegister(n.vMeta.Path, n.vMeta.Size, hashStr, urlFileIdx, headReady, tailReady)
+	if caller, ok := fuse.FromContext(ctx); ok {
+		noteReaderCaller(n.vMeta.Path, caller.Pid, caller.Uid)
+	}
 
 	if val, exists := playbackRegistry.Load(n.vMeta.Path); !exists {
 		playbackRegistry.Store(n.vMeta.Path, &PlaybackState{

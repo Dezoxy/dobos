@@ -197,6 +197,57 @@ and `[DeadSwarm]` lines are unchanged, and their wording is not a contract.
   page cache answers repeated reads without Flodni seeing them.
 - The line carries the library path. Remove it before sharing a log.
 
+## Reader budget (measurement only)
+
+Counting exists; refusal is designed and not built. A file that no media
+server has confirmed as playing can still be read end to end by a scanner, a
+hasher or a copy. Flodni counts what such a reader takes past the head and
+tail windows and logs the session once. It never refuses or slows a read.
+
+- **What counts.** A served read counts when the engine or the read-ahead
+  cache answered it, the bytes lie outside the head window and the tail
+  window, and the file has no playback confirmed by a webhook. Reads the
+  warmup files answer never count. The unit is the session (overlapping
+  opens of one file, ended after 60 s idle).
+- **The counter** `flodni_unconfirmed_read_bytes_total` is the bytes the
+  reader took past the windows, whichever path served them. It is not bytes
+  downloaded: with the pump on (the default), the engine fill happened
+  earlier through the pump or a prefetch, and attributing that fill to the
+  reader is not built; it is revisited after Reliability step 6.
+- **`unconfirmed_read_margin_mb`** in `config.json` (default 64, 0 logs at the
+  first byte past the windows; a negative or absurd value is replaced by 64).
+  When a session's counted bytes reach the margin, one `[ReaderBudget]` line
+  is written with `"event":"over_margin"`: `hash`, `file_index`, `size`,
+  `swarm_bytes`, `cache_bytes`, `margin`, `open_age_ms`, `comm`, `pid`, `uid`
+  and `"enforced":false`. It carries no path or file name. The line prefix
+  and field names are meant to be stable. `swarm_bytes` and `cache_bytes`
+  split the counted bytes by the read path that answered, for debugging:
+  `swarm_bytes` waited for the engine (which can answer from pieces it
+  already holds), `cache_bytes` came from the read-ahead cache. Neither is
+  bytes downloaded; with the pump on, almost everything shows as
+  `cache_bytes`.
+- **Late confirmation.** If a webhook then confirms that file, a second line,
+  `"event":"confirmed_late"`, carries `hash`, `file_index`, `size`,
+  `swarm_bytes`, `cache_bytes` and `late_ms`: a playback that a budget would
+  have cut. `flodni_unconfirmed_read_sessions_total` counts each crossed
+  session once, when it closes.
+- **`comm`, `pid`, `uid`** come from the FUSE request of the latest open of
+  the file. `comm` is read from `/proc/<pid>/comm` when the line is written,
+  and is empty when the pid is 0 or not visible (another PID namespace, or
+  the process already exited). The opener is not always the process that
+  reads.
+- **`flodni_playback_webhooks_received_total{matched}`** counts play and
+  resume webhooks for a movie or an episode; `matched="true"` when the
+  webhook resolved to one file. Phase b's guard is designed to arm only once
+  `matched="true"` has been seen since start; that guard is not built.
+
+Limits: reads on a handle after its session closed and sessions open at
+shutdown are not counted; reads the kernel page cache answers never reach
+Flodni; a fuzzy webhook match or a state restored at start can mark a file
+confirmed that is being scanned. A confirmation also outlives the playback:
+it stays until a stop webhook, or until 15 minutes after the last handle of
+the file closes, and a scan in that window is not counted.
+
 ## Warmup cache eviction
 
 With the warmup cache on, a new head file that would pass the quota evicts
@@ -291,6 +342,9 @@ scraper on the same host or Docker network.
 | `flodni_warmup_evicted_bytes_total` | counter | `window` | Their apparent size in bytes. |
 | `flodni_warmup_files` | gauge | `window` | Media files with a warm window on disk now: `head` counts heads at or above the 1 MiB ready floor, `tail` counts tails fully covered. Only with the cache enabled. |
 | `flodni_playback_starts_total` | counter | none | Playbacks the media server webhook confirmed (not playing to playing). |
+| `flodni_playback_webhooks_received_total` | counter | `matched` | Play and resume webhooks for a movie or an episode; `matched` is `true` when the webhook resolved to one file, else `false`. |
+| `flodni_unconfirmed_read_bytes_total` | counter | none | Bytes past the head and tail windows that readers took from files with no confirmed playback, whichever path served them. Not bytes downloaded. See Reader budget. |
+| `flodni_unconfirmed_read_sessions_total` | counter | `outcome` | Sessions that crossed `unconfirmed_read_margin_mb`, each counted once when it closes: `confirmed_late` if a webhook confirmed the file afterwards, else `unconfirmed`. |
 | `flodni_warmup_cold_reopen_total` | counter | `previously_played` | Confirmed plays that opened cold on a file quota eviction had removed, `true` or `false` by whether it had been played before. |
 | `flodni_warmup_unverified_drops_total` | counter | none | Warmup blocks, head or tail, never written because their pieces did not verify in time. |
 | `flodni_warmup_write_queue_drops_total` | counter | none | Head chunks dropped because the warmup write queue was full. |

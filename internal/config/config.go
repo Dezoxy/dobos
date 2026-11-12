@@ -68,6 +68,7 @@ type Config struct {
 	ReadAheadBase           int64         `json:"-"`
 	ReadAheadInitial        int64         `json:"-"`
 	StreamingThreshold      int64         `json:"-"`
+	UnconfirmedReadMargin   int64         `json:"-"` // bytes, from UnconfirmedReadMarginMB
 	SequentialTolerance     int64         `json:"-"`
 	MaxConcurrentHTTP       int           `json:"-"`
 	RateLimitRequestsPerSec int           `json:"-"`
@@ -98,6 +99,12 @@ type Config struct {
 	// After that the file ranks as never played. 0 means a play protects forever;
 	// a negative value is refused at load and replaced by the default (90).
 	PlayedProtectionDays int `json:"played_protection_days"`
+
+	// UnconfirmedReadMarginMB is how many bytes a reader with no confirmed playback may
+	// take, past the head and tail windows, before the session is logged and counted
+	// (reader_budget.go). It only measures: nothing is refused. 0 logs a session at its
+	// first byte past the windows; a negative or absurd value is replaced by the default.
+	UnconfirmedReadMarginMB int64 `json:"unconfirmed_read_margin_mb"`
 
 	// --- External Services (V1.4.6) ---
 	Plex struct {
@@ -178,7 +185,8 @@ func LoadConfig() Config {
 		WarmupHeadSizeMB:  64,
 		WarmupTailSizeMB:  16,
 
-		PlayedProtectionDays: 90,
+		PlayedProtectionDays:    90,
+		UnconfirmedReadMarginMB: 64,
 
 		GoStormBaseURL: "http://127.0.0.1:8090",
 		MetricsPort:    9080,
@@ -362,6 +370,14 @@ func (c *Config) finalize() {
 		log.Printf("[Config] WARNING: played_protection_days %d is absurd; using 0 (never expire)", c.PlayedProtectionDays)
 		c.PlayedProtectionDays = 0
 	}
+
+	// The margin is a measurement threshold. Above 1 TiB (1<<20 MB) it is larger than
+	// any file served here, so it is a typo, not a choice.
+	if c.UnconfirmedReadMarginMB < 0 || c.UnconfirmedReadMarginMB > 1<<20 {
+		log.Printf("[Config] WARNING: unconfirmed_read_margin_mb %d is out of range; using 64", c.UnconfirmedReadMarginMB)
+		c.UnconfirmedReadMarginMB = 64
+	}
+	c.UnconfirmedReadMargin = c.UnconfirmedReadMarginMB * 1024 * 1024
 
 	// Calculate MetadataCacheSize in bytes
 	c.MetadataCacheSize = c.MetadataCacheSizeMB * 1024 * 1024
