@@ -29,7 +29,7 @@ require (
 	github.com/dustin/go-humanize v1.0.0
 	github.com/elliotchance/orderedmap v1.4.0
 	github.com/frankban/quicktest v1.14.6
-	github.com/fsnotify/fsnotify v1.5.4
+	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-llsqlite/adapter v0.0.0-20230927005056-7f5ce7f0c916
 	github.com/google/btree v1.1.2
 	github.com/gorilla/websocket v1.5.3
