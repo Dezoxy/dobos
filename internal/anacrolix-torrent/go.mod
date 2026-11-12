@@ -31,7 +31,7 @@ require (
 	github.com/frankban/quicktest v1.14.6
 	github.com/fsnotify/fsnotify v1.5.4
 	github.com/go-llsqlite/adapter v0.0.0-20230927005056-7f5ce7f0c916
-	github.com/google/btree v1.1.2
+	github.com/google/btree v1.1.3
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/datachannel v1.5.2
 	github.com/pion/logging v0.2.2
