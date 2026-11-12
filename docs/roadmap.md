@@ -119,6 +119,76 @@ Releases and deployment are scheduled separately.
    [ideas.md](ideas.md)). Players probe the end of a file before playing it,
    so this delays real starts.
 
+## Readability evidence
+
+Flodni records facts about bytes: did a file read, is it cached, who reads
+it. Which release to replace, and when, is decided by tools outside it.
+These steps do not touch the read path and do not wait for Reliability
+step 6.
+
+1. **Record the decision.** An ADR: Flodni fills and protects its own cache
+   and records whether its files read; choosing and replacing releases
+   stays outside. It weighs an external reader through the mount, warming
+   in process and warming on the media server's first scan, and names what
+   outside tools may rely on. Everything in it is labelled designed until
+   the step that builds it lands.
+2. **A readability record over the API.** The state database already counts
+   sessions that ended with a failed read and nothing served, per torrent,
+   but no endpoint reads it back. Add the time of the last read the swarm
+   served and the reason and source of the last failure, keep the rule
+   that only bytes from the swarm clear it, and serve it read-only at
+   `GET /api/torrents/health` with the full hash, so outside tools stop
+   parsing logs and stub names. Rows of torrents that left the library are
+   pruned at startup, the endpoint answers 503 when the state database is
+   off, and the README documents the fields as the supported contract.
+3. **One log line per closed session.** A JSON line with the hash, file
+   index, path, outcome, bytes served split into swarm and cache, time to
+   first byte and duration, so a log store keeps what the 200-entry ring
+   behind `/api/sessions` forgets. The existing `[DeadSwarm]` and `[TTFF]`
+   lines stay as they are.
+4. **Scrapeable metrics.** Prometheus text exposition on its own path, next
+   to the JSON the panel reads: the time-to-first-byte histograms, dead-swarm
+   verdicts, warmup cache hits by source, cache bytes and evictions. Later
+   steps add their own series in their own pull requests.
+
+## Readiness and protection
+
+A file should start from the SSD the first time it is opened, and a reader
+that is not playback should not pull a whole file through the swarm. These
+steps build on index mode (`warmup_dir` set, `pump_on_open` off), where
+only hash-checked data reaches the cache and tail coverage survives a
+restart. Steps 2 and 3 wait until Reliability step 6 is fixed or its
+trigger is known.
+
+1. **Honest cache state and eviction.** One call that lists which files
+   have their head and tail windows on disk now, without a `stat` per file,
+   and a rule that background fills never evict: when the quota is full
+   they stop. Then try evicting the least recently read file instead of
+   the oldest written one, measured with the counters from the metrics
+   step. It lands only if the measurement shows a clear win; otherwise the
+   reason goes to ideas.
+2. **Warm on add.** After a library add returns, a background queue with a
+   small fixed worker pool fills the head and tail windows of each new file
+   through the verified path, straight from the engine and not through the
+   mount. It is off by default, pauses while a playback session is open and
+   records each outcome per file in the readability record; only pieces the
+   swarm delivered count as success. The end-to-end test adds a fixture,
+   waits, stops the seeder and reads both windows back.
+3. **Catch-up and retries.** At startup the warmer queues the library files
+   it has never warmed, at a configurable pace, so a bulk import is worked
+   off across restarts without a persistent queue. A failed warm is retried
+   no sooner than most of a day later and a capped number of times; after
+   that the record keeps the evidence and the warmer leaves the file alone.
+   A file the cache has since evicted is left to its next play.
+4. **A byte budget for readers that are not playback.** Phase a: count the
+   bytes a file serves from the swarm to a reader with no playback session,
+   past its two windows and a margin, and log each file once. Phase b: an
+   opt-in switch that stops fetching from the swarm for such a reader past
+   the budget and serves only what is cached. The budget lifts as soon as a
+   session registers, applies only once a playback webhook has been seen
+   since start, and a refusal never counts as a failed read in the
+   readability record.
+
 ## Done
 
 - 2026-11-11, trim step 1: telemetry, the update check, the MCP server and

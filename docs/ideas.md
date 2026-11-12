@@ -111,6 +111,42 @@ Bugs and data-loss risks. None open.
   (`internal/gostorm/torr/utils`) and rerun the variant with the refresh
   disabled.
   Players probe file ends before playing, so this can delay real starts.
+  Closed lead (2026-11-12): the tracker-list refresh holds no lock while it
+  downloads, and its second attempt is a 30 s retry timer started at the
+  add (a saved stall log shows attempt 1 at the add and attempt 2 exactly
+  30 s later), so it is a clock, not a cause. The four attempts so far each
+  flipped one input and counted stalls over 8 runs; the next step is to
+  capture state at the stall instead: on the first 8 s fetch timeout, dump
+  the reader positions and read-ahead, for the pieces under them the
+  engine's completion, priority and pending requests against the cache's
+  `Complete` and size, the request-order scan (pieces walked, cap left) and
+  the peer's interest and request count. Hypotheses for that trace: the
+  request strategy stops once the cap is spent while the cache evicts only
+  when strictly over capacity, so at exactly full neither side moves; and
+  the engine assumes storage keeps the top pieces by its own order while
+  the cache evicts by reader range and access time. Two relevance checks:
+  the `slow-seeder` variant does not stall, so cap the seeder's upload rate
+  and rerun `default`; and post a play webhook in the `index-cache` variant
+  (pump off until playback) before the full read, to learn whether index
+  mode's playback path stalls too.
+
+- **Warm the next episode during playback.** While episode N plays, fill
+  episode N+1's windows so a binge starts at once. Not planned: a second
+  reader on the playing torrent splits the engine's read-ahead and is the
+  pattern of the open stall. Needs warm on add in place, the stall settled
+  and a measurement that the playing stream does not slow down.
+- **Warm again after eviction.** The catch-up leaves evicted files to their
+  next play; warming them again needs a quota that fits the library, or a
+  rule for which files deserve it.
+- **Quota accounting by allocated blocks.** The warmup quota counts apparent
+  file sizes; sparse files make it count more than the disk holds. Safe, but
+  it wastes part of the quota.
+- **A swarm signal from the engine.** For awake torrents: peers connected,
+  time of the last piece received, observed rate; what the swarm does, as
+  opposed to what a tracker reports. It covers only torrents that are awake.
+- **Per-file replacement check for packs.** The check before a replacement
+  reads one file of the release; a pack whose other episodes do not read
+  passes. Weigh the extra reads against the risk.
 
 ## Nice to have
 
