@@ -34,7 +34,7 @@ require (
 	github.com/google/btree v1.1.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/datachannel v1.5.2
-	github.com/pion/logging v0.2.2
+	github.com/pion/logging v0.2.4
 	github.com/pion/webrtc/v3 v3.1.42
 	github.com/pkg/errors v0.9.1
 	go.opentelemetry.io/otel v1.45.0
