@@ -33,15 +33,15 @@ require (
 	github.com/go-llsqlite/adapter v0.0.0-20230927005056-7f5ce7f0c916
 	github.com/google/btree v1.1.2
 	github.com/gorilla/websocket v1.5.3
-	github.com/pion/datachannel v1.5.2
-	github.com/pion/logging v0.2.2
+	github.com/pion/datachannel v1.6.4
+	github.com/pion/logging v0.2.4
 	github.com/pion/webrtc/v3 v3.1.42
 	github.com/pkg/errors v0.9.1
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
 	golang.org/x/exp v0.0.0-20230626212559-97b1e661b5df
 	golang.org/x/sys v0.49.0
-	golang.org/x/time v0.0.0-20220609170525-579cf78fd858
+	golang.org/x/time v0.14.0
 )
 
 require (
@@ -70,12 +70,13 @@ require (
 	github.com/pion/randutil v0.1.0 // indirect
 	github.com/pion/rtcp v1.2.9 // indirect
 	github.com/pion/rtp v1.7.13 // indirect
-	github.com/pion/sctp v1.8.2 // indirect
+	github.com/pion/sctp v1.12.1 // indirect
 	github.com/pion/sdp/v3 v3.0.5 // indirect
 	github.com/pion/srtp/v2 v2.0.9 // indirect
 	github.com/pion/stun v0.3.5 // indirect
 	github.com/pion/transport v0.13.1 // indirect
 	github.com/pion/transport/v2 v2.0.0 // indirect
+	github.com/pion/transport/v5 v5.1.4 // indirect
 	github.com/pion/turn/v2 v2.0.8 // indirect
 	github.com/pion/udp v0.1.4 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
