@@ -52,6 +52,15 @@ type sessionRecord struct {
 	Reads       int64  `json:"reads"`
 	FailedReads int64  `json:"failed_reads"`
 	Outcome     string `json:"outcome"`
+	// Added with the [Session] log line. Existing keys keep their names and order.
+	FileIndex       int     `json:"file_index"`
+	BytesFetchBlock int64   `json:"bytes_fetch_block"`
+	BytesRACacheHit int64   `json:"bytes_racache_hit"`
+	BytesWarmupHead int64   `json:"bytes_warmup_head"`
+	BytesWarmupTail int64   `json:"bytes_warmup_tail"`
+	SwarmServed     bool    `json:"swarm_served"`
+	DurationMS      int64   `json:"duration_ms"`
+	FailureReason   *string `json:"failure_reason"`
 }
 
 // record snapshots the session. closedAt is the zero time for an open session.
@@ -66,16 +75,41 @@ func (s *TTFFSession) record(closedAt time.Time, dead bool) sessionRecord {
 		Reads:       s.reads.Load(),
 		FailedReads: s.failedReads.Load(),
 		Outcome:     outcomeOpen,
+
+		FileIndex:       s.fileIndex,
+		BytesFetchBlock: s.bytesFetchBlock.Load(),
+		BytesRACacheHit: s.bytesRACacheHit.Load(),
+		BytesWarmupHead: s.bytesWarmupHead.Load(),
+		BytesWarmupTail: s.bytesWarmupTail.Load(),
+		SwarmServed:     s.servedByNet.Load(),
+		FailureReason:   s.failReason.Load(),
 	}
+	end := time.Now()
 	if fd := s.firstDataAt.Load(); fd > 0 {
 		ms := max(time.Duration(fd-opened).Milliseconds(), 0)
 		r.FirstByteMS = &ms
 	}
 	if !closedAt.IsZero() {
+		end = closedAt
 		r.ClosedAt = closedAt.UTC().Format(time.RFC3339)
 		r.Outcome = sessionOutcome(dead, r.BytesServed, s.tailOrDeep.Load())
 	}
+	r.DurationMS = max(end.Sub(time.Unix(0, opened)).Milliseconds(), 0)
 	return r
+}
+
+// sessionLogPrefix starts every session log line; the JSON object follows it.
+const sessionLogPrefix = "[Session] "
+
+// logSessionRecord writes one closed session as a single line. json.Marshal
+// escapes control characters, so a path cannot add a second line.
+func logSessionRecord(rec sessionRecord) {
+	line, err := json.Marshal(rec)
+	if err != nil {
+		logger.Printf("WARNING: session log line for %s not written: %v", rec.Path, err)
+		return
+	}
+	logger.Printf("%s%s", sessionLogPrefix, line)
 }
 
 // sessionRing keeps the most recent closed sessions, overwriting the oldest.
