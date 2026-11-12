@@ -6,18 +6,18 @@ require (
 	github.com/RoaringBitmap/roaring v1.2.3
 	github.com/ajwerner/btree v0.0.0-20211221152037-f427b3e689c0
 	github.com/alexflint/go-arg v1.4.3
-	github.com/anacrolix/chansync v0.3.0
+	github.com/anacrolix/chansync v0.5.1
 	github.com/anacrolix/dht/v2 v2.19.2-0.20221121215055-066ad8494444
 	github.com/anacrolix/envpprof v1.3.0
 	github.com/anacrolix/fuse v0.2.0
-	github.com/anacrolix/generics v0.0.0-20230911070922-5dd7545c6b13
+	github.com/anacrolix/generics v0.0.2
 	github.com/anacrolix/go-libutp v1.3.1
 	github.com/anacrolix/log v0.14.6-0.20231202035202-ed7a02cad0b4
 	github.com/anacrolix/missinggo v1.3.0
 	github.com/anacrolix/missinggo/perf v1.0.0
 	github.com/anacrolix/missinggo/v2 v2.7.3
 	github.com/anacrolix/multiless v0.3.0
-	github.com/anacrolix/possum/go v0.0.0-20240222034319-2fe0737d4315
+	github.com/anacrolix/possum/go v0.4.0
 	github.com/anacrolix/squirrel v0.6.0
 	github.com/anacrolix/sync v0.5.1
 	github.com/anacrolix/tagflag v1.3.0
