@@ -4,6 +4,8 @@ import (
 	"sort"
 
 	"github.com/anacrolix/torrent"
+
+	"flodni/internal/gostorm/settings"
 )
 
 type Range struct {
@@ -105,6 +107,24 @@ func pieceBudgetCount(count int, capacity, pieceLength int64) int {
 // minPerReaderReadahead keeps a scan burst from starving the reader that is actually playing.
 // Matches the floor updateRA already applies to the undivided value.
 const minPerReaderReadahead = 8 << 20
+
+// CacheReadahead is the whole-cache read-ahead the stats tick hands AdjustRA: the cache size
+// (64 MiB when unset) times the read-ahead percentage (95 when unset), at least 8 MiB.
+func CacheReadahead() int64 {
+	cacheSize := settings.BTsets.CacheSize
+	if cacheSize == 0 {
+		cacheSize = 64 << 20 // 64 MB default
+	}
+	readAheadPct := int64(settings.BTsets.ReaderReadAHead)
+	if readAheadPct == 0 {
+		readAheadPct = 95 // 95% default
+	}
+	adj := cacheSize * readAheadPct / 100
+	if adj < 8<<20 {
+		adj = 8 << 20 // minimum 8 MB
+	}
+	return adj
+}
 
 // perReaderReadahead splits a whole-cache readahead across the active readers, the same divisor
 // getOffsetRange uses for the protected window. Undivided, a second reader asks the torrent to

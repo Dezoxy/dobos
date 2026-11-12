@@ -335,19 +335,7 @@ func (t *Torrent) updateRA() {
 	if t.cache == nil {
 		return
 	}
-	// Calculate read-ahead from settings instead of hardcoded 16MB
-	cacheSize := settings.BTsets.CacheSize
-	if cacheSize == 0 {
-		cacheSize = 64 << 20 // 64 MB default
-	}
-	readAheadPct := int64(settings.BTsets.ReaderReadAHead)
-	if readAheadPct == 0 {
-		readAheadPct = 95 // 95% default
-	}
-	adj := cacheSize * readAheadPct / 100
-	if adj < 8<<20 {
-		adj = 8 << 20 // minimum 8 MB
-	}
+	adj := torrstor.CacheReadahead()
 	go t.cache.AdjustRA(adj)
 }
 
