@@ -180,13 +180,16 @@ Bugs and data-loss risks. None open.
   a session on the first read after a close would fix it; weigh a new
   session per pause against one long one.
 - **Warmup accounting drift sources left.** The head write and removal race
-  is closed, but `totalSize` can still drift: the eviction walk stores an
-  absolute total outside `tailMu`; `dropResidue` unlinks and subtracts
-  without `tailMu`; `GetAvailableRange`'s unlocked Stat then Store can save
-  a stale-low size (a `CompareAndSwap` on the entry would fix it); a
-  CORRUPT CACHE removal never subtracts; and the head create's
-  `handles.Store` should be a `Swap` that closes the old descriptor, or it
-  leaks one. `flodni_warmup_cache_bytes` exports this total as approximate.
+  is closed, and `GetAvailableRange` no longer stores a stale-low size over
+  a writer's newer one. `totalSize` can still drift: the eviction walk
+  stores an absolute total outside `tailMu`; `dropResidue` unlinks and
+  subtracts without `tailMu`; a CORRUPT CACHE removal never subtracts; and
+  the head create's `handles.Store` should be a `Swap` that closes the old
+  descriptor, or it leaks one. `flodni_warmup_cache_bytes` exports this
+  total as approximate.
+- **Stale comment in `fuse_nodes.go` (`Open`).** It says `Open` needs head
+  and tail ready. Its warm path uses `headReady` only; `tailReady` feeds the
+  `[TTFF]` log line. Fix the comment in its own change.
 - **More series on `/metrics/prometheus`.** Left out of the first version,
   each for its own reason:
   - Engine and peer series (hedge, eject, churn, the gradient loop). The

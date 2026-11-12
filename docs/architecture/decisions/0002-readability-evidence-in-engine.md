@@ -136,7 +136,7 @@ Status of each part:
 | Prometheus text exposition at `GET /metrics/prometheus`: session latency histograms, read counts and bytes by serving path, session outcomes, dead-swarm verdicts, warmup cache size and evictions (the README lists the series) | Exists |
 | Per-file readability record | **Designed, not implemented** |
 | Played and evicted state per file (state database schema 13); quota eviction takes head and tail together, files never played first, then played files, oldest first; one `[WarmupEvict]` log line per eviction; `flodni_playback_starts_total` and `flodni_warmup_cold_reopen_total` | Exists; "played" is a playback confirmed by the media server webhook, so without webhooks nothing is ever played and the order is oldest first |
-| Internal list of files whose head and tail windows are on disk, and the gauges built on it | **Designed, not implemented** |
+| Internal list of files whose head and tail windows are on disk; `flodni_warmup_files{window}` and `flodni_readability_torrents{state}` built on it and on the record | Exists; the per-file list is internal and not served, only the aggregates are exported |
 | Background fills evict only files never played, or nothing | **Designed, not implemented**; the eviction function takes such a policy, and no caller uses it yet |
 | Warm on add, catch-up and retries | **Designed, not implemented** |
 | Byte budget for non-playback readers | **Designed, not implemented** |
@@ -190,8 +190,9 @@ is updated when it does.
   is fixed or its trigger is known: a second reader on a torrent is the
   pattern of that stall. Warming pauses while a playback session is open.
 - Index mode (`warmup_dir` set, `pump_on_open` off) is a prerequisite for
-  warming and for the cache-window list. Other deployments get the
-  readability record only.
+  warming. The cache-window list and `flodni_warmup_files` exist wherever
+  the warmup cache is on; outside index mode tail coverage does not
+  survive a restart, so the tail count starts at 0 again.
 - No model or view changes are needed now; they come with the warmer step.
 
 ## Links

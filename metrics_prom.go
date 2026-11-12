@@ -122,6 +122,7 @@ func collectProm(w *promtext.Writer) {
 
 	collectWarmupProm(w)
 	collectPlaybackProm(w)
+	collectReadabilityProm(w)
 	collectReadAheadProm(w)
 
 	w.Counter("flodni_fuse_short_reads_total",
@@ -143,6 +144,11 @@ func collectWarmupProm(w *promtext.Writer) {
 			"Approximate size of the warmup cache on disk: a running total, resynced from the disk on each eviction walk, that can drift.",
 			promSample(d.TrackedBytes()))
 		w.Gauge("flodni_warmup_cache_quota_bytes", "Size limit of the warmup cache.", promSample(st.QuotaBytes))
+		heads, tails := d.WarmCounts()
+		w.Gauge("flodni_warmup_files",
+			"Media files with a warm window on disk now, by window: heads at or above the ready floor, tails fully covered. Read from memory, so it can lag a removal made behind the cache's back.",
+			promSample(heads, lbl("window", "head")),
+			promSample(tails, lbl("window", "tail")))
 	}
 	w.Counter("flodni_warmup_evictions_total", "Files removed by quota eviction, by window.",
 		promSample(st.EvictedHeads, lbl("window", "head")),
@@ -156,6 +162,21 @@ func collectWarmupProm(w *promtext.Writer) {
 	w.Counter("flodni_warmup_write_queue_drops_total",
 		"Head chunks dropped because the warmup write queue was full.",
 		promSample(st.WriteQueueDrops))
+}
+
+// collectReadabilityProm writes the library by readability. The numbers come from the
+// ticker, not from the database, so a scrape stays in memory. No series without the
+// state database: nothing is recorded then, and a zero would read as "all fine".
+func collectReadabilityProm(w *promtext.Writer) {
+	c := readabilityGauge.Load()
+	if c == nil {
+		return
+	}
+	w.Gauge("flodni_readability_torrents",
+		"Library torrents by readability, refreshed every minute: failed has a failure streak, ok has none and a read served by the swarm, never_read is the rest.",
+		promSample(c.ok, lbl("state", "ok")),
+		promSample(c.failed, lbl("state", "failed")),
+		promSample(c.neverRead, lbl("state", "never_read")))
 }
 
 func collectPlaybackProm(w *promtext.Writer) {

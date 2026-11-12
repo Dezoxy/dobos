@@ -138,6 +138,8 @@ check_prometheus() {
   fi
   echo "PROM ($variant): reads=$reads bytes=$bytes" >&2
   echo "PROM ($variant): $(grep -E '^flodni_(read_duration_seconds_count|read_bytes_total)\{' <<<"$body" | tr '\n' ' ')" >&2
+  # Measurement only: warm files and the readability split, as the scrape sees them.
+  echo "PROM ($variant): $(grep -E '^flodni_(warmup_files|warmup_cache_bytes|readability_torrents)[{ ]' <<<"$body" | tr '\n' ' ')" >&2
   if [ "$variant" = index-cache ]; then
     status=$(prom_raw noauth | head -n 1 | tr -d '\r')
     if [[ "$status" != *" 401 "* ]]; then
@@ -162,6 +164,24 @@ check_sessions_closed() {
     return 1
   fi
   echo "PROM (replacement): sessions_closed served=$n" >&2
+}
+
+# check_readability_gauge: the gauge refreshes every 60 s, so poll up to 70 s
+# for the library to show in it (inode map count and ticker, end to end).
+check_readability_gauge() {
+  local body="" sum=0 deadline=$((SECONDS + 70))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    body=$(prom_raw)
+    sum=$(awk '/^flodni_readability_torrents\{/ { n += $2 } END { print n + 0 }' <<<"$body")
+    [ "$sum" -ge 1 ] && break
+    sleep 5
+  done
+  echo "PROM (replacement): $(grep -E '^flodni_readability_torrents\{' <<<"$body" | tr '\n' ' ')" >&2
+  if [ "$sum" -lt 1 ]; then
+    echo "FAIL (replacement): flodni_readability_torrents still sums to 0 after 70 s" >&2
+    dump_diagnostics
+    return 1
+  fi
 }
 
 # check_readability out: B's session closes up to two minutes after its last read, so
@@ -513,6 +533,7 @@ run_replacement() {
     return 1
   fi
   check_readability "$out" || return 1
+  check_readability_gauge || return 1
   check_session_line "$out" || return 1
   check_sessions_closed || return 1
   check_sha "B read after refused C" "$path_b" "$(cat "$out/b.sha256")"

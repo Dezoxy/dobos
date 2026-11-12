@@ -100,3 +100,37 @@ func TestStateCallbacksRunOutsideTailMu(t *testing.T) {
 		t.Fatalf("callback states = %v, want [true false]", states)
 	}
 }
+
+// A stale size entry for a vanished head must not survive the file's re-creation at
+// offset 0. The create stores the stale size (and skips the quota accounting), so a
+// later out-of-order chunk at an offset the new file never reached passes the density
+// check and leaves a hole that GetAvailableRange reports as covered.
+func TestHeadCreateAtZeroOverStaleSizeLeavesNoHole(t *testing.T) {
+	d := indexCache(t, t.TempDir())
+	const chunk = 64 << 10
+	const stale = 4 * chunk
+	path := d.filePath("h", 1)
+
+	d.sizeCache.Store(path, sizeEntry{size: stale, updatedAt: time.Now()})
+
+	d.processWrite("h", 1, bytes.Repeat([]byte{1}, chunk), 0)
+	if got := d.GetAvailableRange("h", 1); got != chunk {
+		t.Fatalf("range after create = %d, want %d (stale entry leaked)", got, chunk)
+	}
+	if got := d.TrackedBytes(); got != chunk {
+		t.Fatalf("tracked = %d, want %d", got, chunk)
+	}
+
+	// Out of order: starts past the end of what the file really holds.
+	d.processWrite("h", 1, bytes.Repeat([]byte{2}, chunk), 2*chunk)
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() != chunk {
+		t.Fatalf("file size %d, want %d: out-of-order chunk left a hole", fi.Size(), chunk)
+	}
+	if got := d.GetAvailableRange("h", 1); got != chunk {
+		t.Fatalf("range = %d, want %d", got, chunk)
+	}
+}

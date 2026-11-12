@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flodni/internal/gostorm/native"
 	"flodni/internal/promtext"
+	"flodni/internal/warmup"
 	"io"
 	"log"
 	"net/http"
@@ -162,5 +163,22 @@ func TestVerdictCountedWhenTheStoreFails(t *testing.T) {
 	rec(native.Outcome{Hash: rHash, Kind: native.OutcomeSwarmRead}) // not a verdict
 	if got := deadSwarmVerdictCounts()[key] - before; got != 1 {
 		t.Fatalf("verdicts +%d, want 1", got)
+	}
+}
+
+func TestWarmupFilesGaugeNeedsTheCache(t *testing.T) {
+	prev := warmup.DiskWarmup
+	t.Cleanup(func() { warmup.DiskWarmup = prev })
+
+	warmup.DiskWarmup = nil
+	if strings.Contains(scrape(t).Body.String(), "flodni_warmup_files") {
+		t.Fatal("flodni_warmup_files present with the cache off")
+	}
+	warmup.DiskWarmup = &warmup.DiskWarmupCache{}
+	body := scrape(t).Body.String()
+	for _, want := range []string{`flodni_warmup_files{window="head"} 0`, `flodni_warmup_files{window="tail"} 0`} {
+		if !strings.Contains(body, want+"\n") {
+			t.Errorf("missing %q", want)
+		}
 	}
 }
