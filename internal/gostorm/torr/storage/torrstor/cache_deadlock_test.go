@@ -229,3 +229,80 @@ func TestMemPieceConcurrentReadWrite(t *testing.T) {
 		t.Errorf("caught %d panic(s) during concurrent read/write", n)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TestMarkCompleteEvictsConcurrentNoDeadlock
+// MarkComplete (evictNow, a blocking muRemove.Lock) races the cleaner's
+// cleanPieces (TryLock) on an over-capacity cache; must finish in < 10s.
+// ---------------------------------------------------------------------------
+
+func TestMarkCompleteEvictsConcurrentNoDeadlock(t *testing.T) {
+	const pieceCount = 64
+	const pieceLen = int64(64 * 1024)
+
+	c := &Cache{
+		capacity:      int64(pieceCount/4) * pieceLen, // far below what the pieces hold
+		pieceLength:   pieceLen,
+		pieceCount:    pieceCount,
+		pieces:        make(map[int]*Piece),
+		readers:       make(map[*Reader]struct{}),
+		cleanTrigger:  make(chan struct{}, 1),
+		cleanStop:     make(chan struct{}),
+		localPriority: make(map[int]torrenttypes.PiecePriority),
+		pieceInRange:  make([]bool, pieceCount),
+		// torrent is intentionally nil → priority updates are no-ops
+	}
+	defer close(c.cleanStop)
+
+	for i := 0; i < pieceCount; i++ {
+		p := &Piece{Id: i, cache: c, mPiece: &MemPiece{}}
+		p.mPiece.piece = p
+		c.pieces[i] = p
+	}
+	// fill mimics a finished write, so every round finds the cache over capacity again.
+	fill := func(p *Piece) {
+		p.mPiece.mu.Lock()
+		if p.mPiece.buffer == nil {
+			p.mPiece.buffer = make([]byte, pieceLen)
+		}
+		p.mPiece.mu.Unlock()
+		atomic.StoreInt64(&p.Size, pieceLen)
+	}
+	for _, p := range c.pieces {
+		fill(p)
+		p.Complete.Store(true)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		var wg sync.WaitGroup
+		for i := 0; i < 4; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for j := 0; j < 50; j++ {
+					c.cleanPieces()
+				}
+			}()
+		}
+		for i := 0; i < 6; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				for j := 0; j < 50; j++ {
+					p := c.pieces[(i*7+j)%pieceCount]
+					fill(p)
+					_ = p.MarkComplete()
+				}
+			}(i)
+		}
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("TestMarkCompleteEvictsConcurrentNoDeadlock: deadlock detected (timeout after 10s)")
+	}
+}

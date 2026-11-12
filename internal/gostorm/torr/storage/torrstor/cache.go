@@ -154,7 +154,7 @@ func (c *Cache) Init(info *metainfo.Info, hash metainfo.Hash) {
 	c.pieceLength = info.PieceLength
 	c.pieceCount = info.NumPieces()
 	c.hash = hash
-	// A byte budget, not a piece count: cleanPieces evicts at most once per second, so a
+	// A byte budget, not a piece count: the cleaner evicts at most once per second, so a
 	// batch is throughput/second worth of pieces - about 8 at 63MB/s with 8MB pieces. Sizing
 	// on a fraction of the piece count did the opposite of what was needed, shrinking the
 	// freelist exactly where pieces are largest: 4K streaming got freeCap 2 against batches
@@ -356,8 +356,8 @@ func (c *Cache) cleanPieces() {
 	// would block up to 1s on waitAvailable() before priorities were updated.
 	c.refreshPriorities()
 
-	// V138: Throttle eviction to at most once per second,
-	// unless we are near capacity (>90%)
+	// V138: Throttle the cleaner's eviction to at most once per second, unless we are near
+	// capacity (>90%). MarkComplete evicts through evictNow and skips this throttle.
 	now := time.Now()
 	if now.UnixNano()-c.lastCleanNS.Load() < int64(time.Second) && atomic.LoadInt64(&c.filled) < (c.capacity*9)/10 {
 		return
@@ -367,6 +367,33 @@ func (c *Cache) cleanPieces() {
 	if !c.muRemove.TryLock() {
 		return
 	}
+	c.evictOverCapacity(now)
+}
+
+// evictNow evicts down to capacity without the once-a-second throttle, waiting for a running
+// eviction instead of skipping. The piece that is completing is counted already, so a cache that
+// is full does not report every piece complete for the second until the next scheduled eviction.
+func (c *Cache) evictNow() {
+	if c.isClosed.Load() || c.capacity <= 0 {
+		return
+	}
+	c.muReaders.RLock()
+	pieces := c.pieces
+	c.muReaders.RUnlock()
+	var stored int64
+	for _, p := range pieces {
+		stored += atomic.LoadInt64(&p.Size)
+	}
+	if stored <= c.capacity {
+		return
+	}
+	c.muRemove.Lock()
+	c.evictOverCapacity(time.Now())
+}
+
+// evictOverCapacity drops the oldest evictable pieces while the cache holds more than its
+// capacity. The caller holds muRemove; it is released here.
+func (c *Cache) evictOverCapacity(now time.Time) {
 	c.isRemove.Store(true)
 	c.lastCleanNS.Store(now.UnixNano())
 	defer func() {

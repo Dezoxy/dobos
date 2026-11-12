@@ -89,6 +89,12 @@ func (p *Piece) ReadAt(b []byte, off int64) (n int, err error) {
 }
 
 func (p *Piece) MarkComplete() error {
+	// Flodni fix: evict before the engine records this piece. A capped cache that briefly holds
+	// every piece makes the engine announce "have all" and a seeding peer drops the connection as
+	// mutually complete; with that seeder as the only peer the reader then waits for the next
+	// tracker announce, a minute away. Eviction runs before Complete is set so the piece that is
+	// completing is not a candidate: an incomplete piece is never evictable.
+	runRecovered("evictNow", p.cache.evictNow)
 	p.Complete.Store(true)
 	p.cache.dropPriority(p.Id)
 	return nil
