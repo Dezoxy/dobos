@@ -16,7 +16,7 @@ require (
 	github.com/anacrolix/torrent v1.55.0
 	github.com/cespare/xxhash/v2 v2.3.0
 	github.com/gin-contrib/cors v1.7.10
-	github.com/gin-contrib/location/v2 v2.0.4
+	github.com/gin-contrib/location/v2 v2.0.5
 	github.com/gin-gonic/gin v1.12.0
 	github.com/pkg/errors v0.9.1
 	github.com/wlynxg/anet v0.0.5
