@@ -47,50 +47,36 @@ Bugs and data-loss risks. None open.
   - Episode stubs are matched by the first 8 hash characters; two releases
     with the same prefix are treated as one.
 
-- **A read stalls about 58 s after the seeder is dropped (open).** Symptom:
-  in `tests/e2e/run.sh` the `default` variant (a 1 MiB tail read, then a full
-  `sha256sum` of a 150 MiB file, 1 MiB pieces, 128 MB cache) takes about 58 s
-  instead of 1 to 5 s in 8 of 38 runs with the cache fix below; the
-  `slow-seeder` variant hit it once. Players probe file ends before playing,
-  so this can delay real starts.
-  Observed: the engine drops the only seeder in
-  `maybeDropMutuallyCompletePeer` (`internal/anacrolix-torrent/torrent.go`)
-  after `onPieceCompleted`, and reconnecting takes about 58 s. The same
-  58 to 59 s stalls appeared in an earlier run with the storage capacity
-  removed. Inferred, not verified: the cache briefly holds every piece (it
-  evicts at most once a second), so the engine sees a mutually complete peer
-  and drops it. Next step: trace why the engine believes it has every piece
-  while the cache evicts (completion reporting against eviction), and what
-  delays the reconnect.
-  **The 34 s stall is fixed (2026-11-12, see the Done line of
-  [roadmap.md](roadmap.md) Reliability step 6).** It was about 34 s, in 15 of
-  17 unfixed runs of the `default` variant, and went away at 512 MB or
-  160 MB of cache against the 150 MiB file, so the threshold is the file size
-  and larger files than the cache are the normal case. Cause: `torrstor`
-  raised piece priorities but never dropped them on completion. With a
-  storage cap the engine's request scan spends the cap on pieces in priority
-  order, complete or not, so stale high-priority complete pieces used it up
-  and the wanted piece was never requested; a later priority-only change woke
-  no peer. `MarkComplete` now drops the cache's priority, and
-  `setLoadPriority` holds `muPriority` across `SetPiecePriorities`. With the
-  fix 0 of 38 runs showed the 34 s stall.
-  **Known engine gap, not fixed:** a priority or order change alone wakes no
-  idle peer. An engine-side wake removed the 34 s stall too (0 of 11) but was
-  not shipped, since fixes belong in Flodni's own code. The earlier note that
-  waking peers did not help came from a PR #54 attempt that was never
-  committed; it probably fired before the stale priorities were cleared, or
-  the 58 s stall was read as the same one. Unverified.
-  **Reapply the instrumentation:** `git apply docs/ideas/stall-dump.patch`
-  ([patch](ideas/stall-dump.patch)) on `main` adds a dump at the first fetch
-  timeout. Set `FLODNI_STALL_DUMP=<n>` for the dump and `FLODNI_STALL_POKE=1`
-  for the wake experiment; `tests/e2e` passes them through as `E2E_STALL_DUMP`
-  and `E2E_STALL_POKE`.
+- **Stalls after a tail probe: fixed, two gaps left.** Both stalls of
+  Reliability step 6 are fixed in the cache (see the Done lines of
+  [roadmap.md](roadmap.md)). What stays open, not planned:
+  - **An order-only change wakes no idle peer.** In the engine a priority or
+    request-order change that leaves the pending set as it was triggers no
+    request update. The stale cache priorities exposed it; an engine-side
+    wake removed the 34 s stall too (0 of 11 runs) but was not shipped,
+    since fixes belong in Flodni's own code. Another producer of an
+    order-only change could expose it again. An earlier note that waking
+    peers did not help came from an attempt that was never committed;
+    probably it ran before the stale priorities were cleared, or the 58 s
+    stall was read as the same one. Unverified.
+  - **A dropped only peer comes back at the next announce, a minute away.**
+    The engine floors a tracker's announce interval at one minute
+    (`internal/anacrolix-torrent/tracker_scraper.go`) and does not keep a
+    dropped peer to redial. A private torrent with one seeder and one
+    tracker that loses its peer for any reason waits up to a minute.
+    Not covered: a cache over capacity with nothing evictable (everything
+    sits in a reader window or a file guard) can still reach "have all".
+  - **Reapply the instrumentation:** `git apply docs/ideas/stall-dump.patch`
+    ([patch](ideas/stall-dump.patch)) on `main` adds a dump at the first
+    fetch timeout. Set `FLODNI_STALL_DUMP=<n>` for the dump and
+    `FLODNI_STALL_POKE=1` for the wake experiment; `tests/e2e` passes them
+    through as `E2E_STALL_DUMP` and `E2E_STALL_POKE`.
 
 - **Warm the next episode during playback.** While episode N plays, fill
   episode N+1's windows so a binge starts at once. Not planned: a second
-  reader on the playing torrent splits the engine's read-ahead and is the
-  pattern of the open stall. Needs warm on add in place, the stall settled
-  and a measurement that the playing stream does not slow down.
+  reader on the playing torrent splits the engine's read-ahead. Needs warm
+  on add in place and a measurement that the playing stream does not slow
+  down.
 - **Evict the least recently read file.** Not built. Eviction takes files
   never played first, then the oldest written. Whether read recency would
   keep more starts warm is measured first: `flodni_warmup_cold_reopen_total`

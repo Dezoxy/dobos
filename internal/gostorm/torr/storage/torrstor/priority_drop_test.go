@@ -76,3 +76,54 @@ func TestMarkCompleteDropsCachePriority(t *testing.T) {
 		t.Error("localPriority entry kept after MarkComplete")
 	}
 }
+
+// A capped cache must evict as a piece completes, not up to a second later: until it does the
+// engine counts every piece complete and tells the swarm so.
+func TestMarkCompleteEvictsOverCapacity(t *testing.T) {
+	const pieceLen = int64(1 << 20)
+	const pieces = 6
+	c := &Cache{
+		capacity:      3 * pieceLen,
+		pieceLength:   pieceLen,
+		pieceCount:    pieces,
+		pieces:        make(map[int]*Piece),
+		readers:       make(map[*Reader]struct{}),
+		cleanTrigger:  make(chan struct{}, 1),
+		cleanStop:     make(chan struct{}),
+		localPriority: make(map[int]torrenttypes.PiecePriority),
+		pieceInRange:  make([]bool, pieces),
+	}
+	defer close(c.cleanStop)
+	for i := 0; i < pieces; i++ {
+		p := &Piece{Id: i, cache: c, mPiece: &MemPiece{}}
+		p.mPiece.piece = p
+		p.mPiece.buffer = make([]byte, pieceLen)
+		p.Size = pieceLen
+		// The completing piece is the oldest, so it is the first victim if it counts as complete.
+		p.Accessed = int64(pieces - i)
+		p.Complete.Store(i != pieces-1)
+		c.pieces[i] = p
+	}
+	last := c.pieces[pieces-1]
+	if err := last.MarkComplete(); err != nil {
+		t.Fatal(err)
+	}
+	var stored int64
+	complete := 0
+	for _, p := range c.pieces {
+		stored += p.Size
+		if p.Complete.Load() {
+			complete++
+		}
+	}
+	if stored > c.capacity {
+		t.Errorf("stored %d bytes after MarkComplete, capacity %d", stored, c.capacity)
+	}
+	if complete == pieces {
+		t.Error("every piece still reports complete")
+	}
+	if !last.Complete.Load() || last.Size != pieceLen {
+		t.Errorf("the completing piece was evicted: complete=%v size=%d, want true and %d",
+			last.Complete.Load(), last.Size, pieceLen)
+	}
+}

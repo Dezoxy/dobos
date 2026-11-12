@@ -113,12 +113,11 @@ Releases and deployment are scheduled separately.
    engine through an interface instead of the concrete client, and tests cover
    the fetch, prefetch and pump branches that only the end-to-end test reaches
    today. This is the last prerequisite for the `App` struct.
-6. **No stall after a tail probe.** A read that follows a tail read stalled
-   for about 34 s in the end-to-end test; that stall is fixed in the cache
-   (see the Done list). The step stays open for a second stall of about 58 s
-   where the engine drops the only seeder and reconnecting is slow (see
-   [ideas.md](ideas.md)). Players probe the end of a file before playing it,
-   so this delays real starts.
+6. **No stall after a tail probe.** [FINISHED] A read that follows a tail
+   read stalled for about 34 s, and in some runs about 58 s, in the
+   end-to-end test. Both causes were in the cache and are fixed (see the
+   Done list); what the engine still leaves open is in
+   [ideas.md](ideas.md).
 
 ## Readability evidence
 
@@ -158,8 +157,8 @@ A file should start from the SSD the first time it is opened, and a reader
 that is not playback should not pull a whole file through the swarm. These
 steps build on index mode (`warmup_dir` set, `pump_on_open` off), where
 only hash-checked data reaches the cache and tail coverage survives a
-restart. Steps 2 and 3 wait until Reliability step 6 is fixed or its
-trigger is known.
+restart. Steps 2 and 3 waited on Reliability step 6, which is now
+finished.
 
 1. **Honest cache state and eviction.** [FINISHED] Phase a: the cache
    remembers per file when a playback confirmed by the media server's
@@ -346,3 +345,11 @@ trigger is known.
   and the wanted piece was never requested; `MarkComplete` now drops the
   priority. 0 of 38 e2e runs stalled at 34 s, against 15 of 17 before. A 58 s
   peer-drop stall remains open.
+- 2026-11-12, reliability step 6, part two: the 58 s stall is fixed in the
+  cache. When the last piece completed, the capped cache briefly held every
+  piece (it evicted at most once a second), so the engine advertised every
+  piece and the seeder closed the connection as mutually complete; with
+  that seeder the only peer and tracker, the reader waited for the next
+  announce, a minute later. `MarkComplete` now evicts down to capacity
+  before the engine records the piece. 0 of 40 `default` runs stalled,
+  against 4 of 24 before.

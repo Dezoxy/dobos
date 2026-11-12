@@ -186,9 +186,8 @@ is updated when it does.
 - Negative: Flodni grows a public read-only contract that has to stay
   stable, and the success rule has to be kept by every writer of the
   record.
-- Warm on add and catch-up wait until the read stall in Reliability step 6
-  is fixed or its trigger is known: a second reader on a torrent is the
-  pattern of that stall. Warming pauses while a playback session is open.
+- Warm on add and catch-up waited for the read stall in Reliability step 6,
+  now fixed in the cache. Warming pauses while a playback session is open.
 - Index mode (`warmup_dir` set, `pump_on_open` off) is a prerequisite for
   warming. The cache-window list and `flodni_warmup_files` exist wherever
   the warmup cache is on; outside index mode tail coverage does not
