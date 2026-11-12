@@ -10,7 +10,7 @@ require (
 	github.com/anacrolix/dht/v2 v2.19.2-0.20221121215055-066ad8494444
 	github.com/anacrolix/envpprof v1.3.0
 	github.com/anacrolix/fuse v0.2.0
-	github.com/anacrolix/generics v0.0.0-20230911070922-5dd7545c6b13
+	github.com/anacrolix/generics v0.0.2
 	github.com/anacrolix/go-libutp v1.3.1
 	github.com/anacrolix/log v0.14.6-0.20231202035202-ed7a02cad0b4
 	github.com/anacrolix/missinggo v1.3.0
@@ -30,7 +30,7 @@ require (
 	github.com/elliotchance/orderedmap v1.4.0
 	github.com/frankban/quicktest v1.14.6
 	github.com/fsnotify/fsnotify v1.5.4
-	github.com/go-llsqlite/adapter v0.0.0-20230927005056-7f5ce7f0c916
+	github.com/go-llsqlite/adapter v0.2.0
 	github.com/google/btree v1.1.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/datachannel v1.5.2
