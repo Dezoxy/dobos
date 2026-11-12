@@ -1,6 +1,6 @@
 // Renovate opens version updates as pull requests against main, through the Mend Renovate app.
 // Security fixes come from GitHub's Dependabot alerts, which Renovate reads: keep those alerts on.
-// Nothing automerges.
+// They skip the schedule and the release age. Nothing automerges.
 {
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
   // githubActionsVersions reads a `# renovate:` comment above a `*_VERSION:` key in a workflow.
@@ -11,7 +11,7 @@
   // A new release waits a week before it is proposed: time for a compromised one to be pulled.
   minimumReleaseAge: '7 days',
   // The vendored engine has its own go.mod and Dockerfile and is patched in-tree, never bumped.
-  // This list replaces the one from config:recommended; no other ignored folder exists here.
+  // This list replaces the one from config:recommended; tests/ holds no file a manager reads.
   ignorePaths: ['internal/anacrolix-torrent/**'],
   postUpdateOptions: ['gomodTidy'],
   packageRules: [
@@ -44,13 +44,9 @@
       groupName: 'golang image',
     },
     {
-      description: 'Docker registries and digest refreshes may give no release timestamp. Required, such an update would wait forever; optional, it is proposed without the wait.',
+      description: 'These registries give no release timestamp. Required, their updates would wait forever; optional, they are proposed without the wait.',
       matchDatasources: ['docker'],
-      minimumReleaseAgeBehaviour: 'timestamp-optional',
-    },
-    {
-      description: 'Digest refreshes, such as an action re-pinned at the same version, may carry no release timestamp.',
-      matchUpdateTypes: ['digest'],
+      matchPackageNames: ['golang', 'ghcr.io/zizmorcore/zizmor'],
       minimumReleaseAgeBehaviour: 'timestamp-optional',
     },
     {
