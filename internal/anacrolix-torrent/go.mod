@@ -11,11 +11,11 @@ require (
 	github.com/anacrolix/envpprof v1.3.0
 	github.com/anacrolix/fuse v0.2.0
 	github.com/anacrolix/generics v0.0.0-20230911070922-5dd7545c6b13
-	github.com/anacrolix/go-libutp v1.3.1
+	github.com/anacrolix/go-libutp v1.5.1
 	github.com/anacrolix/log v0.14.6-0.20231202035202-ed7a02cad0b4
 	github.com/anacrolix/missinggo v1.3.0
 	github.com/anacrolix/missinggo/perf v1.0.0
-	github.com/anacrolix/missinggo/v2 v2.7.3
+	github.com/anacrolix/missinggo/v2 v2.10.0
 	github.com/anacrolix/multiless v0.3.0
 	github.com/anacrolix/possum/go v0.0.0-20240222034319-2fe0737d4315
 	github.com/anacrolix/squirrel v0.6.0
@@ -39,7 +39,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	go.opentelemetry.io/otel v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
-	golang.org/x/exp v0.0.0-20230626212559-97b1e661b5df
+	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948
 	golang.org/x/sys v0.49.0
 	golang.org/x/time v0.0.0-20220609170525-579cf78fd858
 )
@@ -47,9 +47,9 @@ require (
 require (
 	github.com/alecthomas/atomic v0.1.0-alpha2 // indirect
 	github.com/alexflint/go-scalar v1.1.0 // indirect
-	github.com/anacrolix/mmsg v1.0.0 // indirect
-	github.com/anacrolix/stm v0.4.0 // indirect
-	github.com/benbjohnson/immutable v0.3.0 // indirect
+	github.com/anacrolix/mmsg v1.0.1 // indirect
+	github.com/anacrolix/stm v0.5.0 // indirect
+	github.com/benbjohnson/immutable v0.4.1-0.20221220213129-8932b999621d // indirect
 	github.com/bits-and-blooms/bitset v1.2.2 // indirect
 	github.com/bradfitz/iter v0.0.0-20191230175014-e8f45d346db8 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
