@@ -19,6 +19,7 @@
   "fuse_mount_path": "/mnt/flodni-virtual",
   "disk_warmup_quota_gb": 15,
   "warmup_head_size_mb": 64,
+  "played_protection_days": 90,
   "plex": {
     "url": "http://127.0.0.1:32400",
     "token": "",

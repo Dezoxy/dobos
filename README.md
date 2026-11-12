@@ -197,6 +197,58 @@ and `[DeadSwarm]` lines are unchanged, and their wording is not a contract.
   page cache answers repeated reads without Flodni seeing them.
 - The line carries the library path. Remove it before sharing a log.
 
+## Warmup cache eviction
+
+With the warmup cache on, a new head file that would pass the quota evicts
+whole media files, head and tail together. Files never played go first, then
+played files; each class goes oldest written first. This is built and runs
+today. What is not built: the list of which files are warm and warm on add
+(both designed in `docs/roadmap.md`), and evicting the least recently read
+file (an idea in `docs/ideas.md`, not planned).
+
+- **Played** means a playback confirmed by the media server webhook (Plex or
+  Jellyfin), never a scanner's read. A webhook marks at most one file: a
+  movie by file name, IMDB id or a unique title (and year); an episode by
+  file name, or by a unique IMDB id that agrees with the file's season and
+  episode, or by series title, season and episode together
+  (`Metadata.parentIndex` and `Metadata.index`, the Plex names; a Jellyfin
+  template must send the same fields, and that is not verified against a
+  Jellyfin server). When several candidates fit equally, or an episode
+  webhook carries no season and episode and no file name, no file is marked:
+  a missed play costs one file its protection, a wrong mark would protect a
+  season. Marking does not change which file the webhook starts playback
+  for.
+- **Protection expires.** A play protects its file for `played_protection_days`
+  (default 90) counted from the last play; after that the file ranks as never
+  played. `0` means a play protects forever. A negative value is logged at
+  load and replaced by 90.
+- **Limits.** Without a webhook nothing is ever played, so the order is
+  oldest first. With the state database off (`enable_state_db`) the marks
+  live in memory and are gone at restart. A play whose webhook arrives
+  before the file is opened is not marked. When only played files remain,
+  any read through the mount can evict the oldest played file, because a
+  play's first reads cannot be told from a scan before the webhook arrives.
+- **State.** The marks are in the state database table `file_state` (schema
+  13): the last play and whether the quota evicted the file. Eviction
+  removes bytes only; the readability record stays. A torrent removed from
+  the library loses its marks, and a startup prune after a complete library
+  scan drops the marks of torrents that left it.
+- **Log line.** Each evicted file logs one line, `[WarmupEvict] ` followed by
+  a JSON object: `hash` (full), `file` (index), `head_bytes`, `tail_bytes`
+  (0 when that window was not on disk), `age_s` (since the newer window was
+  written), `played` (inside its protection) and `trigger` (`head_create`
+  today). It carries no path. The prefix and field names are meant to be
+  stable.
+- **Cold reopen.** `flodni_warmup_cold_reopen_total` counts a confirmed play
+  on a session that opened with no ready head, of a file with an eviction
+  mark; it counts once per eviction and clears the mark. `previously_played`
+  says whether the file had been played before, expired or not.
+  `flodni_playback_starts_total` counts the same confirmed starts (not
+  playing to playing), the denominator for the rate. A start whose webhook
+  resolves to no single file is still counted, but its cold reopen is not,
+  so the rate is a lower bound. Neither counts a play whose webhook matches
+  no open file.
+
 ## Metrics
 
 `GET /metrics/prometheus` on the control port serves the Prometheus text
@@ -235,6 +287,8 @@ scraper on the same host or Docker network.
 | `flodni_warmup_cache_quota_bytes` | gauge | none | Its size limit; only with the cache enabled. |
 | `flodni_warmup_evictions_total` | counter | `window` | Files removed by quota eviction, `head` or `tail`. |
 | `flodni_warmup_evicted_bytes_total` | counter | `window` | Their apparent size in bytes. |
+| `flodni_playback_starts_total` | counter | none | Playbacks the media server webhook confirmed (not playing to playing). |
+| `flodni_warmup_cold_reopen_total` | counter | `previously_played` | Confirmed plays that opened cold on a file quota eviction had removed, `true` or `false` by whether it had been played before. |
 | `flodni_warmup_unverified_drops_total` | counter | none | Warmup blocks, head or tail, never written because their pieces did not verify in time. |
 | `flodni_warmup_write_queue_drops_total` | counter | none | Head chunks dropped because the warmup write queue was full. |
 | `flodni_readahead_cache_bytes` | gauge | none | Bytes in the read-ahead cache. |

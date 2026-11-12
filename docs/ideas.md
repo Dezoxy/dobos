@@ -135,6 +135,14 @@ Bugs and data-loss risks. None open.
   reader on the playing torrent splits the engine's read-ahead and is the
   pattern of the open stall. Needs warm on add in place, the stall settled
   and a measurement that the playing stream does not slow down.
+- **Evict the least recently read file.** Not built. Eviction takes files
+  never played first, then the oldest written. Whether read recency would
+  keep more starts warm is measured first: `flodni_warmup_cold_reopen_total`
+  with `previously_played="true"` over `flodni_playback_starts_total`. It
+  moves to the roadmap if that share reaches 5% of plays over a few weeks at
+  a full quota. The `previously_played="false"` series is a different
+  problem: warm data evicted before its first play points at the quota or
+  the eviction order, not at recency.
 - **Warm again after eviction.** The catch-up leaves evicted files to their
   next play; warming them again needs a quota that fits the library, or a
   rule for which files deserve it.

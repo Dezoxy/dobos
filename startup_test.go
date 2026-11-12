@@ -112,3 +112,83 @@ func TestSkippedStubStillLandsInFoundHashes(t *testing.T) {
 		t.Fatalf("skipped %d, processed %d: the stub should have taken the skip path", b.filesSkipped, b.filesProcessed)
 	}
 }
+
+// pruneFileEnv adds one played row for the in-library hash and one for the orphan, both
+// stamped before the builder started, and the same marks in memory.
+func pruneFileEnv(t *testing.T) (*StartupCacheBuilder, *metadb.DB) {
+	t.Helper()
+	b, db := pruneEnv(t)
+	old := time.Now().Add(-time.Hour)
+	prev := fileStates
+	fileStates = newFileStateIndex(nil, 90)
+	t.Cleanup(func() { fileStates = prev })
+	for _, h := range []string{inLibHash, orphHash} {
+		if err := db.MarkFilePlayed(h, 1, old); err != nil {
+			t.Fatal(err)
+		}
+		fileStates.MarkPlayed(fk(h, 1))
+	}
+	return b, db
+}
+
+func fileStateRows(t *testing.T, db *metadb.DB) int {
+	t.Helper()
+	rows, err := db.LoadFileStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(rows)
+}
+
+func TestPruneFileStateGuards(t *testing.T) {
+	tests := []struct {
+		name     string
+		complete bool
+		errors   int
+		empty    bool
+	}{
+		{"incomplete walk", false, 0, false},
+		{"walk errors", true, 2, false},
+		{"empty stub set", true, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, db := pruneFileEnv(t)
+			b.errors = tt.errors
+			if tt.empty {
+				b.foundHashes = map[string]bool{}
+			}
+			b.pruneFileState(tt.complete)
+			if got := fileStateRows(t, db); got != 2 {
+				t.Fatalf("rows = %d, want 2: nothing may be deleted", got)
+			}
+			if !fileStates.EverPlayed(fk(orphHash, 1)) {
+				t.Fatal("memory was forgotten although nothing was pruned")
+			}
+		})
+	}
+}
+
+func TestPruneFileStateDeletesOnlyTheOrphanAfterACompleteWalk(t *testing.T) {
+	b, db := pruneFileEnv(t)
+	b.pruneFileState(true)
+	rows, err := db.LoadFileStates()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Hash != inLibHash {
+		t.Fatalf("rows = %+v, want only the in-library hash", rows)
+	}
+	if fileStates.EverPlayed(fk(orphHash, 1)) || !fileStates.EverPlayed(fk(inLibHash, 1)) {
+		t.Fatal("memory must forget the orphan and keep the library file")
+	}
+}
+
+func TestPruneFileStateNeedsTheStateDatabase(t *testing.T) {
+	b, _ := pruneFileEnv(t)
+	stateDB = nil
+	b.pruneFileState(true) // must not panic
+	if !fileStates.EverPlayed(fk(orphHash, 1)) {
+		t.Fatal("memory changed with no database")
+	}
+}

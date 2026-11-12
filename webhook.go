@@ -84,6 +84,8 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			Title              string `json:"title"`
 			GrandparentTitle   string `json:"grandparentTitle"` // for TV series
 			Year               int    `json:"year"`
+			ParentIndex        optInt `json:"parentIndex"` // season (Plex)
+			Index              optInt `json:"index"`       // episode number (Plex)
 			LibrarySectionType string `json:"librarySectionType"`
 			Media              []struct {
 				Part []struct {
@@ -246,7 +248,19 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if exactMatch != "" && exactState != nil {
+			wasPlaying := exactState.GetStatus()
 			exactState.SetHealthy(true)
+			if !wasPlaying {
+				// A confirmed start. What gets marked played is decided separately and
+				// narrowly (played_mark.go); it never changes which file plays.
+				chosen, ok := choosePlayedFile(playedKeys{
+					basenames: basenames, imdbID: webhookImdbID,
+					section: payload.Metadata.LibrarySectionType,
+					title:   targetTitle, seriesTitle: seriesTitle, year: targetYear,
+					season: payload.Metadata.ParentIndex, episode: payload.Metadata.Index,
+				}, playedCandidates())
+				countConfirmedPlay(chosen.path, chosen.key, ok)
+			}
 			exactState.mu.Lock()
 			exactState.IsStopped = false
 			// Cache webhookImdbID into state for fast IMDB matching in future sessions.

@@ -43,7 +43,7 @@ func TestEvictionCountersByWindow(t *testing.T) {
 
 	before := CounterStats()
 	d.mu.Lock()
-	d.enforceQuotaLocked(0)
+	d.enforceQuotaLocked(0, evictOpts{})
 	d.mu.Unlock()
 	after := CounterStats()
 

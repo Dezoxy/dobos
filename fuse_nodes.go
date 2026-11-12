@@ -739,6 +739,11 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 		h.fileID = fileIdx
 		// media.stop only knows the path; keep what EnsureTail needs to reach the file.
 		tailFillTargets.Store(n.vMeta.Path, tailFillTarget{hash: finalHash, fileID: fileIdx, size: n.vMeta.Size})
+		coldHeadReady := headReady
+		if !coldHeadReady && warmup.DiskWarmup != nil && (finalHash != hashStr || fileIdx != urlFileIdx) {
+			coldHeadReady = warmup.DiskWarmup.HeadReady(finalHash, fileIdx) // the resolved pair, not the stub's
+		}
+		markColdOpen(n.vMeta.Path, warmup.FileKey{Hash: finalHash, FileIdx: fileIdx}, coldHeadReady)
 		// Gillian: proactive pump start at Open() — pump ready before first Read().
 		// pumpOnce ensures single start; late rescue path in Read() handles hash=='' case.
 		// Dezoxy fork: with pump_on_open off, only confirmed playback starts it here; a

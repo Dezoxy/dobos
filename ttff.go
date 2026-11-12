@@ -144,6 +144,9 @@ type TTFFSession struct {
 	fileIndex       int // the index the stub carries (0 = none), for the session log line
 	warmupHeadReady atomic.Bool
 	warmupTailReady atomic.Bool
+	// coldEvicted: the session opened with no ready head on a file quota eviction had
+	// removed. The webhook that confirms the play counts it, once (see filestate.go).
+	coldEvicted atomic.Bool
 
 	openedAt    atomic.Int64 // unixNano
 	firstDataAt atomic.Int64 // 0 = unset (CAS-once)

@@ -93,6 +93,11 @@ type Config struct {
 	// WarmupDir; upstream keeps 64 MB and 16 MB.
 	WarmupHeadSizeMB int64 `json:"warmup_head_size_mb"`
 	WarmupTailSizeMB int64 `json:"warmup_tail_size_mb"`
+	// PlayedProtectionDays is how long a play confirmed by the media server keeps a
+	// file out of the first rounds of quota eviction, counted from its last play.
+	// After that the file ranks as never played. 0 means a play protects forever;
+	// a negative value is refused at load and replaced by the default (90).
+	PlayedProtectionDays int `json:"played_protection_days"`
 
 	// --- External Services (V1.4.6) ---
 	Plex struct {
@@ -172,6 +177,8 @@ func LoadConfig() Config {
 		DiskWarmupQuotaGB: 15,
 		WarmupHeadSizeMB:  64,
 		WarmupTailSizeMB:  16,
+
+		PlayedProtectionDays: 90,
 
 		GoStormBaseURL: "http://127.0.0.1:8090",
 		MetricsPort:    9080,
@@ -342,6 +349,18 @@ func (c *Config) finalize() {
 		c.FuseMaxInflightMB = 0
 	} else if c.FuseMaxInflightMB > 0 && c.FuseMaxInflightMB < 16 {
 		c.FuseMaxInflightMB = 16
+	}
+
+	if c.PlayedProtectionDays < 0 {
+		log.Printf("[Config] WARNING: played_protection_days %d is negative; using 90", c.PlayedProtectionDays)
+		c.PlayedProtectionDays = 90
+	}
+
+	// Above ~100,000 days the protection time overflows a duration and would turn
+	// protection off by accident.
+	if c.PlayedProtectionDays > 36500 {
+		log.Printf("[Config] WARNING: played_protection_days %d is absurd; using 0 (never expire)", c.PlayedProtectionDays)
+		c.PlayedProtectionDays = 0
 	}
 
 	// Calculate MetadataCacheSize in bytes
