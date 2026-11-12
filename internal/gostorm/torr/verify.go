@@ -18,6 +18,25 @@ func (t *Torrent) RangeVerified(fileID int, off, n int64) bool {
 	return true
 }
 
+// VerifiedPieces counts the pieces covering [off, off+n) of file fileID that have passed
+// their checksum, and how many pieces cover it (Dezoxy fork). Piece storage is RAM only,
+// so a piece that was not complete and is now came from the swarm: warmup compares the
+// count before and after a fill chunk to tell delivery from bytes the engine already held.
+// A missing torrent or an unresolvable range counts as 0, 0.
+func (t *Torrent) VerifiedPieces(fileID int, off, n int64) (verified, total int) {
+	tt, first, last, ok := t.rangePieces(fileID, off, n)
+	if !ok {
+		return 0, 0
+	}
+	for i := first; i <= last; i++ {
+		total++
+		if tt.PieceState(i).Complete {
+			verified++
+		}
+	}
+	return verified, total
+}
+
 // RequestRange asks the swarm for every whole piece covering [off, off+n) of file
 // fileID. A scan reads part of a piece, and a piece is hashed only once all of it,
 // including any part in a neighbouring file, has arrived: without this the rest is never

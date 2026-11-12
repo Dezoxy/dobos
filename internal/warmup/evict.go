@@ -20,9 +20,9 @@ type FileKey struct {
 }
 
 // EvictPolicy says which files one quota check may evict. EvictAny is the zero value
-// and what every caller uses today. The other two are the seam for background warming
-// (see docs/roadmap.md, Readiness steps 2 and 3); nothing outside the tests asks for
-// them yet.
+// and what every head creation uses. The other two are for background warming (see
+// docs/roadmap.md, Readiness steps 2 and 3): FillWindows (fill.go) passes them, and
+// nothing calls FillWindows yet.
 type EvictPolicy int
 
 const (
@@ -61,7 +61,8 @@ type Eviction struct {
 // evictOpts is what one quota check needs to know about its caller.
 type evictOpts struct {
 	policy  EvictPolicy
-	exclude FileKey // the file being created; never a victim
+	exclude FileKey            // the file being created; never a victim
+	protect func(FileKey) bool // files that are never victims, such as those a fill has in flight
 	trigger string
 }
 
@@ -182,7 +183,7 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 	var victims []*evictUnit
 	var neverPlayedBytes int64
 	for _, u := range units {
-		if u.key == opts.exclude {
+		if u.key == opts.exclude || (opts.protect != nil && u.key.FileIdx >= 0 && opts.protect(u.key)) {
 			continue
 		}
 		u.played = IsPlayed != nil && u.key.FileIdx >= 0 && IsPlayed(u.key)

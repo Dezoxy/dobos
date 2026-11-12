@@ -57,3 +57,10 @@ func TestBoundedRangeEnd(t *testing.T) {
 		}
 	}
 }
+
+func TestVerifiedPiecesNilTorrent(t *testing.T) {
+	var tr *Torrent
+	if v, total := tr.VerifiedPieces(1, 0, 10); v != 0 || total != 0 {
+		t.Fatalf("a missing torrent counted %d of %d pieces", v, total)
+	}
+}
