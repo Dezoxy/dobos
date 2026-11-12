@@ -163,6 +163,10 @@ func collectWarmupProm(w *promtext.Writer) {
 	w.Counter("flodni_warmup_write_queue_drops_total",
 		"Head chunks dropped because the warmup write queue was full.",
 		promSample(st.WriteQueueDrops))
+	w.Counter("flodni_warm_fills_total",
+		"Per-file warm records written when a file's windows were completed, by trigger and outcome. Only trigger=mount exists today (reads through the mount; outcome=warmed when the engine holds a swarm delivery stamp, cached when it does not). Needs the state database and index mode; 0 otherwise.",
+		promSample(warmFillsMountWarmed.Load(), lbl("trigger", "mount"), lbl("outcome", "warmed")),
+		promSample(warmFillsMountCached.Load(), lbl("trigger", "mount"), lbl("outcome", "cached")))
 }
 
 // collectReadabilityProm writes the library by readability. The numbers come from the

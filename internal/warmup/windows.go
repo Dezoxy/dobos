@@ -85,3 +85,29 @@ func (d *DiskWarmupCache) WarmCounts() (heads, tails int64) {
 	}
 	return heads, tails
 }
+
+// WindowsComplete reports whether both of a media file's windows are complete, and the
+// file's size. It is the predicate FillWindows uses to skip a warm file, from the same
+// two memory indexes as Windows: no lock, no syscall, so it can run on a read. The size
+// comes from the tail tracker (written with every tail write, restored from the cover
+// file), because the head cache does not know it; a file with no tail record is not
+// complete. A file shorter than the head window is complete at its own size.
+func (d *DiskWarmupCache) WindowsComplete(key FileKey) (bool, int64) {
+	if d == nil {
+		return false, 0
+	}
+	val, ok := d.tailCoverage.Load(d.tailPath(key.Hash, key.FileIdx))
+	if !ok {
+		return false, 0
+	}
+	tr := val.(*tailRange)
+	size := tr.fileSize()
+	if size <= 0 || !tr.complete() {
+		return false, 0
+	}
+	head, ok := d.sizeCache.Load(d.filePath(key.Hash, key.FileIdx))
+	if !ok || head.(sizeEntry).size < min(FileSize, size) {
+		return false, 0
+	}
+	return true, size
+}

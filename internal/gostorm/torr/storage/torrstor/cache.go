@@ -170,6 +170,28 @@ func (c *Cache) Init(info *metainfo.Info, hash metainfo.Hash) {
 	}
 }
 
+// LastDelivery returns the latest completion time (Unix seconds) among pieces
+// first..last inclusive, and how many of them carry a stamp (Dezoxy fork). It reads
+// 0, 0 for a nil or closed cache.
+func (c *Cache) LastDelivery(first, last int) (unix int64, pieces int) {
+	if c == nil {
+		return 0, 0
+	}
+	c.muReaders.RLock()
+	defer c.muReaders.RUnlock()
+	for i := first; i <= last; i++ {
+		p := c.pieces[i]
+		if p == nil {
+			continue
+		}
+		if at := p.completedAt.Load(); at > 0 {
+			pieces++
+			unix = max(unix, at)
+		}
+	}
+	return unix, pieces
+}
+
 func (c *Cache) SetTorrent(torr *torrent.Torrent) {
 	if c == nil {
 		return

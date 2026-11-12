@@ -151,14 +151,24 @@ type tailRange struct {
 	mu     sync.Mutex
 	ranges []tailSpan // disjoint, merged, sorted by start
 	window int64      // length of the tail window; 0 means TailWarmupSize (a short file has less)
+	size   int64      // the media file's size, 0 until a write or a restored cover file says
 }
 
 // setWindow records the length of the file's tail window, so a file shorter than
-// TailWarmupSize can complete.
-func (tr *tailRange) setWindow(n int64) {
+// TailWarmupSize can complete, and the file's size, which is what the head's target
+// depends on (the head cache does not know it).
+func (tr *tailRange) setWindow(n, fileSize int64) {
 	tr.mu.Lock()
 	tr.window = n
+	tr.size = fileSize
 	tr.mu.Unlock()
+}
+
+// fileSize returns the recorded size of the media file, 0 if unknown.
+func (tr *tailRange) fileSize() int64 {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	return tr.size
 }
 
 // snapshot returns the covered bytes and the window length, without any syscall.
@@ -214,6 +224,27 @@ func (tr *tailRange) covers(start, end int64) bool {
 func (tr *tailRange) complete() bool {
 	_, window := tr.snapshot()
 	return tr.covers(0, window)
+}
+
+// OnWindowsCached, if set, is called when a write through the mount path leaves both of
+// a file's windows complete (Dezoxy fork), with the file's size. The hook must touch
+// memory only and never block: it is called with no cache lock held, but on whichever
+// goroutine wrote the last bytes, the write worker, the index tail worker or a FUSE
+// read (WriteTail), so a store write or a wait in it stalls a read. It can fire again
+// for a file whose windows are already complete; the receiver dedups. FillWindows
+// writes through the primitives and fires nothing: its caller records its own outcome.
+var OnWindowsCached func(key FileKey, fileSize int64)
+
+// noteWrite fires OnWindowsCached when the file's windows are complete.
+func (d *DiskWarmupCache) noteWrite(hash string, fileID int) {
+	hook := OnWindowsCached
+	if hook == nil {
+		return
+	}
+	key := FileKey{hash, fileID}
+	if ok, size := d.WindowsComplete(key); ok {
+		hook(key, size)
+	}
 }
 
 // DiskWarmupCache persists the first 128MB of each streamed file to SSD.
@@ -552,6 +583,7 @@ func (d *DiskWarmupCache) processWrite(hash string, fileID int, data []byte, off
 	if completed && OnWarmupStateChange != nil {
 		OnWarmupStateChange(hash, fileID, false)
 	}
+	d.noteWrite(hash, fileID)
 }
 
 // writeHeadLocked performs the whole head write - checks, create, WriteAt, size
@@ -783,10 +815,14 @@ func (d *DiskWarmupCache) ReadAt(hash string, fileID int, buf []byte, off int64)
 }
 
 func (d *DiskWarmupCache) WriteTail(hash string, fileID int, data []byte, absoluteOffset, fileSize int64) {
-	if !d.verified(hash, fileID, absoluteOffset, data, func(buf []byte) { d.writeTail(hash, fileID, buf, absoluteOffset, fileSize) }) {
+	if !d.verified(hash, fileID, absoluteOffset, data, func(buf []byte) {
+		d.writeTail(hash, fileID, buf, absoluteOffset, fileSize)
+		d.noteWrite(hash, fileID)
+	}) {
 		return
 	}
 	d.writeTail(hash, fileID, data, absoluteOffset, fileSize)
+	d.noteWrite(hash, fileID)
 }
 
 // writeTail stores a tail write that already passed the verification gate.
@@ -819,7 +855,7 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 	defer d.tailMu.Unlock()
 
 	tr := d.tailRangeFor(path)
-	tr.setWindow(tailLen)
+	tr.setWindow(tailLen, fileSize)
 	if tr.complete() {
 		return
 	}
@@ -839,7 +875,7 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 		d.tailCoverage.Delete(path)
 		removeFile(path + coverSuffix)
 		tr = d.tailRangeFor(path)
-		tr.setWindow(tailLen)
+		tr.setWindow(tailLen, fileSize)
 		tailCh := &cachedHandle{f: f}
 		tailCh.lastUsedNano.Store(time.Now().UnixNano())
 		if old, loaded := d.handles.Swap(path, tailCh); loaded {
@@ -1047,7 +1083,7 @@ func (d *DiskWarmupCache) EnsureTail(hash string, fileID int, fileSize int64) {
 		}
 		tailLen := fileSize - tailStart
 		tr := d.tailRangeFor(path)
-		tr.setWindow(tailLen)
+		tr.setWindow(tailLen, fileSize)
 
 		started := time.Now()
 		var fetched int64
@@ -1221,7 +1257,7 @@ func (d *DiskWarmupCache) loadCoverage(path string) bool {
 	if err != nil {
 		return false
 	}
-	tr := &tailRange{window: cf.TailLen}
+	tr := &tailRange{window: cf.TailLen, size: cf.TailStart + cf.TailLen}
 	for _, sp := range cf.Spans {
 		if sp[0] < 0 || sp[1] <= sp[0] || sp[1] > cf.TailLen || sp[1] > fi.Size() {
 			return false
@@ -1307,6 +1343,7 @@ func (d *DiskWarmupCache) fillIndexTail(job tailJob) {
 		return
 	}
 	d.writeTail(job.hash, job.fileID, buf, tailStart, job.fileSize)
+	d.noteWrite(job.hash, job.fileID)
 	if d.TailReady(job.hash, job.fileID) {
 		logf.Printf("[DiskWarmup] TAIL COMPLETE %s (index, %.1fMB)", filepath.Base(job.path), float64(tailLen)/(1<<20))
 	}

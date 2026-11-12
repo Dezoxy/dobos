@@ -1,6 +1,10 @@
 package torr
 
-import "github.com/anacrolix/torrent"
+import (
+	"time"
+
+	"github.com/anacrolix/torrent"
+)
 
 // RangeVerified reports whether every piece covering [off, off+n) of file fileID has
 // passed its checksum (Dezoxy fork). fileID is the 1-based id Status() gives the file,
@@ -35,6 +39,29 @@ func (t *Torrent) VerifiedPieces(fileID int, off, n int64) (verified, total int)
 		}
 	}
 	return verified, total
+}
+
+// DeliveredAt reports the latest time the swarm delivered a piece covering
+// [off, off+n) of file fileID, and how many of those pieces carry a delivery stamp
+// (Dezoxy fork). The stamp is set when the engine's cache completes the piece and
+// outlives the piece's bytes. A missing torrent, cache or range gives the zero time, 0.
+func (t *Torrent) DeliveredAt(fileID int, off, n int64) (time.Time, int) {
+	if t == nil {
+		return time.Time{}, 0
+	}
+	cache := t.cache // one snapshot, as NewReader does
+	if cache == nil {
+		return time.Time{}, 0
+	}
+	_, first, last, ok := t.rangePieces(fileID, off, n)
+	if !ok {
+		return time.Time{}, 0
+	}
+	unix, pieces := cache.LastDelivery(first, last)
+	if pieces == 0 {
+		return time.Time{}, 0
+	}
+	return time.Unix(unix, 0), pieces
 }
 
 // RequestRange asks the swarm for every whole piece covering [off, off+n) of file

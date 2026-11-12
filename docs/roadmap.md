@@ -331,6 +331,15 @@ finished.
   failed and that were never read, refreshed every 60 s. A head recreated at
   offset 0 over a stale size entry no longer leaves a hole. Warm on add and
   catch-up are not built.
+- 2026-11-12, readiness step 2, phase a: the per-file warm record. The engine
+  stamps each piece with the time it completed (RAM storage, so a stamp is a
+  swarm delivery), and a read through the mount that leaves a file's head
+  and tail windows complete records the file in the state database (schema
+  14) as `warmed` with the delivery time, or `cached` when no stamp exists.
+  `GET /api/torrents/health` serves the records as an experimental `files`
+  array, and `flodni_warm_fills_total{trigger="mount"}` counts them. Nothing
+  fills windows on its own yet: the warmer, its `warm_on_add` setting and its
+  outcomes are not built.
 - 2026-11-12, readiness step 4, phase a: Flodni counts bytes past the head and
   tail windows that the engine or the read-ahead cache serve to a session with
   no confirmed playback, logs each session once at the margin
