@@ -595,9 +595,8 @@ func (c *Cache) dropPriority(id int) {
 	}
 	c.muPriority.Lock()
 	defer c.muPriority.Unlock()
-	if _, ok := c.localPriority[id]; !ok {
-		return
-	}
+	// Not only ids in localPriority: RequestRange raises pieces to Normal through the engine's
+	// DownloadPieces without this cache knowing, and only RAM eviction would clear that.
 	delete(c.localPriority, id)
 	torr.Piece(id).SetPriority(torrent.PiecePriorityNone)
 }
