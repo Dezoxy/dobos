@@ -778,9 +778,20 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 		return
 	}
 
+	// The quota counts the file's apparent size, as the startup walk does, so the growth
+	// is the size change across the write: a rewrite of covered bytes adds nothing.
+	// Tail growth is counted here but not enforced: the quota is enforced on the next
+	// head creation, so a background tail write never evicts anything itself.
+	var prevSize int64
+	if fi, serr := ch.f.Stat(); serr == nil {
+		prevSize = fi.Size()
+	}
 	n, _ := ch.f.WriteAt(data, relOffset)
 	if n <= 0 {
 		return
+	}
+	if grown := relOffset + int64(n) - prevSize; grown > 0 {
+		atomic.AddInt64(&d.totalSize, grown)
 	}
 	d.sizeCache.Store(path, sizeEntry{size: relOffset + int64(n), updatedAt: time.Now()})
 	tr.add(relOffset, relOffset+int64(n))
