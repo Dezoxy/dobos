@@ -544,13 +544,35 @@ func (c *Cache) setLoadPriority(ranges []Range) {
 				limit++
 			}
 		}
-		c.muPriority.Unlock()
-
+		// The engine call stays under muPriority: dropPriority (MarkComplete) must not run between
+		// the Complete check above and the batch, or the batch would raise a completed piece
+		// that nothing clears. Lock order: muReaders, muPriority, then the engine's client lock.
 		if len(batch) > 0 {
 			c.torrent.SetPiecePriorities(batch)
 		}
+		c.muPriority.Unlock()
 	}
 	c.muReaders.RUnlock()
+}
+
+// dropPriority clears the priority this cache set on a piece that has just completed. With a
+// storage cap the engine spends the cap on pieces in priority order, complete or not, so a
+// priority left on a complete piece keeps the pieces a reader waits for from being requested.
+// The engine calls MarkComplete with its client lock released, which SetPriority needs.
+func (c *Cache) dropPriority(id int) {
+	c.muReaders.RLock()
+	torr, closed := c.torrent, c.isClosed.Load()
+	c.muReaders.RUnlock()
+	if closed || torr == nil {
+		return
+	}
+	c.muPriority.Lock()
+	defer c.muPriority.Unlock()
+	if _, ok := c.localPriority[id]; !ok {
+		return
+	}
+	delete(c.localPriority, id)
+	torr.Piece(id).SetPriority(torrent.PiecePriorityNone)
 }
 
 func (c *Cache) isIdInFileBE(ranges []Range, id int) bool {

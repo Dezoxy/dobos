@@ -113,9 +113,10 @@ Releases and deployment are scheduled separately.
    engine through an interface instead of the concrete client, and tests cover
    the fetch, prefetch and pump branches that only the end-to-end test reaches
    today. This is the last prerequisite for the `App` struct.
-6. **No stall after a tail probe.** A read that follows a tail read stalls
-   for about 30 s in the end-to-end test. The pump's grace period is not the
-   cause; the engine's request scheduling is the suspect (see
+6. **No stall after a tail probe.** A read that follows a tail read stalled
+   for about 34 s in the end-to-end test; that stall is fixed in the cache
+   (see the Done list). The step stays open for a second stall of about 58 s
+   where the engine drops the only seeder and reconnecting is slow (see
    [ideas.md](ideas.md)). Players probe the end of a file before playing it,
    so this delays real starts.
 
@@ -339,3 +340,9 @@ trigger is known.
   `flodni_unconfirmed_read_sessions_total` and
   `flodni_playback_webhooks_received_total`. Counting only; refusal (phase b)
   is designed, not built.
+- 2026-11-12, reliability step 6, part one: the 34 s stall after a tail probe
+  is fixed in the cache. `torrstor` raised piece priorities but never dropped
+  them on completion, so stale complete pieces used the engine's storage cap
+  and the wanted piece was never requested; `MarkComplete` now drops the
+  priority. 0 of 38 e2e runs stalled at 34 s, against 15 of 17 before. A 58 s
+  peer-drop stall remains open.

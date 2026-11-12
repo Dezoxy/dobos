@@ -90,6 +90,7 @@ func (p *Piece) ReadAt(b []byte, off int64) (n int, err error) {
 
 func (p *Piece) MarkComplete() error {
 	p.Complete.Store(true)
+	p.cache.dropPriority(p.Id)
 	return nil
 }
 

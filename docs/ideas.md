@@ -47,93 +47,44 @@ Bugs and data-loss risks. None open.
   - Episode stubs are matched by the first 8 hash characters; two releases
     with the same prefix are treated as one.
 
-- **A read stalls about 30 s while the pump runs (engine, cause found).**
-  Symptom: in `tests/e2e/run.sh` the `default` variant, a 1 MiB tail read
-  followed by a full `sha256sum`, takes 33 to 58 s instead of 1 to 5 s in
-  roughly half the runs (150 MB file, 1 MiB pieces, 128 MB cache). Reads at
-  about 136 MB wait the 8 s fetch timeout three times, and the pump's chunk
-  read returns short after about 30 s. Reproduce: the `default` variant on
-  `main`, repeated until it stalls. Control: with `pump_on_open` false the
-  full read took 0 to 1 s in 3 of 3 runs; skipping the tail read does not
-  prevent it (one run stalled, one failed outright), and the `slow-seeder`
-  and `index-cache` variants do not stall. Ruled out: the pump's grace
-  period and its re-anchoring (the pump starts at offset 0 at open, never
-  waits on a hard lead limit, and ends cleanly), and the seeder (the
-  leecher's peer is unchoked and nothing is pending at the seeder). What was
-  seen on the leecher during a stall: the peer holds no requests and has
-  sent "not interested" while pieces the readers want are pending or
-  already marked complete, no request update runs for 30 s or more, and it
-  resumes when the readers time out or a piece is released. The last update
-  before such a stall scanned 129 pieces and stopped at the 128 MB storage
-  cap with nothing to request. Waking idle peers when the piece order
-  changes did not remove the stall. It likely lives in the interplay of the
-  request strategy's storage cap with two readers (`GetRequestablePieces`
-  in `internal/anacrolix-torrent/request-strategy/order.go`) and the cache
-  completion state in `internal/gostorm/torr/storage/torrstor`; trace per
-  piece completion against the cache's `Complete` flag first.
-  **Cache experiment (2026-11-12): the cache size decides it.** With
-  `E2E_GOSTORM_CACHE_MB` (the seeder sets GoStorm's `CacheSize` before the
-  add), the `default` variant stalled in 8 of 8 runs at the default 128 MB
-  (median 34 s) and in 3 of 3 at 128 MB set through the same API, but in 0
-  of 8 at 512 MB and 0 of 3 at 160 MB (median 1 s). The file is 150 MiB, so
-  the threshold is the file size. Likely mechanism: `GetRequestablePieces`
-  subtracts every piece it walks in priority order from the storage cap,
-  complete or not, and returns once the cap is spent, so pieces the readers
-  already hold use it up and the ones they need are never requested.
-  Fix options, smallest first: let GoStorm's storage report no cap
-  (`torrstor/storage.go` `capFunc`), leaving eviction to its own cache; or,
-  as a fixes-only engine change, stop counting pieces that are complete
-  toward the cap. Larger files than the cache are the normal case, so this
-  matters beyond the test.
-  **Uncapped-storage experiment (2026-11-12):** with GoStorm's storage
-  capacity removed (`capFunc` reporting no cap) the stall dropped to 3 of 8
-  runs, at 58 to 59 s, but did not go away; reverted. So the cap is not the
-  whole cause. **New readers' read-ahead (2026-11-12):** `newReader` called
-  `SetReadahead` before `cache` was set, so it returned early and a new
-  reader ran with the engine's default 48 MiB until the next 1 s stats
-  tick. It now starts with the tick's value (cache size times read-ahead
-  percent, split across the active readers). Measured on `default`, 8 runs
-  each: 7 of 8 stalled before (33 to 34 s) and 7 of 8 after (33 to 42 s);
-  first byte of the first read, median 9.5 ms both ways. The fix is correct
-  but does not touch the stall. In a stall Flodni logs nothing between the
-  pump's start and its end about 30 s later.
-  **Read-ahead against the protected range (2026-11-12):** the engine
-  read-ahead (cache size times percent, split across readers) outran the
-  range `torrstor` protects from eviction by the missing 0.85 safety factor
-  (96 MiB against 81.6 MiB for one reader at 128 MiB and 75%). It now
-  applies the factor. The seeder's upload ratio (piece data sent over video
-  size) was 1.000 in 8 of 8 runs before and in 8 of 8 after, so the engine
-  never fetched a piece twice in this test and the mismatch is not the
-  stall. Stalls: 8 of 8 runs before, 6 of 8 after (two fast runs, noise
-  at this sample size); first-byte median 6 ms to 10 ms on `default`.
-  Lead from the stall logs (2026-11-12, unverified): during a stall Flodni
-  logs nothing for about 30 s, and the next line is GoStorm's second failed
-  public tracker-list download. The e2e network has no outside access, so
-  every download attempt waits out its timeout; if that refresh holds a lock
-  the read path needs, the stall is an artifact of the offline test network,
-  which would also explain why deployments with internet access have not
-  shown it. Check what the tracker-list refresh locks
-  (`internal/gostorm/torr/utils`) and rerun the variant with the refresh
-  disabled.
-  Players probe file ends before playing, so this can delay real starts.
-  Closed lead (2026-11-12): the tracker-list refresh holds no lock while it
-  downloads, and its second attempt is a 30 s retry timer started at the
-  add (a saved stall log shows attempt 1 at the add and attempt 2 exactly
-  30 s later), so it is a clock, not a cause. The four attempts so far each
-  flipped one input and counted stalls over 8 runs; the next step is to
-  capture state at the stall instead: on the first 8 s fetch timeout, dump
-  the reader positions and read-ahead, for the pieces under them the
-  engine's completion, priority and pending requests against the cache's
-  `Complete` and size, the request-order scan (pieces walked, cap left) and
-  the peer's interest and request count. Hypotheses for that trace: the
-  request strategy stops once the cap is spent while the cache evicts only
-  when strictly over capacity, so at exactly full neither side moves; and
-  the engine assumes storage keeps the top pieces by its own order while
-  the cache evicts by reader range and access time. Two relevance checks:
-  the `slow-seeder` variant does not stall, so cap the seeder's upload rate
-  and rerun `default`; and post a play webhook in the `index-cache` variant
-  (pump off until playback) before the full read, to learn whether index
-  mode's playback path stalls too.
+- **A read stalls about 58 s after the seeder is dropped (open).** Symptom:
+  in `tests/e2e/run.sh` the `default` variant (a 1 MiB tail read, then a full
+  `sha256sum` of a 150 MiB file, 1 MiB pieces, 128 MB cache) takes about 58 s
+  instead of 1 to 5 s in 8 of 38 runs with the cache fix below; the
+  `slow-seeder` variant hit it once. Players probe file ends before playing,
+  so this can delay real starts.
+  Observed: the engine drops the only seeder in
+  `maybeDropMutuallyCompletePeer` (`internal/anacrolix-torrent/torrent.go`)
+  after `onPieceCompleted`, and reconnecting takes about 58 s. The same
+  58 to 59 s stalls appeared in an earlier run with the storage capacity
+  removed. Inferred, not verified: the cache briefly holds every piece (it
+  evicts at most once a second), so the engine sees a mutually complete peer
+  and drops it. Next step: trace why the engine believes it has every piece
+  while the cache evicts (completion reporting against eviction), and what
+  delays the reconnect.
+  **The 34 s stall is fixed (2026-11-12, see the Done line of
+  [roadmap.md](roadmap.md) Reliability step 6).** It was about 34 s, in 15 of
+  17 unfixed runs of the `default` variant, and went away at 512 MB or
+  160 MB of cache against the 150 MiB file, so the threshold is the file size
+  and larger files than the cache are the normal case. Cause: `torrstor`
+  raised piece priorities but never dropped them on completion. With a
+  storage cap the engine's request scan spends the cap on pieces in priority
+  order, complete or not, so stale high-priority complete pieces used it up
+  and the wanted piece was never requested; a later priority-only change woke
+  no peer. `MarkComplete` now drops the cache's priority, and
+  `setLoadPriority` holds `muPriority` across `SetPiecePriorities`. With the
+  fix 0 of 38 runs showed the 34 s stall.
+  **Known engine gap, not fixed:** a priority or order change alone wakes no
+  idle peer. An engine-side wake removed the 34 s stall too (0 of 11) but was
+  not shipped, since fixes belong in Flodni's own code. The earlier note that
+  waking peers did not help came from a PR #54 attempt that was never
+  committed; it probably fired before the stale priorities were cleared, or
+  the 58 s stall was read as the same one. Unverified.
+  **Reapply the instrumentation:** `git apply docs/ideas/stall-dump.patch`
+  ([patch](ideas/stall-dump.patch)) on `main` adds a dump at the first fetch
+  timeout. Set `FLODNI_STALL_DUMP=<n>` for the dump and `FLODNI_STALL_POKE=1`
+  for the wake experiment; `tests/e2e` passes them through as `E2E_STALL_DUMP`
+  and `E2E_STALL_POKE`.
 
 - **Warm the next episode during playback.** While episode N plays, fill
   episode N+1's windows so a binge starts at once. Not planned: a second

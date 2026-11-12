@@ -1,0 +1,641 @@
+diff --git a/internal/anacrolix-torrent/peer.go b/internal/anacrolix-torrent/peer.go
+index 0488f82..9e56707 100644
+--- a/internal/anacrolix-torrent/peer.go
++++ b/internal/anacrolix-torrent/peer.go
+@@ -349,6 +349,7 @@ func (p *Peer) close() {
+ 	if !p.closed.Set() {
+ 		return
+ 	}
++	dbgPeerClosed(p)
+ 	// Not set until the Torrent is known.
+ 	if p.closedCtx != nil {
+ 		p.closedCtxCancel()
+@@ -590,6 +591,7 @@ func (me *Peer) cancel(r RequestIndex) {
+ 
+ // Sets a reason to update requests, and if there wasn't already one, handle it.
+ func (cn *Peer) updateRequests(reason string) {
++	recordUpdateCall(cn, reason)
+ 	if cn.needRequestUpdate != "" {
+ 		// An update left pending by the rebuild debounce runs only when the writer wakes: without
+ 		// this nudge nothing wakes it until the keepalive, and the peer sits idle for 30s.
+diff --git a/internal/anacrolix-torrent/request-strategy/order.go b/internal/anacrolix-torrent/request-strategy/order.go
+index e5bf226..9c51ca7 100644
+--- a/internal/anacrolix-torrent/request-strategy/order.go
++++ b/internal/anacrolix-torrent/request-strategy/order.go
+@@ -2,6 +2,7 @@ package requestStrategy
+ 
+ import (
+ 	"bytes"
++	"time"
+ 
+ 	"github.com/anacrolix/multiless"
+ 
+@@ -57,6 +58,16 @@ func GetRequestablePieces(
+ 		storageLeft = &cap
+ 	}
+ 	var allTorrentsUnverifiedBytes int64
++	scanRec := &ScanRecord{At: time.Now()}
++	if storageLeft != nil {
++		scanRec.CapStart = *storageLeft
++	}
++	defer func() {
++		if storageLeft != nil {
++			scanRec.CapLeft = *storageLeft
++		}
++		pushScan(scanRec)
++	}()
+ 	pro.tree.Scan(func(_i pieceRequestOrderItem) bool {
+ 		ih := _i.key.InfoHash
+ 		var t Torrent = input.Torrent(ih)
+@@ -66,16 +77,23 @@ func GetRequestablePieces(
+ 		// highest priority pieces, even if they're complete or in an undesirable state.
+ 		if storageLeft != nil {
+ 			if *storageLeft < pieceLength {
++				scanRec.StoppedByCap = true
++				scanRec.NextIdx = _i.key.Index
++				scanRec.NextPrio = int(_i.state.Priority)
+ 				return false
+ 			}
+ 			*storageLeft -= pieceLength
+ 		}
++		wp := WalkedPiece{Idx: _i.key.Index, Prio: int(_i.state.Priority), Partial: _i.state.Partial, Deadline: _i.state.Deadline, Request: piece.Request()}
++		defer func() { scanRec.Walked = append(scanRec.Walked, wp) }()
+ 		if piece.Request() {
+ 			if !requestPiece(ih, _i.key.Index, _i.state) {
+ 				// No blocks are being considered from this piece, so it won't result in unverified
+ 				// bytes.
+ 				return true
+ 			}
++			wp.Returned = true
++			scanRec.Returned++
+ 		} else if !piece.CountUnverified() {
+ 			// The piece is pristine, and we're not considering it for requests.
+ 			return true
+diff --git a/internal/anacrolix-torrent/request-strategy/stalldump.go b/internal/anacrolix-torrent/request-strategy/stalldump.go
+new file mode 100644
+index 0000000..00e9208
+--- /dev/null
++++ b/internal/anacrolix-torrent/request-strategy/stalldump.go
+@@ -0,0 +1,63 @@
++package requestStrategy
++
++import (
++	"sync"
++	"time"
++)
++
++// STALL-CAPTURE instrumentation (throwaway, never committed).
++
++type WalkedPiece struct {
++	Idx      int
++	Prio     int
++	Partial  bool
++	Deadline int64
++	Request  bool // piece.Request(): wanted (pending)
++	Returned bool // requestPiece callback accepted it for this peer
++}
++
++type ScanRecord struct {
++	At           time.Time
++	CapStart     int64
++	CapLeft      int64
++	StoppedByCap bool
++	NextIdx      int
++	NextPrio     int
++	Returned     int
++	Walked       []WalkedPiece
++}
++
++var (
++	scanMu    sync.Mutex
++	scanRing  [8]*ScanRecord
++	scanCount int
++	scanTotal int
++)
++
++func pushScan(r *ScanRecord) {
++	scanMu.Lock()
++	scanRing[scanCount%len(scanRing)] = r
++	scanCount++
++	scanMu.Unlock()
++}
++
++// LastScans returns the most recent scans, oldest first, plus the total count.
++func LastScans() ([]*ScanRecord, int) {
++	scanMu.Lock()
++	defer scanMu.Unlock()
++	var out []*ScanRecord
++	n := len(scanRing)
++	for i := scanCount - n; i < scanCount; i++ {
++		if i < 0 {
++			continue
++		}
++		out = append(out, scanRing[i%n])
++	}
++	return out, scanCount
++}
++
++// TreeState returns the state stored in the order tree for a key.
++func (me *PieceRequestOrder) TreeState(key PieceRequestOrderKey) (PieceRequestOrderState, bool) {
++	s, ok := me.keys[key]
++	return s, ok
++}
+diff --git a/internal/anacrolix-torrent/requesting.go b/internal/anacrolix-torrent/requesting.go
+index a3ef5bb..6f9160a 100644
+--- a/internal/anacrolix-torrent/requesting.go
++++ b/internal/anacrolix-torrent/requesting.go
+@@ -301,7 +301,10 @@ func (p *Peer) maybeUpdateActualRequestState() {
+ 		context.Background(),
+ 		pprof.Labels("update request", p.needRequestUpdate),
+ 		func(_ context.Context) {
++			reasonDbg := p.needRequestUpdate
+ 			next := p.getDesiredRequestState()
++			p.t.capStarveCheck(p, reasonDbg)
++			recordUpdateRun(p, reasonDbg, next.Interested, len(next.Requests.requestIndexes))
+ 			p.applyRequestState(next)
+ 			p.t.cacheNextRequestIndexesForReuse(next.Requests.requestIndexes)
+ 		},
+diff --git a/internal/anacrolix-torrent/stalldump.go b/internal/anacrolix-torrent/stalldump.go
+new file mode 100644
+index 0000000..fa7800a
+--- /dev/null
++++ b/internal/anacrolix-torrent/stalldump.go
+@@ -0,0 +1,273 @@
++package torrent
++
++import (
++	"fmt"
++	"os"
++	"runtime"
++	"sort"
++	"strings"
++	"sync"
++	"time"
++
++	request_strategy "github.com/anacrolix/torrent/request-strategy"
++)
++
++// STALL-CAPTURE instrumentation (throwaway, never committed).
++
++type updCall struct {
++	at     time.Time
++	peer   string
++	reason string
++	runN   int
++}
++
++type updRun struct {
++	at         time.Time
++	peer       string
++	reason     string
++	interested bool
++	desiredN   int
++}
++
++var (
++	dbgMu       sync.Mutex
++	dbgCalls    [64]updCall
++	dbgCallN    int
++	dbgRuns     [32]updRun
++	dbgRunN     int
++	dbgLastCall = map[*Peer]time.Time{}
++	dbgLastRun  = map[*Peer]updRun{}
++)
++
++func peerName(p *Peer) string {
++	if p == nil {
++		return "nil"
++	}
++	if p.RemoteAddr != nil {
++		return p.RemoteAddr.String()
++	}
++	return fmt.Sprintf("%p", p)
++}
++
++func recordUpdateCall(p *Peer, reason string) {
++	dbgMu.Lock()
++	dbgCalls[dbgCallN%len(dbgCalls)] = updCall{at: time.Now(), peer: peerName(p), reason: reason}
++	dbgCallN++
++	dbgLastCall[p] = time.Now()
++	dbgMu.Unlock()
++}
++
++func (t *Torrent) capStarveCheck(p *Peer, reason string) {
++	scans, _ := request_strategy.LastScans()
++	if len(scans) == 0 {
++		return
++	}
++	s := scans[len(scans)-1]
++	if s.StoppedByCap && s.Returned == 0 && !t._pendingPieces.IsEmpty() {
++		fmt.Fprintf(os.Stderr, "[CAPSTARVE] peer=%s reason=%q pending=%d nextIdx=%d nextPrio=%d walked=%d\n", peerName(p), reason, t._pendingPieces.GetCardinality(), s.NextIdx, s.NextPrio, len(s.Walked))
++	}
++}
++
++func recordUpdateRun(p *Peer, reason string, interested bool, n int) {
++	dbgMu.Lock()
++	r := updRun{at: time.Now(), peer: peerName(p), reason: reason, interested: interested, desiredN: n}
++	dbgRuns[dbgRunN%len(dbgRuns)] = r
++	dbgRunN++
++	dbgLastRun[p] = r
++	dbgMu.Unlock()
++}
++
++// StallDump writes the engine's view to out (one line per call). Pieces in [lo, hi] are listed.
++func (t *Torrent) StallDump(lo, hi int, out func(string)) {
++	got := make(chan struct{})
++	go func() {
++		t.cl.lock()
++		close(got)
++	}()
++	locked := true
++	select {
++	case <-got:
++	case <-time.After(3 * time.Second):
++		locked = false
++		out("engine: client lock NOT acquired in 3s, dumping unlocked (and the lock goroutine stays queued)")
++	}
++	if locked {
++		defer t.cl.unlock()
++	}
++	now := time.Now()
++	n := t.numPieces()
++	if lo < 0 {
++		lo = 0
++	}
++	if hi >= n {
++		hi = n - 1
++	}
++	out(fmt.Sprintf("engine: pieces=%d pieceLen=%d completed=%d pending=%d dataDownloadDisallowed=%v hasStorageCap=%v",
++		n, t.info.PieceLength, t.numPiecesCompleted(), t._pendingPieces.GetCardinality(), t.dataDownloadDisallowed.Bool(), t.hasStorageCap()))
++	for r := range t.readers {
++		out(fmt.Sprintf("engine reader: pos=%d off=%d len=%d readahead=%d pieces=[%d,%d) reading=%v responsive=%v",
++			r.pos, r.offset, r.length, r.readahead, r.pieces.begin, r.pieces.end, r.reading, r.responsive))
++	}
++	// pending set summary
++	var pend []string
++	t._pendingPieces.Iterate(func(x uint32) bool {
++		pend = append(pend, fmt.Sprint(x))
++		return true
++	})
++	out("engine pending pieces: " + strings.Join(pend, ","))
++	var compl []string
++	t._completedPieces.Iterate(func(x uint32) bool {
++		compl = append(compl, fmt.Sprint(x))
++		return true
++	})
++	out("engine completed pieces: " + strings.Join(compl, ","))
++	{
++		var own, pure []string
++		for i := 0; i < n; i++ {
++			pp := &t.pieces[i]
++			if pp.priority != PiecePriorityNone {
++				own = append(own, fmt.Sprintf("%d:%v(c=%v)", i, pp.priority, t.pieceComplete(i)))
++			}
++			if pp.purePriority() != PiecePriorityNone {
++				pure = append(pure, fmt.Sprintf("%d:%v(c=%v)", i, pp.purePriority(), t.pieceComplete(i)))
++			}
++		}
++		out("engine pieces with own priority set (idx:prio(complete)): " + strings.Join(own, " "))
++		out("engine pieces with effective priority (idx:prio(complete)): " + strings.Join(pure, " "))
++	}
++	for i := lo; i <= hi; i++ {
++		p := &t.pieces[i]
++		nch := int(p.numChunks())
++		var pendingChunks []string
++		undirty := 0
++		var reqPeers []string
++		for c := 0; c < nch; c++ {
++			ri := t.pieceRequestIndexOffset(i) + RequestIndex(c)
++			if !t.dirtyChunks.Contains(ri) {
++				undirty++
++				if rp := t.requestingPeer(ri); rp != nil {
++					reqPeers = append(reqPeers, fmt.Sprintf("%d@%s", c, peerName(rp)))
++				}
++			}
++		}
++		_ = pendingChunks
++		stc, stok := false, false
++		sc := p.Storage().Completion()
++		stc, stok = sc.Complete, sc.Ok
++		out(fmt.Sprintf("engine piece %d: complete=%v storageComplete=%v/ok=%v storageCompletionOk=%v pending=%v purePrio=%v ownPrio=%v deadline=%d partial=%v avail=%d undirtyChunks=%d/%d requestedChunks=%d hashing=%v marking=%v",
++			i, t.pieceComplete(i), stc, stok, p.storageCompletionOk, t._pendingPieces.Contains(uint32(i)),
++			p.purePriority(), p.priority, t.pieceDeadlines[i], t.piecePartiallyDownloaded(i), p.availability(),
++			undirty, nch, len(reqPeers), p.hashing, p.marking))
++	}
++	// order tree state for the window
++	if pro := t.getPieceRequestOrder(); pro != nil {
++		out(fmt.Sprintf("engine order tree len=%d", pro.Len()))
++		var stale []string
++		for i := 0; i < n; i++ {
++			ts, ok := pro.TreeState(t.pieceRequestOrderKey(i))
++			cur := t.requestStrategyPieceOrderState(i)
++			if !ok || ts != cur {
++				stale = append(stale, fmt.Sprintf("%d:tree{p%d,part=%v,av=%d,dl=%d}!=now{p%d,part=%v,av=%d,dl=%d}(c=%v)", i, ts.Priority, ts.Partial, ts.Availability, ts.Deadline, cur.Priority, cur.Partial, cur.Availability, cur.Deadline, t.pieceComplete(i)))
++			}
++		}
++		out(fmt.Sprintf("engine order tree entries differing from current piece state: %d: %s", len(stale), strings.Join(stale, " ")))
++	}
++	// scans
++	scans, total := request_strategy.LastScans()
++	out(fmt.Sprintf("engine request-order scans: total=%d, last %d follow (oldest first)", total, len(scans)))
++	for _, s := range scans {
++		var walked []string
++		var wantedWalked, completeWalked int
++		for _, w := range s.Walked {
++			walked = append(walked, fmt.Sprintf("%d(p%d%s%s)", w.Idx, w.Prio, map[bool]string{true: ",W", false: ",-"}[w.Request], map[bool]string{true: ",R", false: ""}[w.Returned]))
++			if w.Request {
++				wantedWalked++
++			} else {
++				completeWalked++
++			}
++		}
++		out(fmt.Sprintf("engine scan at -%.3fs: capStart=%d capLeft=%d stoppedByCap=%v nextIdx=%d nextPrio=%d walked=%d (wanted=%d notWanted=%d) returned=%d",
++			now.Sub(s.At).Seconds(), s.CapStart, s.CapLeft, s.StoppedByCap, s.NextIdx, s.NextPrio, len(s.Walked), wantedWalked, completeWalked, s.Returned))
++		out("engine scan walked (idx(prio,W=wanted/-=not,R=returned for peer)): " + strings.Join(walked, " "))
++	}
++	// peers
++	dbgMu.Lock()
++	defer dbgMu.Unlock()
++	t.iterPeers(func(p *Peer) {
++		lr := dbgLastRun[p]
++		lc := dbgLastCall[p]
++		out(fmt.Sprintf("engine peer %s: weInterested=%v peerChoking=%v peerInterested=%v requests=%d cancelled=%d needRequestUpdate=%q lastRequestUpdate=-%.1fs lastUpdateCall=-%.1fs lastRun={reason:%q interested:%v desired:%d at:-%.1fs} lastUsefulChunk=-%.1fs peerPieces=%d nominalMax=%d",
++			peerName(p), p.requestState.Interested, p.peerChoking, p.peerInterested,
++			p.requestState.Requests.GetCardinality(), p.requestState.Cancelled.GetCardinality(), p.needRequestUpdate,
++			since(now, p.lastRequestUpdate), since(now, lc), lr.reason, lr.interested, lr.desiredN, since(now, lr.at), since(now, p.lastUsefulChunkReceived),
++			peerPieceCount(p), int(p.nominalMaxRequests())))
++	})
++	// last update calls
++	type kv struct {
++		c updCall
++	}
++	var calls []updCall
++	for i := 0; i < len(dbgCalls) && i < dbgCallN; i++ {
++		calls = append(calls, dbgCalls[i])
++	}
++	sort.Slice(calls, func(i, j int) bool { return calls[i].at.Before(calls[j].at) })
++	out(fmt.Sprintf("engine updateRequests calls total=%d, last %d:", dbgCallN, len(calls)))
++	for _, c := range calls {
++		out(fmt.Sprintf("  call -%.2fs peer=%s reason=%q", now.Sub(c.at).Seconds(), c.peer, c.reason))
++	}
++	var runs []updRun
++	for i := 0; i < len(dbgRuns) && i < dbgRunN; i++ {
++		runs = append(runs, dbgRuns[i])
++	}
++	sort.Slice(runs, func(i, j int) bool { return runs[i].at.Before(runs[j].at) })
++	out(fmt.Sprintf("engine request-state runs total=%d, last %d:", dbgRunN, len(runs)))
++	for _, r := range runs {
++		out(fmt.Sprintf("  run -%.2fs peer=%s reason=%q desiredInterested=%v desiredRequests=%d", now.Sub(r.at).Seconds(), r.peer, r.reason, r.interested, r.desiredN))
++	}
++}
++
++func since(now, t time.Time) float64 {
++	if t.IsZero() {
++		return -1
++	}
++	return now.Sub(t).Seconds()
++}
++
++func peerPieceCount(p *Peer) int {
++	if pc, ok := p.peerImpl.(*PeerConn); ok {
++		return int(pc._peerPieces.GetCardinality())
++	}
++	return -1
++}
++
++// stallDryScan runs the request-order scan now (as a peer holding every piece would) and prints it.
++func (t *Torrent) stallDryScan(out func(string)) {
++	request_strategy.GetRequestablePieces(t.getRequestStrategyInput(), t.getPieceRequestOrder(),
++		func(ih InfoHash, pieceIndex int, st request_strategy.PieceRequestOrderState) bool { return true })
++	scans, _ := request_strategy.LastScans()
++	s := scans[len(scans)-1]
++	var walked []string
++	for _, w := range s.Walked {
++		walked = append(walked, fmt.Sprintf("%d(p%d%s%s)", w.Idx, w.Prio, map[bool]string{true: ",W", false: ",-"}[w.Request], map[bool]string{true: ",R", false: ""}[w.Returned]))
++	}
++	out(fmt.Sprintf("DRY SCAN NOW: capLeft=%d stoppedByCap=%v nextIdx=%d walked=%d returned=%d", s.CapLeft, s.StoppedByCap, s.NextIdx, len(s.Walked), s.Returned))
++	out("DRY SCAN walked: " + strings.Join(walked, " "))
++}
++
++// StallPoke runs a dry scan under the client lock and, with poke, asks every peer to update requests.
++func (t *Torrent) StallPoke(poke bool, out func(string)) {
++	t.cl.lock()
++	defer t.cl.unlock()
++	t.stallDryScan(out)
++	if poke {
++		out("POKE: calling updateRequests on all peers")
++		t.iterPeers(func(p *Peer) { p.updateRequests("stalldump poke") })
++	}
++}
++
++
++func dbgPeerClosed(p *Peer) {
++	buf := make([]byte, 4096)
++	n := runtime.Stack(buf, false)
++	fmt.Fprintf(os.Stderr, "[PEERCLOSE] %s at %s requests=%d interested=%v lastUseful=%.1fs ago\n%s\n", peerName(p), time.Now().Format("15:04:05.000"), p.requestState.Requests.GetCardinality(), p.requestState.Interested, since(time.Now(), p.lastUsefulChunkReceived), buf[:n])
++}
+diff --git a/internal/gostorm/native/native.go b/internal/gostorm/native/native.go
+index 5ad5d2d..dfd8717 100644
+--- a/internal/gostorm/native/native.go
++++ b/internal/gostorm/native/native.go
+@@ -595,6 +595,9 @@ func (c *NativeClient) FetchAhead(hash string, fileID int, offset int64, buf, de
+ 	// Unblock the reads below if the stream stalls without closing the pipe.
+ 	go func() {
+ 		<-ctx.Done()
++		if ctx.Err() == context.DeadlineExceeded {
++			go torr.StallDumpOnTimeout(hash, "FetchAhead")
++		}
+ 		pr.Close()
+ 	}()
+ 
+@@ -704,6 +707,9 @@ func (c *NativeClient) FetchBlock(hash string, fileID int, offset int64, p []byt
+ 	// Previously, if t.Stream() stalled without closing the pipe, FetchBlock would hang forever.
+ 	go func() {
+ 		<-ctx.Done()
++		if ctx.Err() == context.DeadlineExceeded {
++			go torr.StallDumpOnTimeout(hash, "FetchBlock")
++		}
+ 		pr.Close() // Force unblock io.ReadFull on timeout/cancel
+ 	}()
+ 
+diff --git a/internal/gostorm/torr/stalldump.go b/internal/gostorm/torr/stalldump.go
+new file mode 100644
+index 0000000..f4c45e9
+--- /dev/null
++++ b/internal/gostorm/torr/stalldump.go
+@@ -0,0 +1,38 @@
++package torr
++
++import (
++	"fmt"
++	"os"
++	"strconv"
++	"sync/atomic"
++	"time"
++)
++
++// STALL-CAPTURE instrumentation (throwaway, never committed).
++
++var stallDumps atomic.Int32
++
++// StallDumpOnTimeout dumps up to FLODNI_STALL_DUMP times (env integer) for the torrent.
++func StallDumpOnTimeout(hash string, what string) {
++	max, _ := strconv.Atoi(os.Getenv("FLODNI_STALL_DUMP"))
++	if max <= 0 {
++		return
++	}
++	n := stallDumps.Add(1)
++	if int(n) > max {
++		return
++	}
++	t := PeekTorrent(hash)
++	if t == nil || t.Torrent == nil {
++		return
++	}
++	out := func(s string) { fmt.Fprintf(os.Stderr, "[STALLDUMP#%d] %s\n", n, s) }
++	out(fmt.Sprintf("=== stall dump %d at %s (trigger: %s timeout, hash=%s) ===", n, time.Now().Format("15:04:05.000"), what, hash))
++	lo, hi := 0, 0
++	if t.cache != nil {
++		lo, hi = t.cache.StallDump(out)
++	}
++	t.Torrent.StallDump(lo, hi, out)
++	t.Torrent.StallPoke(os.Getenv("FLODNI_STALL_POKE") == "1", out)
++	out("=== end stall dump ===")
++}
+diff --git a/internal/gostorm/torr/storage/torrstor/stalldump.go b/internal/gostorm/torr/storage/torrstor/stalldump.go
+new file mode 100644
+index 0000000..a9de06f
+--- /dev/null
++++ b/internal/gostorm/torr/storage/torrstor/stalldump.go
+@@ -0,0 +1,107 @@
++package torrstor
++
++import (
++	"fmt"
++	"sync/atomic"
++	"time"
++)
++
++// STALL-CAPTURE instrumentation (throwaway, never committed).
++
++// StallDump writes the cache's view and returns the piece window [lo, hi] to list in the engine.
++func (c *Cache) StallDump(out func(string)) (lo, hi int) {
++	now := time.Now()
++	lo, hi = 1<<30, -1
++	c.muReaders.RLock()
++	for r := range c.readers {
++		rng := r.getPiecesRange()
++		rp := r.getReaderPiece()
++		rah := r.getReaderRAHPiece()
++		r.mu.Lock()
++		inUse, inFlight, lastAccess, off, closed := r.isUse, r.inFlight, r.lastAccess, r.offset, r.isClosed
++		r.mu.Unlock()
++		out(fmt.Sprintf("cache reader %p: offset=%d readerPiece=%d readahead=%d raheadPiece=%d protectedRange=[%d,%d] isUse=%v inFlight=%d lastAccess=-%ds closed=%v rangeEnd=%d",
++			r, off, rp, atomic.LoadInt64(&r.readahead), rah, rng.Start, rng.End, inUse, inFlight, now.Unix()-lastAccess, closed, atomic.LoadInt64(&r.rangeEnd)))
++		if inUse {
++			if rp-2 < lo {
++				lo = rp - 2
++			}
++			if rah+2 > hi {
++				hi = rah + 2
++			}
++		}
++	}
++	c.muReaders.RUnlock()
++	if hi < 0 {
++		lo, hi = 0, c.pieceCount-1
++	}
++	if hi >= c.pieceCount {
++		hi = c.pieceCount - 1
++	}
++	if lo < 0 {
++		lo = 0
++	}
++	var total, complete, partial int64
++	var completeN, partialN int
++	var completeList, partialList []int
++	for id := 0; id < c.pieceCount; id++ {
++		p := c.pieces[id]
++		sz := atomic.LoadInt64(&p.Size)
++		if sz > 0 {
++			total += sz
++			if p.Complete.Load() {
++				complete += sz
++				completeN++
++				completeList = append(completeList, id)
++			} else {
++				partial += sz
++				partialN++
++				partialList = append(partialList, id)
++			}
++		}
++	}
++	out(fmt.Sprintf("cache: capacity=%d filled(atomic)=%d storedSumNow=%d (complete=%d in %d pieces, incomplete=%d in %d pieces) pieceLen=%d isRemove=%v lastCleanAge=%.1fs freeBuffers=%d activeReaders=%d readers=%d",
++		c.capacity, atomic.LoadInt64(&c.filled), total, complete, completeN, partial, partialN, c.pieceLength, c.isRemove.Load(),
++		now.Sub(time.Unix(0, c.lastCleanNS.Load())).Seconds(), len(c.free), c.activeReaders.Load(), len(c.readers)))
++	out(fmt.Sprintf("cache complete pieces with data: %v", completeList))
++	out(fmt.Sprintf("cache incomplete pieces with data: %v", partialList))
++	// would-evict analysis, without mutating anything
++	var ranges []Range
++	c.muReaders.RLock()
++	for r := range c.readers {
++		if r.isUse {
++			ranges = append(ranges, r.getPiecesRange())
++		}
++	}
++	c.muReaders.RUnlock()
++	ranges = mergeRange(ranges)
++	inRange := make([]bool, c.pieceCount)
++	fillPieceInRange(inRange, ranges, c.pieceCount)
++	evictable := 0
++	var evList []int
++	for id := 0; id < c.pieceCount; id++ {
++		p := c.pieces[id]
++		if pieceEvictable(atomic.LoadInt64(&p.Size), p.Complete.Load(), inRange[id]) && !c.isIdInFileBE(ranges, id) {
++			evictable++
++			evList = append(evList, id)
++		}
++	}
++	over := total > c.capacity
++	out(fmt.Sprintf("cache eviction: over capacity (stored>cap)=%v stored-cap=%d; evictable pieces now=%d %v; mergedRanges=%v; evict triggers only when filled>capacity strictly",
++		over, total-c.capacity, evictable, evList, ranges))
++	for id := lo; id <= hi; id++ {
++		p := c.pieces[id]
++		out(fmt.Sprintf("cache piece %d: Complete=%v Size=%d accessedAge=%ds inRange=%v inFileBE=%v localPrio=%v",
++			id, p.Complete.Load(), atomic.LoadInt64(&p.Size), now.Unix()-atomic.LoadInt64(&p.Accessed)/1, inRange[id], c.isIdInFileBE(ranges, id), c.localPriorityOf(id)))
++	}
++	return lo, hi
++}
++
++func (c *Cache) localPriorityOf(id int) interface{} {
++	c.muPriority.Lock()
++	defer c.muPriority.Unlock()
++	if v, ok := c.localPriority[id]; ok {
++		return v
++	}
++	return "-"
++}
+diff --git a/tests/e2e/run.sh b/tests/e2e/run.sh
+index 0cb959f..d240c2d 100644
+--- a/tests/e2e/run.sh
++++ b/tests/e2e/run.sh
+@@ -365,7 +365,7 @@ start_stack() {
+   docker run -d --name "$flodni" --network "$network" --network-alias flodni \
+     --device /dev/fuse --cap-add SYS_ADMIN --security-opt apparmor:unconfined \
+     -v "$dir/config.json:/config.json:ro" -v "$dir/state:/state" \
+-    -v "$dir/cache:/cache" ${envargs[@]+"${envargs[@]}"} "$FLODNI_IMAGE" >/dev/null
++    -v "$dir/cache:/cache" ${envargs[@]+"${envargs[@]}"} ${E2E_STALL_DUMP:+-e FLODNI_STALL_DUMP=$E2E_STALL_DUMP} ${E2E_STALL_POKE:+-e FLODNI_STALL_POKE=$E2E_STALL_POKE} "$FLODNI_IMAGE" >/dev/null
+   local -a seederenv=()
+   if [ -n "${E2E_GOSTORM_CACHE_MB:-}" ]; then
+     seederenv=(-e "E2E_GOSTORM_CACHE_MB=$E2E_GOSTORM_CACHE_MB")
+@@ -455,6 +455,10 @@ run_variant() {
+   actual=${actual%% *}
+   local full_s=$((SECONDS - full_t0))
+   echo "full read of $variant took ${full_s}s" >&2
++  if [ -n "${E2E_STALL_DUMP:-}" ]; then
++    mkdir -p /tmp/stall-dumps
++    docker logs "$flodni" >"/tmp/stall-dumps/flodni-$variant-$(date +%H%M%S)-${full_s}s.log" 2>&1 || true
++  fi
+   report_first_byte "$variant"
+   check_prometheus "$variant" || return 1
+   check_reader_budget "$variant" "$path" || return 1
