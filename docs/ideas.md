@@ -165,8 +165,6 @@ Bugs and data-loss risks. None open.
 - **CodeQL.** Left out for now: the cgo FUSE build may defeat its automatic
   build. Needs a manual build step.
 - **A threat model** for the control API and its opt-in token.
-- **An updater for the `Makefile` image pins.** Dependabot does not read
-  them.
 
 ## Enterprise-grade, optional
 

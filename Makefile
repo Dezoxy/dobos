@@ -32,7 +32,8 @@ help:
 # The vendored engine keeps its own formatting and is not vetted or tested here.
 GO_PKGS = $$(go list ./... | grep -v 'internal/anacrolix-torrent')
 
-# Pinned: a new errcheck release can add findings, so bump it by hand.
+# Pinned: a new errcheck release can add findings. Renovate proposes it in its
+# own pull request, where CI shows them.
 ERRCHECK = github.com/kisielk/errcheck@v1.9.0
 
 ## errcheck        fail on an unchecked error outside .errcheck-excludes (Linux, libfuse3-dev)

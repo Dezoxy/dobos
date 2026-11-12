@@ -96,9 +96,14 @@ A change that violates one is wrong even if it works.
   still blocks any merge with a failing or missing check.
 - **Releases** are `v*` tags. A tag publishes `ghcr.io/dezoxy/flodni` by
   digest with provenance; tags are never moved or deleted.
-- **Version pins:** Dependabot updates GitHub Actions, the Docker base
-  images and Go modules, weekly, after a seven-day cooldown. The image pins
-  at the top of the `Makefile` have no updater; bump them by hand.
+- **Version pins:** Renovate (`.github/renovate.json5`, run by the Mend
+  Renovate app) updates Go modules, GitHub Actions, the Docker base images,
+  the CI job container, the image and errcheck pins in the `Makefile` and
+  the tool versions in the workflows, weekly, after a seven-day release age.
+  A workflow tool version kept in a `*_VERSION:` key needs a
+  `# renovate:` comment on the line above it. The `go` directive is bumped
+  by hand. Dependabot alerts stay on: Renovate reads them to raise
+  security fixes.
 - Prose in Markdown wraps at 80 columns; tables, fences and single long
   tokens are exempt. Do not use a Markdown formatter to enforce it.
 
