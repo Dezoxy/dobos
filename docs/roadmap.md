@@ -128,7 +128,7 @@ Releases and deployment are scheduled separately.
    line, `warnings` in `/api/health` (advisory, never a status change) and
    `flodni_warning{name="no_play_webhook"}`. The README's "Play webhook"
    section says plainly that these features need the webhook. The keep-alive
-   is not part of this step; it stays designed, in step 8.
+   is not part of this step; it is step 8.
 8. **Keep a playing torrent connected.** [FINISHED] The engine closes a
    torrent that has had no reader for its idle timeout
    (`TorrentDisconnectTimeout`, 15 s by default), which keeps idle titles
