@@ -206,6 +206,16 @@ func collectPlaybackProm(w *promtext.Writer) {
 		"Served reads that took longer than one second. Failed reads are not counted. confirmed as in flodni_torrent_idle_closes_total.",
 		promSample(keepaliveCounters.stalls[1].Load(), lbl("confirmed", "true")),
 		promSample(keepaliveCounters.stalls[0].Load(), lbl("confirmed", "false")))
+	w.Counter("flodni_keepalive_releases_total",
+		"Holds that ended, by reason: stop is a stop webhook (or the playback state dropped), ceiling is playback_keepalive_minutes after the last read or play webhook. The torrent then closes at its next idle check.",
+		promSample(keepaliveCounters.releases[0].Load(), lbl("reason", "stop")),
+		promSample(keepaliveCounters.releases[1].Load(), lbl("reason", "ceiling")))
+	w.Counter("flodni_keepalive_evicted_total",
+		"Confirmed torrents that lost their hold to playback_keepalive_max_torrents, counted once per episode; they idle-close as without the keep-alive.",
+		promSample(keepaliveCounters.evicted.Load()))
+	w.Gauge("flodni_keepalive_held_torrents",
+		"Idle torrents the keep-alive is keeping open right now.",
+		promSample(int64(keepaliveHeld())))
 	w.Counter("flodni_warmup_cold_reopen_total",
 		"Confirmed plays that opened with no ready head on a file quota eviction had removed, counted once per eviction. previously_played says whether the file had been played before.",
 		promSample(coldReopensPrevPlay.Load(), lbl("previously_played", "true")),

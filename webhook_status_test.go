@@ -361,13 +361,13 @@ func TestAMatchedWebhookResetsTheCallerTally(t *testing.T) {
 
 func TestStartupLine(t *testing.T) {
 	now := whT0
-	got := webhookStartupLine(now, 0, false, false, 7)
+	got := webhookStartupLine(now, 0, false, false, 7, "keep-alive: off")
 	want := "[Webhook] last matched play webhook: never; played-file protection: inactive (no play recorded); " +
-		"reader budget refusal: off (opt-in); warn after 7 days"
+		"reader budget refusal: off (opt-in); warn after 7 days; keep-alive: off"
 	if got != want {
 		t.Fatalf("\n got %q\nwant %q", got, want)
 	}
-	got = webhookStartupLine(now, now.Add(-3*day).Unix(), true, true, 0)
+	got = webhookStartupLine(now, now.Add(-3*day).Unix(), true, true, 0, "keep-alive: on")
 	for _, w := range []string{
 		"last matched play webhook: 2026-11-10 (3 d ago)", "played-file protection: active",
 		"reader budget refusal: on (arms at the first matched play webhook after this start)", "warning: off",
@@ -376,8 +376,8 @@ func TestStartupLine(t *testing.T) {
 			t.Errorf("%q lacks %q", got, w)
 		}
 	}
-	if strings.Contains(strings.ToLower(got), "keep-alive") {
-		t.Fatalf("keep-alive is not built: %q", got)
+	if !strings.Contains(got, "keep-alive: on") {
+		t.Fatalf("the keep-alive field is missing: %q", got)
 	}
 }
 

@@ -71,12 +71,12 @@ A change that violates one is wrong even if it works.
   and reads them back with the seeder dead, restarts the daemon to catch up on
   a title that was never warmed, sends a play webhook in the middle of a
   read past the reader-budget margin and checks it counts as confirmed late,
-  measures the engine's idle closes with a webhook while the torrent is
-  closed, then replaces a TV episode with a second release and refuses a third that
-  never delivers (needs Docker and `/dev/fuse`). The module
-  and the binary are `flodni`; the `FLODNI_*` environment variables win over
-  the older `TIRAMISU_*` names, and persisted file names (`tiramisu.db`,
-  `tiramisu.log`) stay as they were.
+  holds a torrent with a confirmed playback through two idle windows and
+  releases it on a stop webhook, then replaces a TV episode with a second
+  release and refuses a third that never delivers (needs Docker and
+  `/dev/fuse`). The module and the binary are `flodni`; the `FLODNI_*`
+  environment variables win over the older `TIRAMISU_*` names, and persisted
+  file names (`tiramisu.db`, `tiramisu.log`) stay as they were.
 - **Layout:** `main.go` and the other root `.go` files are the daemon;
   `internal/` holds the packages (`vfs`, `gostorm`, `library`, `warmup`,
   `config` and more); `docker/` the image; `docs/` the roadmap, the ideas

@@ -53,7 +53,7 @@ type Torrent struct {
 	BitRate         string
 
 	expiredTime time.Time
-	IsPriority  atomic.Bool // V185: If true, this torrent will never expire by timeout
+	IsPriority  atomic.Bool // V185: aggressive mode for the active stream (tuner); no longer holds the idle timeout, see HoldExpiry
 
 	closed <-chan struct{}
 
@@ -360,21 +360,56 @@ func (t *Torrent) IsStreaming() bool {
 }
 
 func (t *Torrent) expired() bool {
-	if t.IsPriority.Load() {
-		return false // V185: Never expire if marked as high priority (active stream)
+	readers := 0
+	if t.cache != nil {
+		readers = t.cache.Readers()
 	}
-	if t.Stat == state.TorrentGettingInfo || t.Stat == state.TorrentPreload {
-		return false // Still working, don't expire
+	return expiryVerdict(t.Stat, t.expiredTime.Before(time.Now()), t.cache != nil, readers,
+		func() bool { return holdExpiry(t.Hash().HexString()) })
+}
+
+// HoldExpiry, when set, is asked for every torrent that would otherwise be closed for
+// idleness: true keeps it open for this tick. nil means no hold. It runs under
+// muTorrent on the ticker, so it must not call into the engine (Status, Stats and the
+// like take the same non-reentrant lock). The keep-alive (Reliability step 8, phase b)
+// sets it from the playback state; the engine knows nothing about playback.
+var HoldExpiry func(hash string) bool
+
+// holdExpiry asks HoldExpiry and treats a panic as no hold: a panic here would leave
+// muTorrent locked and end the ticker.
+func holdExpiry(hash string) (held bool) {
+	f := HoldExpiry
+	if f == nil {
+		return false
 	}
-	if !t.expiredTime.Before(time.Now()) {
-		return false // Timer not expired yet
+	defer func() {
+		if r := recover(); r != nil {
+			log.TLogln("[KeepAlive] hold predicate panicked, not holding:", r)
+			held = false
+		}
+	}()
+	return f(hash)
+}
+
+// expiryVerdict is the pure expiry decision. A torrent still getting its info or
+// preloading never expires; neither does one whose timer has not passed or that has a
+// reader. One with no cache (GotInfo failed or never ran) expires, since a zombie
+// holds nothing worth keeping. Only then is the hold asked, so a scan or a busy
+// torrent never costs a predicate call.
+func expiryVerdict(stat state.TorrentStat, timerPassed, hasCache bool, readers int, held func() bool) bool {
+	if stat == state.TorrentGettingInfo || stat == state.TorrentPreload {
+		return false
 	}
-	// V255: Torrent with no cache (GotInfo failed/never called) should also expire.
-	// Previously cache==nil returned false, causing zombies in RAM forever.
-	if t.cache == nil {
+	if !timerPassed {
+		return false
+	}
+	if !hasCache {
 		return true
 	}
-	return t.cache.Readers() == 0
+	if readers != 0 {
+		return false
+	}
+	return held == nil || !held()
 }
 
 // SetAggressiveMode enables or disables aggressive download priority in the cache

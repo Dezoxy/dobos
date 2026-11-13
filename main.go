@@ -262,6 +262,9 @@ func main() {
 	// closes. Set before the engine and its ticker start. The hook only counts; it
 	// changes nothing about when a torrent closes.
 	torr.OnIdleClose = countIdleClose
+	// Keep-alive (phase b): the engine asks before it closes an idle torrent. The
+	// predicate reads the playback state only and never calls into the engine.
+	torr.HoldExpiry = keepaliveHold
 	go func() {
 		logger.Println("Starting Embedded GoStorm Engine...")
 		server.Start() // Starts Web Server on 8090 and Engine
