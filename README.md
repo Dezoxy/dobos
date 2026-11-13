@@ -350,8 +350,10 @@ described in its own section below; it is off by default.
 set, see below), Flodni completes the head and tail windows of each file the
 library API files (`POST /api/library/add`), in the background, so the first
 play starts from the SSD instead of waiting for the swarm. It is implemented
-and tested against fakes; the end-to-end test that adds a title, stops the
-seeder and reads the windows back is not written yet (`docs/roadmap.md`).
+and tested against fakes and, for one title, end to end: `make e2e` adds a
+fixture with the switch on, waits for the fill, stops the seeder and reads both
+windows back from the SSD. Pause, the wake of a closed torrent and removal
+while queued are covered by unit tests only.
 
 - **Cost.** It downloads the windows (by default 64 MiB of head and 16 MiB of
   tail per file, `warmup_head_size_mb` and `warmup_tail_size_mb`) from the

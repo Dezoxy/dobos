@@ -67,8 +67,9 @@ A change that violates one is wrong even if it works.
   needs a check, a log line or an explicit `_ =`; the few calls ignored
   everywhere are in `.errcheck-excludes`); `make go-test` runs the tests
   with the race detector. `make e2e` seeds a private torrent and reads it
-  through FUSE in the built image, then replaces a TV episode with a second
-  release and refuses a third that never delivers (needs Docker and
+  through FUSE in the built image, fills a title's windows with warm on add
+  and reads them back with the seeder dead, then replaces a TV episode with a
+  second release and refuses a third that never delivers (needs Docker and
   `/dev/fuse`). The module
   and the binary are `flodni`; the `FLODNI_*` environment variables win over
   the older `TIRAMISU_*` names, and persisted file names (`tiramisu.db`,
