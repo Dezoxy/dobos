@@ -59,28 +59,11 @@ func mergeTrackerTiers(base, extra [][]string) [][]string {
 	return append(base, missing)
 }
 
+// AddTorrent is the explicit add: the caller brings a spec (a magnet, a file, an
+// upload) and the torrent starts from it. A wake of a closed torrent goes through
+// LoadStored instead, which never adds from a caller's link.
 func AddTorrent(spec *torrent.TorrentSpec, title, poster string, data string, category string) (*Torrent, error) {
-	// V255: Inject cached InfoBytes + PeerAddrs from DB to skip metadata re-fetch
-	// and peer discovery. Magnet links always have InfoBytes=nil and PeerAddrs=nil.
-	// If this torrent was previously saved, the DB has both — inject them so
-	// GotInfo() fires immediately and peers connect without waiting for tracker/DHT.
-	if cached := GetTorrentDB(spec.InfoHash); cached != nil && cached.TorrentSpec != nil {
-		if len(spec.InfoBytes) == 0 && len(cached.TorrentSpec.InfoBytes) > 0 {
-			spec.InfoBytes = cached.TorrentSpec.InfoBytes
-		}
-		if len(spec.PeerAddrs) == 0 && len(cached.TorrentSpec.PeerAddrs) > 0 {
-			spec.PeerAddrs = cached.TorrentSpec.PeerAddrs
-		}
-		// The trackers the torrent was first added with (its indexer's, possibly with the
-		// user's passkey) come back too: a wake builds a bare magnet from the hash.
-		spec.Trackers = mergeTrackerTiers(spec.Trackers, cached.TorrentSpec.Trackers)
-	}
-
-	btsMu.RLock()
-	localBts := bts
-	btsMu.RUnlock()
-
-	torr, err := NewTorrent(spec, localBts)
+	torr, err := addUnderLock(spec)
 	if err != nil {
 		log.TLogln("error add torrent:", err)
 		return nil, err
@@ -125,7 +108,7 @@ func AddTorrent(spec *torrent.TorrentSpec, title, poster string, data string, ca
 // ForceSaveTorrentToDB bypasses debounce — use only when the torrent is about
 // to be removed (expiry) so the final peer snapshot is always persisted.
 func ForceSaveTorrentToDB(torr *Torrent) {
-	saveTorrentToDB(torr)
+	_ = saveTorrentToDB(torr)
 }
 
 // SaveTorrentToDB saves with a 30s debounce per hash to avoid redundant fsyncs.
@@ -137,11 +120,15 @@ func SaveTorrentToDB(torr *Torrent) {
 			return // skip — saved recently
 		}
 	}
-	lastSaveTimes.Store(hash, now)
-	saveTorrentToDB(torr)
+	// Stamped only by a save that wrote: one skipped because the torrent is no longer
+	// held must not debounce the next save of the same hash after a re-add.
+	if saveTorrentToDB(torr) {
+		lastSaveTimes.Store(hash, now)
+	}
 }
 
-func saveTorrentToDB(torr *Torrent) {
+// saveTorrentToDB reports whether it wrote the record.
+func saveTorrentToDB(torr *Torrent) bool {
 	// V255: Persist metadata InfoBytes to DB for instant re-activation.
 	// Without this, TorrentSpec.InfoBytes stays nil (from original magnet parse),
 	// forcing full metadata re-fetch from peers on every Wake() — adding 2-10s to TTFF.
@@ -166,8 +153,32 @@ func saveTorrentToDB(torr *Torrent) {
 			}
 		}
 	}
-	log.TLogln("save to db:", torr.Hash())
-	AddTorrentDB(torr)
+	// A network call: never under lifeMu. The poster is read under it, because a wake
+	// restores the wrapper's fields under it after the wrapper is already visible.
+	lifeMu.Lock()
+	poster := torr.Poster
+	lifeMu.Unlock()
+	posterOK := utils.CheckImgUrl(poster)
+	// The save and a removal are one step against each other: only a wrapper the
+	// engine still holds may write a record, or an idle close that lost the race to
+	// RemTorrent would bring the removed torrent back.
+	return saveIfHeld(torr, posterOK)
+}
+
+func saveIfHeld(torr *Torrent, posterOK bool) bool {
+	lifeMu.Lock()
+	defer lifeMu.Unlock()
+	btsMu.RLock()
+	localBts := bts
+	btsMu.RUnlock()
+	hash := torr.Hash()
+	if localBts == nil || localBts.GetTorrent(hash) != torr {
+		log.TLogln("save to db skipped, torrent is not held:", hash)
+		return false
+	}
+	log.TLogln("save to db:", hash)
+	AddTorrentDB(torr, posterOK)
+	return true
 }
 
 // parseHash validates before converting: metainfo.NewHashFromHex panics on
@@ -238,20 +249,14 @@ func GetTorrent(hashHex string) *Torrent {
 			}()
 			log.TLogln("New torrent", tor.Hash())
 
-			btsMu.RLock()
-			localBts := bts
-			btsMu.RUnlock()
-
-			tr, _ := NewTorrent(tor.TorrentSpec, localBts)
-			if tr != nil {
-				tr.Title = tor.Title
-				tr.Poster = tor.Poster
-				tr.Data = tor.Data
-				tr.Size = tor.Size
-				tr.Timestamp = tor.Timestamp
-				tr.Category = tor.Category
-				tr.GotInfo()
+			// The record may be gone by now (a removal, a refused hash): then nothing
+			// is added, and the DB wrapper handed to the caller is all there is.
+			t, err := LoadStored(tor.Hash().HexString())
+			if err != nil {
+				log.TLogln("New torrent not loaded:", err)
+				return
 			}
+			t.GotInfo()
 		}()
 	}
 	return tor
@@ -291,16 +296,10 @@ func SetTorrent(hashHex, title, poster, category string, data string) *Torrent {
 			torr.Data = data
 		}
 	}
-	// update torrent data in DB
-	if torrDb != nil {
-		torrDb.Title = title
-		torrDb.Poster = poster
-		torrDb.Category = category
-		if data != "" {
-			torrDb.Data = data
-		}
-		AddTorrentDB(torrDb)
-	}
+	// update torrent data in DB: only a record that still exists, read again under
+	// the lock, so a removal that ran meanwhile is not undone.
+	posterOK := utils.CheckImgUrl(poster) // a network call: never under lifeMu
+	torrDb = updateRecord(hash, title, poster, category, data, posterOK)
 	if torr != nil {
 		return torr
 	} else {
@@ -308,20 +307,59 @@ func SetTorrent(hashHex, title, poster, category string, data string) *Torrent {
 	}
 }
 
+// updateRecord changes a record that still exists, read again under the lock so a
+// removal that ran meanwhile is not undone. The unlock is deferred: a recovered panic
+// must not leave lifeMu held.
+func updateRecord(hash metainfo.Hash, title, poster, category, data string, posterOK bool) *Torrent {
+	lifeMu.Lock()
+	defer lifeMu.Unlock()
+	rec := GetTorrentDB(hash)
+	if rec == nil {
+		return nil
+	}
+	rec.Title = title
+	rec.Poster = poster
+	rec.Category = category
+	if data != "" {
+		rec.Data = data
+	}
+	AddTorrentDB(rec, posterOK)
+	return rec
+}
+
+// engineRemove closes the engine's copy of a torrent; a seam for the panic test.
+var engineRemove = func(b *BTServer, hash metainfo.Hash) bool { return b.RemoveTorrent(hash) }
+
+// removeUnderLock takes the engine's copy, the record and the save debounce in one
+// step against a wake or a save. Both locks are released by defer, so a panic that
+// gin's recovery swallows leaves nothing held.
+func removeUnderLock(hash metainfo.Hash) bool {
+	lifeMu.Lock()
+	defer lifeMu.Unlock()
+	btsMu.RLock()
+	defer btsMu.RUnlock()
+	removed := engineRemove(bts, hash)
+	RemTorrentDB(hash)
+	lastSaveTimes.Delete(hash)
+	return removed
+}
+
 func RemTorrent(hashHex string) {
 	if sets.ReadOnly {
 		log.TLogln("API RemTorrent: Read-only DB mode!", hashHex)
 		return
 	}
-	btsMu.RLock()
-	defer btsMu.RUnlock()
-
 	hash, ok := parseHash(hashHex)
 	if !ok {
 		log.TLogln("API RemTorrent: malformed hash:", hashHex)
 		return
 	}
-	if bts.RemoveTorrent(hash) {
+	// The engine's copy, the record and the save debounce go in one step against a
+	// wake or a save (lifeMu). The file deletes and the warmup cache come after:
+	// they wait on the disk, and nothing can bring the torrent back by then.
+	removed := removeUnderLock(hash)
+
+	if removed {
 		if sets.BTsets.UseDisk && hashHex != "" && hashHex != "/" {
 			name := filepath.Join(sets.BTsets.TorrentsSavePath, hashHex)
 			if _, err := os.Stat(name); err == nil {
@@ -335,7 +373,6 @@ func RemTorrent(hashHex string) {
 			}
 		}
 	}
-	RemTorrentDB(hash)
 	// An explicit removal takes the torrent's head/tail cache with it. Idle expiry and
 	// DropTorrent do not: the cache has to outlive them.
 	if warmup.DiskWarmup != nil {
