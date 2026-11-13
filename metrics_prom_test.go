@@ -80,6 +80,7 @@ func TestHandlePrometheus(t *testing.T) {
 		"flodni_torrent_idle_closes_total", "flodni_torrent_reopens_total", "flodni_read_stalls_total",
 		"flodni_wake_refused_total",
 		"flodni_warm_fill_bytes_total", "flodni_warm_cache_failures_total", "flodni_warm_queue_files", "flodni_warm_paused",
+		"flodni_stub_index_mismatch_total",
 	} {
 		if !strings.Contains(body, "# TYPE "+fam+" ") {
 			t.Errorf("family %s missing", fam)
@@ -94,6 +95,7 @@ func TestHandlePrometheus(t *testing.T) {
 		`flodni_warmup_cold_reopen_total{previously_played="true"}`,
 		`flodni_warmup_cold_reopen_total{previously_played="false"}`,
 		`flodni_playback_starts_total`,
+		`flodni_stub_index_mismatch_total`,
 		`flodni_torrent_idle_closes_total{confirmed="true"}`,
 		`flodni_torrent_idle_closes_total{confirmed="false"}`,
 		`flodni_torrent_reopens_total{confirmed="true"}`,

@@ -716,6 +716,7 @@ closed torrent and reports the engine's state for it before the pass).
 | `evicted`: quota eviction took the windows during the fill | unchanged | `evicted`, not retried | untouched |
 | `lost`: the windows vanished with no eviction mark | unchanged (`warmed` if a delivery was seen) | `lost` | stamped if `warmed` |
 | `write_failed`: another error, such as a failed write | as `lost` | `write_failed` | as `lost` |
+| `index_mismatch`: the engine's file at the stub's index has another length than the stub | unchanged | unchanged, not retried; only the attempt time is recorded (catch-up looks again after 20 hours) | untouched |
 | `wake_error`, `dropped_queue_full` | nothing recorded | | |
 | `skipped`: a file left behind after a `wake_error`, after a `failed` with no peers or no running torrent, or (catch-up) after a `no_room` of the same title | nothing recorded | | |
 
@@ -884,6 +885,39 @@ race detector, and end to end: the `removal` variant of `make e2e` removes
 three titles back to back (two through the library API, one with `rm`) while a
 fourth is read and a descriptor is open on one of them.
 
+### A stub whose file index is stale
+
+A stub names its file by the index the engine gave it when the stub was
+written. Flodni writes the index and the size from the same engine record, so
+its own stubs agree with the engine. A stub from elsewhere, or an engine that
+numbered a pack's files another way, can leave the index naming a different
+file. The ids are the engine's own (the list saved with the torrent's record
+and `Status()` serve the same ids): not the order of the metainfo and not a
+sort of the paths. An open compares the stub with that list by one rule: the
+stub's index wins when the engine's file there has the stub's length; else the
+file of that length (by name if several); else the open fails with `EIO`.
+
+- **The counter.** `flodni_stub_index_mismatch_total` counts the paths whose
+  stub index differs from the file an open resolved, or names no file of the
+  stub's length, once per path per process. Each first open logs one
+  `WARNING: stub index:` line naming the path. It is 0 from the start. A
+  non-zero value means a stale stub exists; zero over a few weeks of use means
+  none of the files opened has one.
+- **To repair a stub:** run a library remove and then a library add of the
+  title. A library add alone answers "already present" and changes nothing.
+- **What is guarded.** The open reads the engine's list from the engine when
+  the torrent is loaded, else from the record saved with it, without waking the
+  torrent. A warm head under the stub's index is used only when the file there
+  has the stub's length; otherwise the open is cold (the torrent is woken
+  first) and resolves by the rule above. When no file has the stub's length the
+  open fails with `EIO` and the counter moves: nothing is served for a stub
+  that cannot be matched. A record saved before the metainfo has no list; then
+  an open takes a warm head only if it is no longer than the stub's file. Warm
+  on add and catch-up refuse a file whose engine length differs from the
+  stub's size (outcome `index_mismatch`). Not guarded: a torrent with no
+  stored list whose stale stub shares its index with another file's warm head
+  of a plausible length (`docs/ideas.md`).
+
 ## Metrics
 
 `GET /metrics/prometheus` on the control port serves the Prometheus text
@@ -949,6 +983,7 @@ scraper on the same host or Docker network.
 | `flodni_warmup_write_queue_drops_total` | counter | none | Head chunks dropped because the warmup write queue was full. |
 | `flodni_readability_torrents` | gauge | `state` | Library torrents by readability: `failed` has a failure streak, `ok` has none and a read served by the swarm, `never_read` is the rest (no record, or a streak reset by a metainfo without a read). Not exported when the state database is off. |
 | `flodni_library_torrents_unstored` | gauge | none | Library torrents with no stored engine record holding metainfo, counted once at startup after the library walk and not refreshed. Not exported until counted. See "A stub the engine does not store". |
+| `flodni_stub_index_mismatch_total` | counter | none | Library paths whose stub file index differs from the file an open resolved by size and name, once per path per process. Non-zero means a stale stub. See "A stub whose file index is stale". |
 | `flodni_readahead_cache_bytes` | gauge | none | Bytes in the read-ahead cache. |
 | `flodni_readahead_cache_active_bytes` | gauge | none | The part that is not stale. |
 | `flodni_readahead_cache_entries` | gauge | none | Entries in the cache. |

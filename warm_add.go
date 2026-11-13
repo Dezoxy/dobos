@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"flodni/internal/gostorm/native"
+	"flodni/internal/gostorm/torr"
 	"flodni/internal/library"
 	"flodni/internal/promtext"
 	"flodni/internal/warmer"
@@ -82,6 +83,9 @@ func addWarmerDeps(x *fileStateIndex, stop <-chan struct{}) warmer.Deps {
 		},
 		Policy: x.WarmPolicy,
 		Fill: func(req warmup.FillRequest) (warmup.FillResult, error) {
+			if err := checkStubSize(req.Key, req.FileSize); err != nil {
+				return warmup.FillResult{}, err
+			}
 			return warmup.DiskWarmup.FillWindows(req) // nil-safe: ErrNotWired
 		},
 		DeliveredAt:  warmDeliveredAt,
@@ -116,6 +120,25 @@ func addWarmerDeps(x *fileStateIndex, stop <-chan struct{}) warmer.Deps {
 		Log:  func(line string) { logger.Print(line) },
 		Stop: stop,
 	}
+}
+
+// engineFileLength is the length of file id in the resident torrent; false when the
+// torrent is closed or has no such file. A var so a test can stand in the engine.
+var engineFileLength = func(hash string, id int) (int64, bool) {
+	return torr.PeekTorrent(hash).FileLength(id) // nil-safe
+}
+
+// checkStubSize refuses a fill whose key names, in the engine, a file of another
+// length than the stub's: its windows would hold another file's bytes. A closed
+// torrent cannot be checked; the warmer wakes it before the real fill, so the check
+// runs again where it can.
+func checkStubSize(k warmup.FileKey, size int64) error {
+	n, ok := engineFileLength(k.Hash, k.FileIdx)
+	if !ok || n == size {
+		return nil
+	}
+	return fmt.Errorf("%w: file %d of %s is %d bytes, the stub says %d",
+		warmer.ErrIndexMismatch, k.FileIdx, k.Hash, n, size)
 }
 
 // addWarmFillSamples is flodni_warm_fills_total{trigger="add"} and {trigger="catchup"}:

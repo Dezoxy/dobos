@@ -42,6 +42,12 @@ var Triggers = []string{Trigger, TriggerCatchup}
 // broken; this one means the hash can never be woken from here.
 var ErrNotStored = errors.New("the engine does not store this torrent")
 
+// ErrIndexMismatch is what Deps.Fill returns when the file the stub's index names in the
+// engine is not the file the stub describes (its length differs). Filling would write
+// another file's bytes under this key. The file is skipped: no retry, no cache state and
+// no swarm evidence, because nothing about the swarm or the cache was learned.
+var ErrIndexMismatch = errors.New("the stub's file index names another file in the torrent")
+
 // Outcomes of an attempt, the outcome label of flodni_warm_fills_total. A pause, a
 // shutdown and a removal record nothing and are not outcomes.
 const (
@@ -55,12 +61,13 @@ const (
 	OutcomeWriteFailed      = "write_failed"
 	OutcomeWakeError        = "wake_error"
 	OutcomeSkipped          = "skipped"
+	OutcomeIndexMismatch    = "index_mismatch"
 	OutcomeDroppedQueueFull = "dropped_queue_full"
 )
 
 // Outcomes lists every outcome, so the metrics can emit each at 0.
 var Outcomes = []string{OutcomeWarmed, OutcomePresent, OutcomeAlreadyWarm, OutcomeNoRoom, OutcomeFailed,
-	OutcomeEvicted, OutcomeLost, OutcomeWriteFailed, OutcomeWakeError, OutcomeSkipped, OutcomeDroppedQueueFull}
+	OutcomeEvicted, OutcomeLost, OutcomeWriteFailed, OutcomeWakeError, OutcomeSkipped, OutcomeIndexMismatch, OutcomeDroppedQueueFull}
 
 // Values of the per-file record the warmer writes.
 const (
@@ -1045,6 +1052,10 @@ func (w *Warmer) attempt(j *job, f *file) action {
 		} else {
 			delivered()
 		}
+	case errors.Is(err, ErrIndexMismatch):
+		// Only the attempt time is recorded: catch-up waits its retry period before it
+		// looks again, and nothing here counts as a cache failure or a read.
+		line.Outcome, line.Reason = OutcomeIndexMismatch, err.Error()
 	case errors.Is(err, warmup.ErrNoRoom):
 		line.Outcome = OutcomeNoRoom
 		u.Cache = CacheDroppedNoEvidence

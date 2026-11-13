@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+// ErrStubMismatch means the torrent's file list is known and neither the file at the
+// stub's index nor any other file has the stub's size: the stub is stale and no file
+// can be served for it.
+var ErrStubMismatch = errors.New("library: the stub names no file of its size")
+
 // ErrOpenTargetUnresolved means no file could be chosen for an Open.
 var ErrOpenTargetUnresolved = errors.New("library: cannot resolve the open target")
 
@@ -25,12 +30,23 @@ type TorrentFile struct {
 
 // ResolveOpenTarget picks the torrent file an Open serves, by size and name.
 func ResolveOpenTarget(hash string, urlIndex int, size int64, virtualPath string, files []TorrentFile) (OpenTarget, error) {
+	// Flodni writes a stub's index and size from one engine record: when the engine's
+	// file at that index has the stub's length the stub is right, and a same-size
+	// sibling must not take it by name.
+	for _, file := range files {
+		if urlIndex > 0 && file.Index == urlIndex && file.Length == size {
+			return OpenTarget{Hash: hash, FileIndex: urlIndex}, nil
+		}
+	}
 	// Engine-built names drift when a media
 	// server renames a file, and the index in an older stub can be stale.
 	if index, ok := matchVideoFile(hash, size, virtualPath, files); ok {
 		return OpenTarget{Hash: hash, FileIndex: index}, nil
 	}
 	if urlIndex > 0 {
+		if len(files) > 0 {
+			return OpenTarget{}, ErrStubMismatch
+		}
 		return OpenTarget{Hash: hash, FileIndex: urlIndex}, nil
 	}
 	return OpenTarget{}, ErrOpenTargetUnresolved

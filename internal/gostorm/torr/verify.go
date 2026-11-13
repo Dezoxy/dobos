@@ -113,6 +113,17 @@ func (t *Torrent) rangePieces(fileID int, off, n int64) (*torrent.Torrent, int, 
 	return tt, first, last, ok
 }
 
+// FileLength is the length of file fileID, resolved through Status() like the engine
+// reader does (Dezoxy fork). It lets the warmer check a stub's size against the file
+// its index names. A missing torrent or an unknown id gives 0, false.
+func (t *Torrent) FileLength(fileID int) (int64, bool) {
+	_, f, ok := t.fileByID(fileID)
+	if !ok {
+		return 0, false
+	}
+	return f.Length(), true
+}
+
 // fileByID resolves a Status() file id on one snapshot of the torrent.
 func (t *Torrent) fileByID(fileID int) (*torrent.Torrent, *torrent.File, bool) {
 	if t == nil {
