@@ -62,8 +62,6 @@ Bugs and data-loss risks. None open.
     letters starts with `_`.
   - `EpisodeKey` drops non-ASCII letters (`Élite` → `lite_s01e01`), so two
     shows can share a key.
-  - Episode stubs are matched by the first 8 hash characters; two releases
-    with the same prefix are treated as one.
 
 - **Stalls after a tail probe: fixed, two gaps left.** Both stalls of
   Reliability step 6 are fixed in the cache (see the Done lines of
