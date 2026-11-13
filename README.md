@@ -45,6 +45,10 @@ The container image builds anywhere Docker runs:
 docker build -f docker/Dockerfile -t flodni:dev .
 ```
 
+`make e2e` runs the end-to-end test (Docker and `/dev/fuse`).
+`FLODNI_TEST_SESSION_IDLE_CLOSE` and `FLODNI_TEST_SESSION_TICK` exist for that
+test only; they are not configuration.
+
 ## Running
 
 The image mounts the FUSE view at `/mnt/flodni-virtual`, reads library

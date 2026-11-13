@@ -680,3 +680,9 @@ steps marked [FINISHED] are built, the others are designed, not built.
   initialise or `warmup_dir` is not a separate mount. A missing
   `.dense-migrated` checks each head for holes (`SEEK_DATA`/`SEEK_HOLE`) and
   drops only those; the startup inode prune needs a whole walk.
+- 2026-11-13, CI speed-up: the image job is split. `Image build` builds and
+  saves both images and the end-to-end matrix starts from it; the required
+  check `Image (build, smoke test, scan)` runs the smoke test and the scan
+  beside the matrix and fails if the build failed. The late-confirm and
+  budget-refusal variants shorten the session idle close and cleanup tick with
+  test-only environment variables.
