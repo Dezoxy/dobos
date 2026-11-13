@@ -277,3 +277,57 @@ func TestUnstoredGaugeIsAbsentUntilCountedThenExported(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// pruneInodeEnv registers two files in the inode map; the builder's walk found one.
+func pruneInodeEnv(t *testing.T) (*StartupCacheBuilder, *vfs.InodeMap) {
+	t.Helper()
+	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), &vfsLogger{log.New(io.Discard, "", 0)})
+	prev := globalInodeMap
+	globalInodeMap = im
+	t.Cleanup(func() { globalInodeMap = prev })
+	im.AddFile("/lib/movies/a.mkv", inLibHash, 1)
+	im.AddFile("/lib/movies/b.mkv", orphHash, 1)
+	b := NewStartupCacheBuilder(t.TempDir(), cache.NewLRUCache(1<<20, time.Hour), log.New(io.Discard, "", 0))
+	b.foundFiles["/lib/movies/a.mkv"] = true
+	b.foundHashes[inLibHash] = true
+	return b, im
+}
+
+func inodeFiles(im *vfs.InodeMap) int {
+	files, _, _, _ := im.Stats()
+	return int(files)
+}
+
+func TestPruneInodesGuards(t *testing.T) {
+	tests := []struct {
+		name     string
+		complete bool
+		errors   int
+		empty    bool
+	}{
+		{"incomplete walk", false, 0, false},
+		{"walk errors", true, 2, false},
+		{"empty result", true, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, im := pruneInodeEnv(t)
+			b.errors = tt.errors
+			if tt.empty {
+				b.foundFiles = map[string]bool{}
+			}
+			b.pruneInodes(tt.complete)
+			if got := inodeFiles(im); got != 2 {
+				t.Fatalf("files = %d, want 2: nothing may be pruned", got)
+			}
+		})
+	}
+}
+
+func TestPruneInodesDropsTheGhostAfterAWholeWalk(t *testing.T) {
+	b, im := pruneInodeEnv(t)
+	b.pruneInodes(true)
+	if got := inodeFiles(im); got != 1 {
+		t.Fatalf("files = %d, want only the found one", got)
+	}
+}
