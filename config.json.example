@@ -20,6 +20,7 @@
   "disk_warmup_quota_gb": 15,
   "warmup_head_size_mb": 64,
   "warm_on_add": false,
+  "warm_catchup_per_hour": 20,
   "played_protection_days": 90,
   "unconfirmed_read_margin_mb": 64,
   "plex": {

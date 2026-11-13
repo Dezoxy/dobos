@@ -2,6 +2,7 @@ package library
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -862,8 +863,17 @@ func TestListReportsStubsWithTheirParsedFields(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("items = %+v", items)
 	}
-	want := Item{Path: files[0].Path, FusePath: files[0].FusePath, Size: 10, Hash: charPackHash, FileIndex: 1, Season: 1, Episode: 1}
+	// The stub's mtime orders the catch-up feeder; it is not part of the answer.
+	mt := items[0].ModTime
+	if st, err := os.Stat(files[0].Path); err != nil || !mt.Equal(st.ModTime()) || mt.IsZero() {
+		t.Fatalf("ModTime = %v, want the stub's mtime (stat err %v)", mt, err)
+	}
+	want := Item{Path: files[0].Path, FusePath: files[0].FusePath, Size: 10, Hash: charPackHash, FileIndex: 1, Season: 1, Episode: 1, ModTime: mt}
 	if items[0] != want {
 		t.Fatalf("item = %+v, want %+v", items[0], want)
+	}
+	b, err := json.Marshal(items[0])
+	if err != nil || strings.Contains(string(b), "ModTime") || strings.Contains(strings.ToLower(string(b)), "mod_time") {
+		t.Fatalf("the API output must not change, got %s (err %v)", b, err)
 	}
 }

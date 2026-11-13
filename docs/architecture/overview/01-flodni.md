@@ -32,7 +32,9 @@ A read enters through the virtual filesystem. Head and index bytes come from
 the on-disk index cache; everything else comes from the torrent engine, which
 talks to the swarm. The library manager owns the stub files. When warm on add
 is switched on, the warmer fills the cache's windows for each newly filed file
-in the background. The control API is the only way in besides the mount.
+in the background, and a slow catch-up pass does the same for the files
+already in the library, never evicting. The control API is the only way in
+besides the mount.
 
 ![Component view: the parts of the daemon](embed:Daemon)
 

@@ -81,7 +81,8 @@ consistent with a table that already holds the same per-torrent key.
   the last swarm-served read, and the reason and source of the last
   failure), and per file (exists, experimental).
 - Fills head and tail cache windows in index mode: when a file is read, and
-  on add (exists, experimental, off by default); at startup (designed).
+  on add and, for the library's existing files, by catch-up (both exist,
+  experimental, off by default).
 - Bounds the bytes that readers other than playback may pull from the
   swarm (designed).
 - Carries out a replacement it is handed through the library API, and keeps
@@ -134,12 +135,13 @@ Status of each part:
 | Time of the last swarm-served read, reason and source of the last failure | Exists |
 | One `[Session]` log line per closed session: bytes by serving path, `swarm_served`, file index (the README documents it as a contract) | Exists; sessions open at shutdown and reads after a session closes are not counted |
 | Prometheus text exposition at `GET /metrics/prometheus`: session latency histograms, read counts and bytes by serving path, session outcomes, dead-swarm verdicts, warmup cache size and evictions (the README lists the series) | Exists |
-| Per-file warm record: readability and cache state per file, served as the experimental `files` array on `GET /api/torrents/health` (state database schema 14); the engine stamps each piece with its completion time, a read through the mount that completes a file's windows records it, and warm on add records each of its outcomes | Exists, **experimental**; written by the mount path in index mode (`warmed`, `cached`) and by warm on add (all outcomes: `present`, `failed`, `dropped_*`, `lost`, `write_failed`) |
+| Per-file warm record: readability and cache state per file, served as the experimental `files` array on `GET /api/torrents/health` (state database schema 14); the engine stamps each piece with its completion time, a read through the mount that completes a file's windows records it, and warm on add and catch-up record each of their outcomes | Exists, **experimental**; written by the mount path in index mode (`warmed`, `cached`) and by warm on add (all outcomes: `present`, `failed`, `dropped_*`, `lost`, `write_failed`; catch-up writes all but `dropped_*`) |
 | Played and evicted state per file (state database schema 13); quota eviction takes head and tail together, files never played first, then played files, oldest first; one `[WarmupEvict]` log line per eviction; `flodni_playback_starts_total` and `flodni_warmup_cold_reopen_total` | Exists; "played" is a playback confirmed by the media server webhook, so without webhooks nothing is ever played and the order is oldest first |
 | Internal list of files whose head and tail windows are on disk; `flodni_warmup_files{window}` and `flodni_readability_torrents{state}` built on it and on the record | Exists; the per-file list is internal and not served, only the aggregates are exported |
-| Background fills evict only files never played, or nothing | Exists for warm on add: it evicts never-played files, oldest first, only with the state database attached and at least one play recorded, and nothing otherwise |
-| The fill primitive: completes one file's head and tail windows in chunks from a torrent the engine already has, writing only verified bytes, with room made first under the policy above | Exists; warm on add calls it |
-| Warm on add: after a library add that wrote stubs, a background queue (two workers, 4096 files, in memory) fills each new file's windows; off by default (`warm_on_add`, needs `warmup_dir`); pauses while a playback is open; records each outcome per file; retries cache-side failures at 10 minutes, 1 hour and 6 hours | Exists, **experimental**; tested against fakes and by the `warm-on-add` end-to-end variant (one title: fill, evidence, windows read back with the seeder dead; pause, wake and removal while queued are unit tests only). Catch-up at startup and the day-scale retry of failed warms are **designed, not implemented** |
+| Background fills evict only files never played, or nothing | Exists for warm on add: it evicts never-played files, oldest first, only with the state database attached and at least one play recorded, and nothing otherwise. Catch-up never evicts and never re-warms an evicted file |
+| The fill primitive: completes one file's head and tail windows in chunks from a torrent the engine already has, writing only verified bytes, with room made first under the policy above | Exists; warm on add and catch-up call it |
+| Warm on add: after a library add that wrote stubs, a background queue (two workers, 4096 files, in memory) fills each new file's windows; off by default (`warm_on_add`, needs `warmup_dir`); pauses while a playback is open; records each outcome per file; retries cache-side failures at 10 minutes, 1 hour and 6 hours | Exists, **experimental**; tested against fakes and by the `warm-on-add` end-to-end variant (one title: fill, evidence, windows read back with the seeder dead; pause, wake and removal while queued are unit tests only) |
+| Catch-up: a pass at start (one pace interval after the daemon starts) and every 6 hours lists the stubs and feeds the files not warm on disk, not evicted and not failing to the warmer, one title at a time, newest stub first, at `warm_catchup_per_hour` (default 20, 0 off), only while the warmer is idle; it needs `warm_on_add`, `warmup_dir` and the state database, never evicts (a full cache ends the pass), leaves evicted files to their next play, and retries a failed file no sooner than 20 hours later and at most 4 failed attempts; `flodni_warm_fills_total{trigger="catchup"}` and `flodni_warm_catchup_files{state}` | Exists, **experimental**; tested against fakes only. The end-to-end variant is **designed, not implemented** |
 | Byte budget for non-playback readers: bytes past the windows served to unconfirmed sessions are counted and logged (`[ReaderBudget]`, `flodni_unconfirmed_read_*`) | Counting exists; refusal **designed, not implemented** |
 
 What the endpoint does:
@@ -157,7 +159,7 @@ What the endpoint does:
   with the count at 0 and the time of the read.
 - Rows go when a torrent is removed from the library and are pruned at
   startup, after a complete scan of the library.
-- Per-file records exist (experimental): the mount path and warm on add write
+- Per-file records exist (experimental): the mount path, warm on add and catch-up write
   them, the warmer with each of its outcomes per file. Sessions
   carry a path, a hash and the file index their stub holds, but the
   per-torrent table has no file key.

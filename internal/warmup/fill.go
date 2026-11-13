@@ -10,8 +10,9 @@ import (
 // Dezoxy fork: the fill primitive of Readiness step 2 (warm on add). It completes one
 // media file's head and tail windows from a torrent the engine already has, in chunks,
 // and writes only verified bytes. Its only caller is the warmer
-// (internal/warmer): warm on add, off by default, and the pre-flight of catch-up
-// (Readiness step 3, RoomOnly), which nothing feeds yet (docs/roadmap.md).
+// (internal/warmer): warm on add, off by default, and catch-up (Readiness step 3),
+// which asks for room first (RoomOnly) and is fed by the daemon's passes
+// (warm_catchup.go).
 //
 // Why not WriteChunk or fillIndexTail: WriteChunk is asynchronous and drops silently,
 // and creates the head under EvictAny; fillIndexTail allocates a whole window, holds no

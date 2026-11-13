@@ -112,6 +112,11 @@ Bugs and data-loss risks. None open.
 - **Warm again after eviction.** The catch-up leaves evicted files to their
   next play; warming them again needs a quota that fits the library, or a
   rule for which files deserve it.
+- **Dead packs probed file by file.** After the head file of a pack gives up
+  (4 failed attempts), the next file becomes the head and gets its own four
+  attempts, so a dead pack costs one wake a day for days per file. Bounded, and
+  it announces only to the stored trackers; a pack-level give-up would end it.
+  Not planned.
 - **Quota accounting by allocated blocks.** The warmup quota counts apparent
   file sizes; sparse files make it count more than the disk holds. Safe, but
   it wastes part of the quota.

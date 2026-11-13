@@ -100,6 +100,13 @@ type Config struct {
 	// added, which costs download volume on a private tracker. Read at each add, and
 	// effective only with WarmupDir set.
 	WarmOnAdd bool `json:"warm_on_add"`
+	// WarmCatchupPerHour is the pace of catch-up (Readiness step 3): the library files
+	// whose windows were never warmed are fed to the warmer at this many files per hour,
+	// newest first, never evicting. It runs only with WarmOnAdd on and WarmupDir set,
+	// and needs the state database. 0 turns catch-up off, with its day-scale retries;
+	// a negative value is refused at load and replaced by the default (20). Read on
+	// each feed.
+	WarmCatchupPerHour int `json:"warm_catchup_per_hour"`
 	// PlayedProtectionDays is how long a play confirmed by the media server keeps a
 	// file out of the first rounds of quota eviction, counted from its last play.
 	// After that the file ranks as never played. 0 means a play protects forever;
@@ -193,6 +200,7 @@ func LoadConfig() Config {
 
 		PlayedProtectionDays:    90,
 		UnconfirmedReadMarginMB: 64,
+		WarmCatchupPerHour:      20,
 
 		GoStormBaseURL: "http://127.0.0.1:8090",
 		MetricsPort:    9080,
@@ -368,6 +376,11 @@ func (c *Config) finalize() {
 	if c.PlayedProtectionDays < 0 {
 		log.Printf("[Config] WARNING: played_protection_days %d is negative; using 90", c.PlayedProtectionDays)
 		c.PlayedProtectionDays = 90
+	}
+
+	if c.WarmCatchupPerHour < 0 {
+		log.Printf("[Config] WARNING: warm_catchup_per_hour %d is negative; using 20", c.WarmCatchupPerHour)
+		c.WarmCatchupPerHour = 20
 	}
 
 	// Above ~100,000 days the protection time overflows a duration and would turn
