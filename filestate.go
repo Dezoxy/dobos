@@ -131,6 +131,14 @@ func (x *fileStateIndex) IsPlayed(k warmup.FileKey) bool {
 	return x.protect == 0 || x.now().Sub(e.lastPlayed) < x.protect
 }
 
+// PlayRecorded reports whether any confirmed play is recorded, here or in the store:
+// played-file protection has something to protect.
+func (x *fileStateIndex) PlayRecorded() bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.playLatch
+}
+
 // EverPlayed reports whether any confirmed play was ever recorded for the file, expired
 // or not.
 func (x *fileStateIndex) EverPlayed(k warmup.FileKey) bool {

@@ -123,6 +123,7 @@ func collectProm(w *promtext.Writer) {
 	collectWarmupProm(w)
 	collectPlaybackProm(w)
 	collectReaderBudgetProm(w)
+	collectWebhookHealthProm(w)
 	collectReadabilityProm(w)
 	collectReadAheadProm(w)
 
@@ -208,14 +209,14 @@ func collectReaderBudgetProm(w *promtext.Writer) {
 		promSample(unconfirmedSessions[rbUnconfirmed].Load(), lbl("outcome", "unconfirmed")),
 		promSample(unconfirmedSessions[rbConfirmedLate].Load(), lbl("outcome", "confirmed_late")))
 	w.Counter("flodni_unconfirmed_read_refused_reads_total",
-		"Reads the reader budget refused with EIO (no read path calls the gate yet, so this stays 0).",
+		"Reads the reader budget refused with EIO (refuse_unconfirmed_reads on only).",
 		promSample(unconfirmedRefusedReads.Load()))
 	w.Counter("flodni_unconfirmed_read_holds_total",
-		"Holds of a refused handle, counted when they end: lifted by a confirmation, or refused when the time ran out (no read path calls the gate yet).",
+		"Holds of a refused handle, counted when they end: lifted by a confirmation, or refused when the time ran out.",
 		promSample(unconfirmedHolds[rbHoldLifted].Load(), lbl("result", "lifted")),
 		promSample(unconfirmedHolds[rbHoldRefused].Load(), lbl("result", "refused")))
 	w.Counter("flodni_unconfirmed_read_confirmed_after_refusal_total",
-		"Sessions that had a read refused and were then confirmed by a playback webhook, counted once each (plays the budget broke; no read path calls the gate yet).",
+		"Sessions that had a read refused and were then confirmed by a playback webhook, counted once each (plays the budget broke).",
 		promSample(unconfirmedConfirmedAfterRefusal.Load()))
 	w.Counter("flodni_playback_webhooks_received_total",
 		"Playback start and resume webhooks for a movie or an episode, matched to one file or not.",

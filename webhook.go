@@ -286,6 +286,10 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		// After the confirmation, never before it: this stamp writes to SQLite when its
+		// hourly write is due (usually the first webhook of a play), and a read held by
+		// budgetGate waits for SetHealthy above, not for the database.
+		webhookStatus.noteWebhook(exactMatch != "" && exactState != nil)
 	} else if payload.Event == "media.stop" {
 		targetTitle := strings.ToLower(payload.Metadata.Title)
 		seriesTitle := strings.ToLower(payload.Metadata.GrandparentTitle)

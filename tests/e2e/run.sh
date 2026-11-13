@@ -174,6 +174,34 @@ check_prometheus() {
   if [ -n "${E2E_PROM_DUMP:-}" ]; then printf '%s\n' "$body" >"$E2E_PROM_DUMP"; fi
 }
 
+# check_no_warning variant [matched]: /api/health (open, so no token) must carry an
+# empty "warnings" array and flodni_warning{name="no_play_webhook"} must be 0. With
+# "matched" the last matched webhook time must also be set (a webhook was posted).
+check_no_warning() {
+  local variant=$1 raw body ts
+  raw=$(docker exec "$flodni" bash -c 'exec 3<>/dev/tcp/127.0.0.1/9080 && printf "GET /api/health HTTP/1.0\r\nHost: x\r\n\r\n" >&3 && cat <&3' 2>/dev/null || true)
+  if ! grep -qF '"warnings":[]' <<<"$raw"; then
+    echo "FAIL ($variant): /api/health has no empty warnings array: ${raw##*$'\r\n\r\n'}" >&2
+    dump_diagnostics
+    return 1
+  fi
+  body=$(prom_body)
+  if ! grep -qxF 'flodni_warning{name="no_play_webhook"} 0' <<<"$body"; then
+    echo "FAIL ($variant): flodni_warning no_play_webhook is not 0: $(grep -F 'flodni_warning{' <<<"$body")" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if [ "${2:-}" = matched ]; then
+    ts=$(awk '/^flodni_playback_webhook_last_timestamp_seconds\{matched="true"\} / { print $2 }' <<<"$body")
+    if [ -z "$ts" ] || [ "$ts" = 0 ]; then
+      echo "FAIL ($variant): the matched webhook time is ${ts:-absent} after a matched webhook" >&2
+      dump_diagnostics
+      return 1
+    fi
+  fi
+  echo "ok ($variant): /api/health warnings [] and flodni_warning 0${2:+, matched webhook time set}" >&2
+}
+
 # check_reader_budget variant path: the full sha256sum read is a reader no webhook
 # confirmed, so past the windows it must show in flodni_unconfirmed_read_bytes_total
 # (printed in every variant, with the session and webhook series and the log line,
@@ -506,6 +534,8 @@ run_variant() {
     echo "E2E_KILL_SEEDER_AFTER_ADD: killing $seeder" >&2
     docker kill "$seeder" >/dev/null
   fi
+
+  check_no_warning "$variant" || return 1
 
   echo "tail read of $path" >&2
   if ! docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" \
@@ -1154,6 +1184,7 @@ run_late_confirm() {
     return 1
   fi
   echo "ok ($v): $(grep -E '^flodni_unconfirmed_read_sessions_total\{' <<<"$body" | tr '\n' ' ')(session closed $((SECONDS - c0)) s after the read)" >&2
+  check_no_warning "$v" matched || return 1
 
   lines=$(docker logs "$flodni" 2>&1 | grep -F '[ReaderBudget] ' || true)
   if [ "$(sed -n 's/.*"event":"\([a-z_]*\)".*/\1/p' <<<"$lines" | tr '\n' ' ')" != "over_margin confirmed_late " ]; then

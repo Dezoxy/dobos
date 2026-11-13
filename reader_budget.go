@@ -354,6 +354,12 @@ func (s *TTFFSession) resolveReaderBudget() {
 		unconfirmedSessions[rbConfirmedLate].Add(1)
 	} else {
 		unconfirmedSessions[rbUnconfirmed].Add(1)
+		// The comm was read at the crossing (logReaderBudget): the caller may be gone by now.
+		comm := ""
+		if p := s.overMarginComm.Load(); p != nil {
+			comm = *p
+		}
+		webhookStatus.noteUnconfirmedRead(comm)
 	}
 }
 
@@ -420,6 +426,9 @@ func (s *TTFFSession) logReaderBudget(event string, off *int64, heldMS int64) {
 		comm, pid, uid, enforced := readerComm(s.callerPid.Load()), s.callerPid.Load(), s.callerUID.Load(), refusalEnforced()
 		rec.Margin, rec.OpenAgeMS = &margin, &age
 		rec.Comm, rec.Pid, rec.UID, rec.Enforced = &comm, &pid, &uid, &enforced
+		if event == "over_margin" {
+			s.overMarginComm.Store(&comm)
+		}
 		if event == "refused" {
 			rec.Offset, rec.HeldMS = off, &heldMS
 		}

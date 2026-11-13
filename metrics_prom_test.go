@@ -76,6 +76,7 @@ func TestHandlePrometheus(t *testing.T) {
 		"flodni_unconfirmed_read_refused_reads_total", "flodni_unconfirmed_read_holds_total",
 		"flodni_unconfirmed_read_confirmed_after_refusal_total",
 		"flodni_playback_webhooks_received_total", "flodni_warm_fills_total",
+		"flodni_playback_webhook_last_timestamp_seconds", "flodni_unconfirmed_read_last_session_timestamp_seconds", "flodni_warning",
 		"flodni_warm_fill_bytes_total", "flodni_warm_cache_failures_total", "flodni_warm_queue_files", "flodni_warm_paused",
 	} {
 		if !strings.Contains(body, "# TYPE "+fam+" ") {
@@ -100,6 +101,10 @@ func TestHandlePrometheus(t *testing.T) {
 		`flodni_unconfirmed_read_confirmed_after_refusal_total`,
 		`flodni_playback_webhooks_received_total{matched="true"}`,
 		`flodni_playback_webhooks_received_total{matched="false"}`,
+		`flodni_playback_webhook_last_timestamp_seconds{matched="true"}`,
+		`flodni_playback_webhook_last_timestamp_seconds{matched="false"}`,
+		`flodni_unconfirmed_read_last_session_timestamp_seconds`,
+		`flodni_warning{name="no_play_webhook"}`,
 		`flodni_warm_fills_total{trigger="mount",outcome="warmed"}`,
 		`flodni_warm_fills_total{trigger="mount",outcome="cached"}`,
 	} {
