@@ -138,10 +138,11 @@ jobs:
         with:
           fail-on-severity: high
 
-  image:
-    name: Image (build, smoke test, scan)
-    # Builds and runs the code under test with no write permission and no secret, beside the
-    # checks rather than after them. The end-to-end jobs follow it; Publish waits for all of them.
+  image-build:
+    name: Image build
+    # Builds the code under test with no write permission and no secret, beside the checks.
+    # The end-to-end matrix starts as soon as the images are saved here; the smoke test and
+    # the scan (job "image") run beside it on the same images.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -164,6 +165,58 @@ jobs:
           # Never shared with the publish job, which builds without any cache.
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The seeder is the far side of the end-to-end test; it never ships.
+      - name: Build e2e seeder
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: e2e-seeder
+          platforms: linux/amd64
+          load: true
+          tags: flodni-e2e-seeder:ci
+          cache-from: type=gha
+
+      # Both images go to the end-to-end matrix and to the smoke test as one artifact, so
+      # every consumer tests the exact image built here, and no other job rebuilds or
+      # writes the cache.
+      - name: Save the images for the other jobs
+        run: docker save flodni:ci flodni-e2e-seeder:ci | gzip -1 > "$RUNNER_TEMP/e2e-images.tar.gz"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-images
+          path: ${{ runner.temp }}/e2e-images.tar.gz
+          retention-days: 1
+          compression-level: 0
+
+  # The required check "Image (build, smoke test, scan)". It runs even when the build job
+  # failed or was cancelled (a skipped job could count as passing) and fails then, so the
+  # name is red unless the build, the smoke test and the scan all passed. It loads the
+  # artifact instead of rebuilding from the cache: a download of the saved image takes
+  # seconds, a cache restore plus buildx setup takes minutes, and it tests the same bytes
+  # the end-to-end jobs run.
+  image:
+    name: Image (build, smoke test, scan)
+    needs: image-build
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: The image build passed
+        env:
+          RESULT: ${{ needs.image-build.result }}
+        run: |
+          echo "image build: $RESULT"
+          [ "$RESULT" = "success" ]
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: e2e-images
+          path: ${{ runner.temp }}
+      - name: Load the images
+        run: gunzip -c "$RUNNER_TEMP/e2e-images.tar.gz" | docker load
 
       # The FUSE mount needs the same privileges as on the host; the Control Panel answering
       # proves the engine, the FUSE layer and the HTTP server all started.
@@ -188,29 +241,6 @@ jobs:
           docker logs flodni-smoke
           exit 1
 
-      # The seeder is the far side of the end-to-end test; it never ships.
-      - name: Build e2e seeder
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: docker/Dockerfile
-          target: e2e-seeder
-          platforms: linux/amd64
-          load: true
-          tags: flodni-e2e-seeder:ci
-          cache-from: type=gha
-
-      # Both images go to the end-to-end matrix as one artifact, so every variant tests the
-      # exact image built and smoke-tested here, and no job rebuilds or writes the cache.
-      - name: Save the images for the end-to-end jobs
-        run: docker save flodni:ci flodni-e2e-seeder:ci | gzip -1 > "$RUNNER_TEMP/e2e-images.tar.gz"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: e2e-images
-          path: ${{ runner.temp }}/e2e-images.tar.gz
-          retention-days: 1
-          compression-level: 0
-
       - name: Vulnerability scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -224,7 +254,7 @@ jobs:
   # to want_variant in tests/e2e/run.sh together.
   e2e:
     name: End-to-end (${{ matrix.variant }})
-    needs: image
+    needs: image-build
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -282,7 +312,7 @@ jobs:
     # Every check, but not dependency-review: it runs only for pull requests, and a skipped
     # dependency skips this job too. main changes only through pull requests, which ran it.
     # The secret scan is docs.yml's job and is required on main by the branch ruleset.
-    needs: [build-test, workflow-lint, dependency-scan, image, e2e-result]
+    needs: [build-test, workflow-lint, dependency-scan, image-build, image, e2e-result]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # Protected environment: deployments allowed only from v* tags.
