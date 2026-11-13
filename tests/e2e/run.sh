@@ -485,6 +485,14 @@ start_stack() {
   if [ "$variant" = index-cache ]; then
     envargs=(-e "FLODNI_API_TOKEN=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')")
   fi
+  # Test-only: shorten the session idle close (default 60 s) and the cleanup tick (60 s)
+  # for the variants that wait for a session to close. late-confirm pauses a read for a
+  # few seconds before the webhook; budget-refusal has gaps of about 20 s with no read
+  # (step 7), and a session closed inside a gap would start the next one with a fresh tally.
+  case "$variant" in
+    late-confirm) envargs+=(-e FLODNI_TEST_SESSION_IDLE_CLOSE=10s -e FLODNI_TEST_SESSION_TICK=2s) ;;
+    budget-refusal) envargs+=(-e FLODNI_TEST_SESSION_IDLE_CLOSE=30s -e FLODNI_TEST_SESSION_TICK=5s) ;;
+  esac
 
   echo "=== variant: $variant ===" >&2
   network="e2e-$variant-$$"
@@ -966,7 +974,7 @@ run_catchup() {
   local body lines
   sleep 5
   lines=$(catchup_lines)
-  if [ -n "$lines" ] || docker logs "$flodni" 2>&1 | grep -qF 'WARNING: [WarmCatchup]'; then
+  if [ -n "$lines" ] || docker logs "$flodni" 2>&1 | grep -F 'WARNING: [WarmCatchup]' >/dev/null; then
     echo "FAIL ($v): off phase: a [WarmCatchup] line or warning was logged: $lines" >&2
     dump_diagnostics
     return 1
@@ -1124,8 +1132,9 @@ post_webhook() {
 # (the over_margin [ReaderBudget] line is the proof, polled for). A play webhook for
 # the file is then posted in the middle of the read, and the read is let go on. The
 # read must complete with the right sha256, the webhook must count matched="true",
-# and the session, which resolves when it closes (60 s idle plus up to 60 s to the
-# next cleanup tick), must count as confirmed_late and not as unconfirmed.
+# and the session, which resolves when it closes (10 s idle plus up to 2 s to the
+# next cleanup tick, both shortened by test-only env vars), must count as
+# confirmed_late and not as unconfirmed.
 run_late_confirm() {
   local dir t0=$SECONDS v=late-confirm
   start_stack "$v"
@@ -1201,9 +1210,9 @@ run_late_confirm() {
   fi
   echo "ok ($v): $(grep -E '^flodni_playback_webhooks_received_total\{matched="true"\}' <<<"$body")" >&2
 
-  # The session resolves at close: 60 s idle, then the cleanup tick (60 s). Poll 150 s.
+  # The session resolves at close: 10 s idle, then the cleanup tick (2 s). Poll 45 s.
   local c0=$SECONDS
-  deadline=$((SECONDS + 150))
+  deadline=$((SECONDS + 45))
   late="" unconf=""
   while [ "$SECONDS" -lt "$deadline" ]; do
     body=$(prom_body)
@@ -1485,10 +1494,10 @@ run_budget_refusal() {
     fi
   done
   for _ in $(seq 1 20); do
-    docker logs "$flodni" 2>&1 | grep -qF '[PLEX] STOP applied' && break
+    docker logs "$flodni" 2>&1 | grep -F '[PLEX] STOP applied' >/dev/null && break
     sleep 0.5
   done
-  if ! docker logs "$flodni" 2>&1 | grep -qF '[PLEX] STOP applied'; then
+  if ! docker logs "$flodni" 2>&1 | grep -F '[PLEX] STOP applied' >/dev/null; then
     echo "FAIL ($v): the stop webhook was not applied" >&2
     dump_diagnostics
     return 1
@@ -1738,18 +1747,18 @@ run_budget_refusal() {
 
   # The one wait for the session close: the dead-swarm verdict is logged at close, and a
   # refusal must not produce one.
-  local c0=$SECONDS closed="" deadline=$((SECONDS + 170))
+  local c0=$SECONDS closed="" deadline=$((SECONDS + 60))
   while [ "$SECONDS" -lt "$deadline" ]; do
     closed=$(sessions_body | grep -o '"closed":.*' || true)
     grep -q "\"hash\":\"$hash\"" <<<"$closed" && break
     sleep 3
   done
   if ! grep -q "\"hash\":\"$hash\"" <<<"$closed"; then
-    echo "FAIL ($v): the session did not close within 170 s" >&2
+    echo "FAIL ($v): the session did not close within 60 s" >&2
     dump_diagnostics
     return 1
   fi
-  if docker logs "$flodni" 2>&1 | grep -qF '[DeadSwarm]' || grep -q '"outcome":"dead_swarm"' <<<"$closed"; then
+  if docker logs "$flodni" 2>&1 | grep -F '[DeadSwarm]' >/dev/null || grep -q '"outcome":"dead_swarm"' <<<"$closed"; then
     echo "FAIL ($v): a dead-swarm verdict after refusals: $(docker logs "$flodni" 2>&1 | grep -F '[DeadSwarm]')" >&2
     dump_diagnostics
     return 1

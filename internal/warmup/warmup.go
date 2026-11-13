@@ -2,6 +2,7 @@ package warmup
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"flodni/internal/gostorm/settings"
@@ -155,6 +157,7 @@ type cachedHandle struct {
 	f            *os.File
 	lastUsedNano atomic.Int64 // atomic to prevent race with handleReaper
 	closed       atomic.Bool  // set by closeHandle before f.Close() so writeWorker can detect stale handles
+	readOnly     bool         // opened O_RDONLY: the directory refuses writes, reads still work
 }
 
 // V264: sizeEntry stores the cached size of a warmup file with TTL.
@@ -291,6 +294,8 @@ func (d *DiskWarmupCache) noteWrite(hash string, fileID int) {
 // DiskWarmupCache persists the first 128MB of each streamed file to SSD.
 type DiskWarmupCache struct {
 	dir           string
+	headsChecked  int          // heads the start-up hole check looked at (set once, before the workers run)
+	headsHoley    int          // ...and the ones it dropped
 	mu            sync.Mutex   // protects quota enforcement
 	totalSize     int64        // V288: Tracked total size of all warmup files in bytes
 	missing       sync.Map     // path -> time.Time (negative cache for missing files)
@@ -313,9 +318,38 @@ var logf = log.New(os.Stdout, "[DiskWarmup] ", log.LstdFlags)
 // removeFile deletes a cache or coverage file. A file that stays behind is no
 // longer counted by the size accounting, so a failure is logged.
 func removeFile(path string) {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	_ = removed(path)
+}
+
+// removed unlinks path and reports whether it is gone: a file already missing is gone,
+// a failed unlink (read-only directory, a stuck entry) is not, and is logged.
+func removed(path string) bool {
+	err := os.Remove(path)
+	if err != nil && !os.IsNotExist(err) {
 		logf.Printf("[DiskWarmup] remove %s failed: %v", filepath.Base(path), err)
+		return false
 	}
+	return true
+}
+
+// writeMarker creates the empty density marker.
+func writeMarker(path string) {
+	f, err := os.Create(path)
+	if err != nil {
+		logf.Printf("[DiskWarmup] WARNING: cannot write %s: %v", filepath.Base(path), err)
+		return
+	}
+	_ = f.Close() // an empty marker file
+}
+
+// onParentFilesystem reports whether dir sits on the same device as its parent, the
+// sign of an empty mountpoint. Only a hint: a plain directory does too.
+func onParentFilesystem(dir string) bool {
+	var a, b syscall.Stat_t
+	if syscall.Stat(dir, &a) != nil || syscall.Stat(filepath.Dir(filepath.Clean(dir)), &b) != nil {
+		return false
+	}
+	return a.Dev == b.Dev
 }
 
 func InitDiskWarmup(opts Options) {
@@ -348,10 +382,21 @@ func InitDiskWarmup(opts Options) {
 		dir = settings.BTsets.TorrentsSavePath
 	}
 	if dir == "" || dir == "/" {
+		if opts.Dir != "" {
+			logf.Printf("[DiskWarmup] WARNING: warmup_dir %q is not usable: no cache", dir)
+		}
 		return
 	}
+	// The one place the directory is created: at start. A directory that vanishes later
+	// stays gone (no cache) instead of being re-created on the parent filesystem.
+	_, statErr := os.Stat(dir)
+	existed := statErr == nil
 	if err := os.MkdirAll(dir, 0755); err != nil {
+		logf.Printf("[DiskWarmup] WARNING: warmup_dir %q cannot be created: %v: no cache", dir, err)
 		return
+	}
+	if existed && onParentFilesystem(dir) {
+		logf.Printf("[DiskWarmup] WARNING: warmup_dir is not a separate mount (%s shares its parent's filesystem): fine for a plain directory, but an unmounted cache disk looks the same", dir)
 	}
 
 	DiskWarmup = &DiskWarmupCache{
@@ -360,24 +405,36 @@ func InitDiskWarmup(opts Options) {
 	}
 
 	// One-shot migration: head files written before the density invariant may hold holes
-	// that read back as zeros, and nothing on disk can tell them apart from dense ones.
-	// Head warmup is the library-wide instant-start cache, so this must not repeat on
-	// every boot - the marker makes it a single cold start per file, once.
+	// that read back as zeros, and nothing on disk can tell them apart from dense ones
+	// except the holes themselves. A missing marker next to a populated cache therefore
+	// checks each head and drops only the ones with holes: dropping every head because a
+	// cleanup deleted the marker once cost a deployment its whole cache. A cache that has
+	// the marker is not checked at start. An empty or new directory gets the marker with
+	// nothing to check.
 	migrated := filepath.Join(dir, denseMarker)
-	dropHeads := false
+	checkHeads := false
 	if _, err := os.Stat(migrated); os.IsNotExist(err) {
-		dropHeads = true
+		entries, rerr := os.ReadDir(dir)
+		checkHeads = rerr == nil && len(entries) > 0
+		if rerr == nil && len(entries) == 0 {
+			writeMarker(migrated)
+		}
 	}
 
-	if total, dropped, residues, err := DiskWarmup.scanExisting(dropHeads); err == nil {
+	total, dropped, residues, err := DiskWarmup.scanExisting(checkHeads)
+	if err != nil {
+		logf.Printf("[DiskWarmup] WARNING: start-up walk of %s failed: %v: the cache total starts at 0", dir, err)
+	} else {
 		atomic.StoreInt64(&DiskWarmup.totalSize, total)
 		logf.Printf("[DiskWarmup] Initial size: %.1fGB (dropped %d stale cache files, %d residues)", float64(total)/(1<<30), dropped, residues)
-	}
-
-	if dropHeads {
-		if f, err := os.Create(migrated); err == nil {
-			_ = f.Close() // an empty marker file
-			logf.Printf("[DiskWarmup] Head cache rebuilt for the write-density invariant (one-shot)")
+		if checkHeads {
+			// A directory with no head in it (a fresh disk's lost+found) has nothing to
+			// warn about.
+			if DiskWarmup.headsChecked > 0 {
+				logf.Printf("[DiskWarmup] WARNING: %s was missing: checked %d heads for holes, dropped %d (the one-shot density check; never delete that file by hand)",
+					denseMarker, DiskWarmup.headsChecked, DiskWarmup.headsHoley)
+			}
+			writeMarker(migrated)
 		}
 	}
 
@@ -390,11 +447,12 @@ func InitDiskWarmup(opts Options) {
 
 // scanExisting walks the cache at startup. A tail file stays only when persistTails is
 // on and its coverage file proves which ranges are real for the current window size;
-// otherwise it goes, since the on-disk size of a sparse file proves nothing. Head files
-// go when the one-shot density migration runs, and a head below the ready floor goes as
+// otherwise it goes, since the on-disk size of a sparse file proves nothing. With
+// checkHeads (the density marker was missing) a head with a hole goes and the rest stay;
+// the counts land in headsChecked and headsHoley. A head below the ready floor goes as
 // a residue: the reaper only walks open handles, so the backlog left by a previous
 // process would otherwise live until quota pressure and keep passing for warm coverage.
-func (d *DiskWarmupCache) scanExisting(dropHeads bool) (total int64, dropped, residues int, err error) {
+func (d *DiskWarmupCache) scanExisting(checkHeads bool) (total int64, dropped, residues int, err error) {
 	dir := d.dir
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -422,11 +480,21 @@ func (d *DiskWarmupCache) scanExisting(dropHeads bool) (total int64, dropped, re
 			}
 			continue
 		}
-		if dropHeads && strings.HasSuffix(name, warmupSuffix) {
-			if os.Remove(full) == nil {
-				dropped++
+		if checkHeads && strings.HasSuffix(name, warmupSuffix) {
+			d.headsChecked++
+			holes, herr := headHasHoles(full)
+			if herr != nil {
+				logf.Printf("[DiskWarmup] head check of %s failed, kept: %v", name, herr)
+			} else if holes {
+				if rerr := os.Remove(full); rerr != nil {
+					logf.Printf("[DiskWarmup] head %s has holes but could not be removed, kept: %v", name, rerr)
+				} else {
+					logf.Printf("[DiskWarmup] dropped %s: it has holes", name)
+					d.headsHoley++
+					dropped++
+					continue
+				}
 			}
-			continue
 		}
 		if strings.HasSuffix(name, warmupSuffix) {
 			info, ierr := e.Info()
@@ -499,10 +567,10 @@ func (d *DiskWarmupCache) dropResidue(path string) {
 	if err != nil || fi.Size() >= headReadyFloor {
 		return
 	}
-	logf.Printf("[DiskWarmup] DROPPED %s (%.1fKB): incomplete head warmup below the ready floor",
-		filepath.Base(path), float64(fi.Size())/(1<<10))
 	d.sizeCache.Delete(path)
 	if os.Remove(path) == nil {
+		logf.Printf("[DiskWarmup] DROPPED %s (%.1fKB): incomplete head warmup below the ready floor",
+			filepath.Base(path), float64(fi.Size())/(1<<10))
 		// Written bytes were counted against the quota, so the drop gives them back
 		// instead of leaving the drift to the next full walk in enforceQuotaLocked.
 		atomic.AddInt64(&d.totalSize, -fi.Size())
@@ -510,17 +578,33 @@ func (d *DiskWarmupCache) dropResidue(path string) {
 	d.missing.Store(path, time.Now())
 }
 
+// openFile opens a cache file; a test swaps it to stand in for a read-only directory.
+var openFile = os.OpenFile
+
+// readOnlyLogged keeps the read-only notice to one per process.
+var readOnlyLogged atomic.Bool
+
 func (d *DiskWarmupCache) getHandle(path string) (*cachedHandle, error) {
 	if val, ok := d.handles.Load(path); ok {
 		ch := val.(*cachedHandle)
 		ch.lastUsedNano.Store(time.Now().UnixNano())
 		return ch, nil
 	}
-	f, err := os.OpenFile(path, os.O_RDWR, 0644)
+	readOnly := false
+	f, err := openFile(path, os.O_RDWR, 0644)
+	if err != nil && (errors.Is(err, syscall.EROFS) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM)) {
+		// A read-only cache directory still holds valid heads: serve them, write nothing.
+		if f, err = openFile(path, os.O_RDONLY, 0); err == nil {
+			readOnly = true
+			if readOnlyLogged.CompareAndSwap(false, true) {
+				logf.Printf("[DiskWarmup] WARNING: the cache directory is read-only: serving reads, no new bytes will be cached")
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
-	ch := &cachedHandle{f: f}
+	ch := &cachedHandle{f: f, readOnly: readOnly}
 	ch.lastUsedNano.Store(time.Now().UnixNano())
 	if actual, loaded := d.handles.LoadOrStore(path, ch); loaded {
 		_ = f.Close() // lost the race; nothing was written through it
@@ -607,9 +691,6 @@ func (d *DiskWarmupCache) processWrite(hash string, fileID int, data []byte, off
 	// whether eviction ran, never the accounting.
 	// Only a chunk at offset 0 can create the file, so only it may make room for it.
 	if _, err := os.Stat(path); off == 0 && os.IsNotExist(err) {
-		if err := os.MkdirAll(d.dir, 0755); err != nil {
-			logf.Printf("[DiskWarmup] mkdir %s failed: %v", d.dir, err)
-		}
 		d.mu.Lock()
 		evicted, _ := d.enforceQuotaLocked(FileSize, evictOpts{
 			exclude: FileKey{hash, fileID}, trigger: TriggerHeadCreate})
@@ -683,6 +764,9 @@ func (d *DiskWarmupCache) writeHeadLocked(path string, off int64, data []byte) (
 
 	ch, err := d.getHandle(path)
 	if err != nil {
+		return
+	}
+	if ch.readOnly {
 		return
 	}
 	if ch.closed.Load() {
@@ -914,9 +998,6 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 	}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if err := os.MkdirAll(d.dir, 0755); err != nil {
-			logf.Printf("[DiskWarmup] mkdir %s failed: %v", d.dir, err)
-		}
 		d.missing.Delete(path)
 
 		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
@@ -950,6 +1031,9 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 
 	ch, err := d.getHandle(path)
 	if err != nil {
+		return
+	}
+	if ch.readOnly {
 		return
 	}
 	if ch.closed.Load() {

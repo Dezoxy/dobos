@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flodni/internal/gostorm/native"
 	"flodni/internal/gostorm/web"
 	"flodni/internal/library"
 	"flodni/internal/registry"
@@ -618,6 +619,10 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 			// to open the same path.
 			safeGo(func() {
 				if err := wake(context.Background(), magnetCandidate, urlFileIdx); err != nil {
+					if errors.Is(err, native.ErrNotStored) {
+						noteWakeRefused(n.vMeta.Path, hashStr, "open (background)")
+						return
+					}
 					logger.Printf("[VFS] background activation failed for %s: %v", n.vMeta.Path, err)
 				}
 			})
@@ -644,6 +649,14 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 			select {
 			case err := <-activated:
 				if err != nil {
+					if errors.Is(err, native.ErrNotStored) {
+						noteWakeRefused(n.vMeta.Path, hashStr, "open")
+						// A stub already deleted on disk is gone, not unreadable.
+						if _, statErr := os.Stat(n.vMeta.Path); errors.Is(statErr, os.ErrNotExist) {
+							return nil, 0, syscall.ENOENT
+						}
+						return nil, 0, syscall.EIO
+					}
 					logger.Printf("[VFS] activation failed for %s: %v", n.vMeta.Path, err)
 					return nil, 0, syscall.EIO
 				}

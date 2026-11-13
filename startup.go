@@ -125,19 +125,7 @@ func (b *StartupCacheBuilder) Start() {
 		}
 
 		// V142: Inode GC - Remove ghost entries (files that no longer exist)
-		if globalInodeMap != nil {
-			b.mu.Lock()
-			// Make a copy or pass reference? Pass reference since we are done modifying it
-			// However, PruneMissing only reads from it, so it's safe if we don't modify it anymore.
-			// We hold b.mu just to be safe or we can just pass it as we are in the final serial block.
-			foundSet := b.foundFiles
-			b.mu.Unlock()
-
-			pruned := globalInodeMap.PruneMissing(foundSet)
-			if pruned > 0 {
-				b.logger.Printf("Startup GC: Pruned %d ghost inodes", pruned)
-			}
-		}
+		b.pruneInodes(walked == 2)
 	}()
 }
 
@@ -265,6 +253,26 @@ func (b *StartupCacheBuilder) libraryIfWhole(what string, complete bool) (map[st
 		return nil, false
 	}
 	return keep, true
+}
+
+// pruneInodes drops the inode entries of files the walk did not find, under the same
+// guard as the other prunes: a wrong or unmounted source path must not empty the file
+// rows.
+func (b *StartupCacheBuilder) pruneInodes(complete bool) {
+	if globalInodeMap == nil {
+		return
+	}
+	b.mu.Lock()
+	errs, found := b.errors, b.foundFiles
+	n := len(found)
+	b.mu.Unlock()
+	if !complete || errs > 0 || n == 0 {
+		b.logger.Printf("Inode prune skipped: complete=%v errors=%d files=%d", complete, errs, n)
+		return
+	}
+	if pruned := globalInodeMap.PruneMissing(found); pruned > 0 {
+		b.logger.Printf("Startup GC: Pruned %d ghost inodes", pruned)
+	}
 }
 
 // pruneReadability drops readability rows of torrents that left the library. It runs
