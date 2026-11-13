@@ -308,16 +308,20 @@ the move to a deployment. Steps 1 to 4, 6 and 7 are designed, not built.
    and says once that a read-only directory means no cache. The README
    names the deployment side: make the start depend on the mount, keep the
    empty mountpoint unwritable, and use a journalling filesystem.
-3. **Never serve another file's bytes.** An open trusts the stub's file
-   index when a warm head exists under it, and otherwise resolves the file
-   by size and name, so a stub whose index is stale can be served from the
-   wrong file. Flodni's own stubs resolve to themselves; a stale index needs
-   a stub from elsewhere or a rare tie in the file order. First a counter
-   for opens where the resolved index differs from the stub's, then guards:
-   the warmer refuses a file whose engine length differs from the stub's
-   size, and the warm shortcut checks the resolved file when the torrent is
-   loaded. File ids come from the engine's own file list, and hashes are
-   lower-cased.
+3. **Never serve another file's bytes.** [FINISHED] An open trusted the
+   stub's file index when a warm head existed under it, and otherwise
+   resolved the file by size and name, so a stub whose index was stale could
+   be served from the wrong file. Flodni's own stubs resolve to themselves; a
+   stale index needs a stub from elsewhere or a rare tie in the file order.
+   `flodni_stub_index_mismatch_total` counts the paths whose resolved index
+   differs from the stub's, once each. The warmer (warm on add and catch-up)
+   refuses a file whose engine length differs from the stub's size
+   (outcome `index_mismatch`, not retried, no swarm evidence). With the
+   torrent in the engine, a warm head is checked against the engine's file
+   list and the resolved file wins; with it closed, the head is trusted only
+   if it is no longer than the stub's file. File ids come from the engine's
+   own file list, and hashes are lower-cased. One hole stays, in
+   `docs/ideas.md`.
 4. **Align the tail window to a page.** The kernel reads whole 4 KiB pages,
    so a read of exactly the last N MiB of a file whose size is not
    page-aligned starts a page before an N MiB tail window, and that page
@@ -633,3 +637,9 @@ the move to a deployment. Steps 1 to 4, 6 and 7 are designed, not built.
   `flodni_warm_catchup_files`, `flodni_warm_catchup_scope{scope}`, and
   `scope` on the `[WarmCatchup]` lines. Tested against fakes and the migration;
   the end-to-end variant `catch-up` runs scope `"all"`.
+- 2026-11-13, before a deployment relies on it, step 3: an open no longer
+  serves another file's head for a stale stub index when the torrent is in
+  the engine, and the warmer refuses a size mismatch. New:
+  `flodni_stub_index_mismatch_total` and the warm outcome `index_mismatch`.
+  Tested against fakes; a closed torrent with a stale stub that collides with
+  a sibling's warm head is still open (`docs/ideas.md`).

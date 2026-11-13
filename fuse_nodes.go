@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	tsutils "flodni/internal/gostorm/utils"
 	"flodni/internal/gostorm/web"
 	"flodni/internal/library"
 	"flodni/internal/registry"
@@ -15,13 +14,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
-	"sort"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/metainfo"
 	"github.com/hanwen/go-fuse/v2/fs"
 	"github.com/hanwen/go-fuse/v2/fuse"
@@ -36,7 +33,7 @@ func resolveTargetFile(url string, targetSize int64, physicalPath string) (strin
 		return "", 0, fmt.Errorf("file not found in torrent")
 	}
 
-	hashStr := urlQueryValue(url, "link=")
+	hashStr := strings.ToLower(urlQueryValue(url, "link="))
 	urlIndex := 0
 	if raw := urlQueryValue(url, "index="); raw != "" {
 		if idx, err := strconv.Atoi(raw); err == nil {
@@ -44,19 +41,8 @@ func resolveTargetFile(url string, targetSize int64, physicalPath string) (strin
 		}
 	}
 
-	// The engine's list is shared state, so it is copied before sorting. IDs are
-	// assigned from the sorted order, the same way GoStorm assigns them.
-	var files []library.TorrentFile
-	if t := web.BTS.GetTorrent(metainfo.NewHashFromHex(hashStr)); t != nil {
-		resident := append([]*torrent.File(nil), t.Files()...)
-		sort.Slice(resident, func(i, j int) bool {
-			return tsutils.CompareStrings(resident[i].Path(), resident[j].Path())
-		})
-		files = make([]library.TorrentFile, 0, len(resident))
-		for i, f := range resident {
-			files = append(files, library.TorrentFile{Index: i + 1, Path: f.Path(), Length: f.Length()})
-		}
-	}
+	// The ids are the engine's own, in the order it assigned them.
+	files := engineFileList(hashStr)
 
 	target, err := library.ResolveOpenTarget(hashStr, urlIndex, targetSize, physicalPath, files)
 	if err != nil {
@@ -708,21 +694,10 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 	now := time.Now()
 
 	// Use warmup IDs directly when available, skipping the resolveTargetFile retry loop.
-	var finalHash string
-	var fileIdx int
-	var isNative bool
-
-	if headReady && hashStr != "" {
-		finalHash = hashStr
-		fileIdx = urlFileIdx
-		isNative = true
-	} else {
-		var err error
-		finalHash, fileIdx, err = resolveTargetFile(n.vMeta.URL, n.vMeta.Size, n.vMeta.Path)
-		isNative = (err == nil)
-		if !isNative && gc().LogLevel == "DEBUG" {
-			logger.Printf("[NativeBridge] Resolution failed for %s: %v. Access will rely on cache/retry.", filepath.Base(n.vMeta.Path), err)
-		}
+	finalHash, fileIdx, headReady, err := openTarget(n.vMeta.URL, n.vMeta.Size, n.vMeta.Path, hashStr, urlFileIdx, headReady)
+	isNative := (err == nil)
+	if !isNative && gc().LogLevel == "DEBUG" {
+		logger.Printf("[NativeBridge] Resolution failed for %s: %v. Access will rely on cache/retry.", filepath.Base(n.vMeta.Path), err)
 	}
 
 	h := &MkvHandle{

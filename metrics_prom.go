@@ -127,6 +127,7 @@ func collectProm(w *promtext.Writer) {
 	collectReadabilityProm(w)
 	collectUnstoredProm(w)
 	collectReadAheadProm(w)
+	collectStubIndexProm(w)
 
 	w.Counter("flodni_fuse_short_reads_total",
 		"Reads served with fewer bytes than requested away from EOF.",

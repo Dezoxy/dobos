@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -412,6 +413,7 @@ func TestOutcomeMapping(t *testing.T) {
 		{name: "evicted, mark newer", err: warmup.ErrEvicted, delivered: t20, evicted: true, outcome: OutcomeEvicted, cache: CacheEvicted},
 		{name: "evicted, no mark, no delivery", err: warmup.ErrEvicted, outcome: OutcomeLost, cache: CacheLost, retry: true, cacheFailure: "lost"},
 		{name: "evicted, no mark, delivered", err: warmup.ErrEvicted, delivered: t20, outcome: OutcomeLost, read: ReadWarmed, cache: CacheLost, wantDelivered: true, swarmRead: true, retry: true, cacheFailure: "lost"},
+		{name: "index mismatch", err: fmt.Errorf("%w: file 1 is 5 bytes, the stub says 9", ErrIndexMismatch), delivered: t20, outcome: OutcomeIndexMismatch},
 		{name: "write failed", err: errDisk, outcome: OutcomeWriteFailed, cache: CacheWriteFailed, retry: true, cacheFailure: "write_failed"},
 		{name: "write failed, delivered", err: errDisk, delivered: t20, outcome: OutcomeWriteFailed, read: ReadWarmed, cache: CacheWriteFailed, wantDelivered: true, swarmRead: true, retry: true, cacheFailure: "write_failed"},
 	}

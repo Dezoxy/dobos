@@ -71,3 +71,10 @@ func TestDeliveredAtNilTorrent(t *testing.T) {
 		t.Fatalf("a missing torrent reported a delivery: %v, %d", at, n)
 	}
 }
+
+func TestFileLengthNilTorrent(t *testing.T) {
+	var tr *Torrent
+	if n, ok := tr.FileLength(1); ok || n != 0 {
+		t.Fatalf("a missing torrent reported a length: %d, %v", n, ok)
+	}
+}
