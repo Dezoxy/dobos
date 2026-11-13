@@ -194,17 +194,20 @@ finished.
    torrent record, stops the seeder and reads both windows back from the
    SSD against the seeder's hashes. Pause, wake of a closed torrent and
    removal while queued rest on unit tests (see ideas).
-3. **Catch-up and retries.** At startup the warmer queues the library files
-   it has never warmed, at a configurable pace, so a bulk import is worked
-   off across restarts without a persistent queue. Catch-up never evicts: at
+3. **Catch-up and retries.** [FINISHED] A pass one pace interval after
+   start, then every 6 hours, feeds the library files the warmer has never
+   warmed to it, at a configurable pace, so a bulk import is worked off
+   across restarts without a persistent queue. Catch-up never evicts: at
    a full quota it stops and counts what it left. A file the cache has
    evicted is not warmed again; it is left to its next play. A failed warm
    is retried no sooner than most of a day later and a capped number of
    times; after that the record keeps the evidence and the warmer leaves the
-   file alone. Built, not finished: the feeder, the pass loop (one pass one
-   pace interval after start, then every 6 hours), `warm_catchup_per_hour` and
-   the metrics exist and are tested against fakes; the end-to-end variant that
-   proves a pass against the real engine is not written.
+   file alone. The end-to-end test (`catch-up`) adds a fixture with the switch
+   off and sees no catch-up, turns it on and restarts the daemon, waits for the
+   pass to warm the title with no read through the mount, restarts again and
+   sees a pass with nothing to do, then stops the seeder and reads both windows
+   back from the SSD. The quota stop, the exclusion of evicted files, the
+   overwrite of a stale eviction mark and the 20-hour rule rest on unit tests.
 4. **A byte budget for readers that are not playback.** Phase a is built:
    Flodni counts the bytes a file serves, from the engine or the read-ahead
    cache, to a session with no confirmed playback, past its two windows, and
@@ -383,6 +386,16 @@ finished.
   `flodni_warm_fill_bytes_total{trigger="catchup"}` and
   `flodni_warm_catchup_files{state}`. Tested against fakes; the end-to-end
   variant (PR C) is not written, so step 3 is not finished.
+- 2026-11-13, readiness step 3, PR C: the end-to-end variant `catch-up` runs
+  catch-up against the real engine across daemon restarts. With `warm_on_add`
+  off nothing is logged and every series is 0. After `config.json` is
+  rewritten and the daemon restarted, the first pass warms the title: one
+  `trigger="catchup"` fill, every `trigger="add"` outcome 0, bytes above 0,
+  `flodni_read_bytes_total` 0, one `[Warm]` line and a `warmed`, `cached` row.
+  A second restart finds `pending` 0, feeds nothing and leaves the row alone;
+  with the seeder killed, the windows read back from the SSD match the
+  seeder's sha256. The quota stop, the eviction exclusion, the stale-mark
+  overwrite and the 20-hour rule stay on unit tests. Step 3 is finished.
 - 2026-11-12, readiness step 4, phase a: Flodni counts bytes past the head and
   tail windows that the engine or the read-ahead cache serve to a session with
   no confirmed playback, logs each session once at the margin
