@@ -974,7 +974,7 @@ run_catchup() {
   local body lines
   sleep 5
   lines=$(catchup_lines)
-  if [ -n "$lines" ] || docker logs "$flodni" 2>&1 | grep -qF 'WARNING: [WarmCatchup]'; then
+  if [ -n "$lines" ] || docker logs "$flodni" 2>&1 | grep -F 'WARNING: [WarmCatchup]' >/dev/null; then
     echo "FAIL ($v): off phase: a [WarmCatchup] line or warning was logged: $lines" >&2
     dump_diagnostics
     return 1
@@ -1494,10 +1494,10 @@ run_budget_refusal() {
     fi
   done
   for _ in $(seq 1 20); do
-    docker logs "$flodni" 2>&1 | grep -qF '[PLEX] STOP applied' && break
+    docker logs "$flodni" 2>&1 | grep -F '[PLEX] STOP applied' >/dev/null && break
     sleep 0.5
   done
-  if ! docker logs "$flodni" 2>&1 | grep -qF '[PLEX] STOP applied'; then
+  if ! docker logs "$flodni" 2>&1 | grep -F '[PLEX] STOP applied' >/dev/null; then
     echo "FAIL ($v): the stop webhook was not applied" >&2
     dump_diagnostics
     return 1
@@ -1758,7 +1758,7 @@ run_budget_refusal() {
     dump_diagnostics
     return 1
   fi
-  if docker logs "$flodni" 2>&1 | grep -qF '[DeadSwarm]' || grep -q '"outcome":"dead_swarm"' <<<"$closed"; then
+  if docker logs "$flodni" 2>&1 | grep -F '[DeadSwarm]' >/dev/null || grep -q '"outcome":"dead_swarm"' <<<"$closed"; then
     echo "FAIL ($v): a dead-swarm verdict after refusals: $(docker logs "$flodni" 2>&1 | grep -F '[DeadSwarm]')" >&2
     dump_diagnostics
     return 1
