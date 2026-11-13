@@ -105,7 +105,7 @@ line below is the one log format that is).
 | `last_failure_at` | Last recorded failure; kept after a reset. |
 | `last_failure_reason` | `no_peers`, `timeout` (peers connected, the read gave up), `not_active` (the engine did not have the torrent running), `unknown` (the engine did not answer in time); `null` for older records. |
 | `last_failure_source` | `mount`: a reader through the FUSE mount. |
-| `last_swarm_read_at` | Close time of the last session in which the swarm served a read; `null` if none was recorded. |
+| `last_swarm_read_at` | Close time of the last session in which the swarm served a read, or the delivery time of a warm-on-add fill that completed a file's windows from the swarm; `null` if none was recorded. |
 
 `?failing=1` keeps torrents with at least one consecutive failure,
 `?min_failures=N` those with at least N.
@@ -143,12 +143,13 @@ Each torrent object carries a `files` array, always present (`[]` when empty)
 and always the last key. It is **experimental**: it is outside the contract
 sentence above and the stable-names promise, and its names may change until
 its first consumer runs against it. It is served only with the state database
-on. Two things write it today. In index mode (`warmup_dir` set), a read
-through the mount that leaves a file's head and tail windows both complete
-records the file. In any cache mode, a quota eviction records `cache:
-evicted`, also for a file with no earlier record. Nothing fills windows on its
-own yet, so a file nobody opened has no record. A file whose windows were
-already complete before this version may have none until a later read writes
+on. Three things write it. In index mode (`warmup_dir` set), a read through
+the mount that leaves a file's head and tail windows both complete records the
+file. In any cache mode, a quota eviction records `cache: evicted`, also for a
+file with no earlier record. With `warm_on_add` set, the warmer records every
+attempt (see "Warm on add"). A file nobody opened and the warmer never tried
+has no record. A file whose windows were already complete before this version
+may have none until a later read writes
 to them. A torrent with records and no failure row is
 listed with `consecutive_failures` 0 and nulls, unless `?failing` or
 `?min_failures` is set; those keep their per-torrent meaning.
@@ -156,10 +157,10 @@ listed with `consecutive_failures` 0 and nulls, unless `?failing` or
 | Field | Meaning |
 |---|---|
 | `file_index` | The engine's file index, as in `GET /api/library/list`. |
-| `readability` | `warmed`: the swarm delivered a piece under the windows (the engine stamps each piece when it passes its checksum); `present`: complete with no delivery time available; `failed`; `unknown`: no verdict. `present` and `failed` are reserved for the warmer, which is not built; neither is served today. The mount path writes only `warmed` and leaves `unknown` when the engine holds no stamp. |
-| `cache` | State of the windows on disk, separate from `readability`: `cached`, or `evicted` (quota eviction); `unknown` before any record. It is the last recorded event, not a live probe: a cache directory wiped by hand still reads `cached`. |
-| `failed_attempts` | Failed fills in a row; a `warmed` record resets it. Always 0 today. |
-| `first_failed_at`, `last_attempt_at` | Start of the current run of failed fills, and the last attempt; `null` when unset. Always `null` today. |
+| `readability` | `warmed`: the swarm delivered a piece under the windows (the engine stamps each piece when it passes its checksum); `present`: warm on add completed the windows and the engine holds no delivery time (rare); `failed`: a warm-on-add fill timed out; `unknown`: no verdict. `present` never replaces `warmed`; `failed` does, and the delivery time stays. The mount path writes only `warmed` and leaves `unknown` when the engine holds no stamp. |
+| `cache` | State of the windows on disk, separate from `readability`: `cached`; `evicted` (quota eviction); `dropped_quota` and `dropped_no_evidence` (warm on add found no room and did not fetch, the first when it was allowed to evict never-played files, the second when it was not); `lost` (the windows vanished with no quota eviction mark) and `write_failed` (a write failed), both retried; `unknown` before any record. It is the last recorded event, not a live probe: a cache directory wiped by hand still reads `cached`. |
+| `failed_attempts` | Warm-on-add fills in a row that got no bytes from the swarm in time; a `warmed` record resets it. Cache-side failures do not count. |
+| `first_failed_at`, `last_attempt_at` | Start of the current run of failed fills, and the last warm-on-add attempt that recorded; `null` when unset. The mount path sets neither. |
 | `last_swarm_delivery_at` | When the engine last completed a piece under the windows, not when the windows were written: a fill that read from RAM hours later still carries the delivery time. |
 
 - Eviction changes `cache` only; it never changes `readability`.
@@ -167,9 +168,13 @@ listed with `consecutive_failures` 0 and nulls, unless `?failing` or
 - A scan by a media server that pulls the windows from the swarm counts as a
   swarm delivery, because the stamp is the fact, not who asked.
 - The mount path does not touch `last_swarm_read_at` or the failure count of
-  the torrent; the session verdict still owns those.
+  the torrent; the session verdict still owns those. Warm on add stamps
+  `last_swarm_read_at` (with the delivery time, and it ends the failure
+  count) only for a `warmed` outcome; `present`, `failed` and the cache-side
+  outcomes never touch the per-torrent record.
 - The series `flodni_warm_fills_total{trigger="mount",outcome}` counts the
-  records written (`warmed`, or `cached` when no stamp exists).
+  records the mount path wrote (`warmed`, or `cached` when no stamp exists);
+  `trigger="add"` is warm on add.
 
 ## Session log
 
@@ -289,13 +294,10 @@ whole media files, head and tail together. Files never played go first, then
 played files; each class goes oldest written first. This is built and runs
 today. The cache also keeps an in-memory list of which files are warm; it is
 internal and not served, and only the aggregates below are exported
-(`flodni_warmup_files`). What is not built: warm on add (designed in
+(`flodni_warmup_files`). What is not built: catch-up at startup (designed in
 `docs/roadmap.md`), and evicting the least recently read file (an idea in
-`docs/ideas.md`, not planned). The fill that warm on add will use exists as
-an internal function with no caller: it completes a file's head and tail
-windows in 4 MiB chunks from a torrent the engine already has, writes only
-verified bytes, and makes room first under a policy that evicts only files
-never played or nothing. Nothing starts it, so it changes no behaviour.
+`docs/ideas.md`, not planned). Warm on add, which fills windows on its own, is
+described in its own section below; it is off by default.
 
 - **Played** means a playback confirmed by the media server webhook (Plex or
   Jellyfin), never a scanner's read. A webhook marks at most one file: a
@@ -328,8 +330,9 @@ never played or nothing. Nothing starts it, so it changes no behaviour.
 - **Log line.** Each evicted file logs one line, `[WarmupEvict] ` followed by
   a JSON object: `hash` (full), `file` (index), `head_bytes`, `tail_bytes`
   (0 when that window was not on disk), `age_s` (since the newer window was
-  written), `played` (inside its protection) and `trigger` (`head_create`
-  today). It carries no path. The prefix and field names are meant to be
+  written), `played` (inside its protection) and `trigger` (`head_create`,
+  or `warm_add` for an eviction made to fit a warm-on-add fill). It carries no
+  path. The prefix and field names are meant to be
   stable.
 - **Cold reopen.** `flodni_warmup_cold_reopen_total` counts a confirmed play
   on a session that opened with no ready head, of a file with an eviction
@@ -340,6 +343,96 @@ never played or nothing. Nothing starts it, so it changes no behaviour.
   resolves to no single file is still counted, but its cold reopen is not,
   so the rate is a lower bound. Neither counts a play whose webhook matches
   no open file.
+
+## Warm on add
+
+**Experimental, off by default.** With `warm_on_add` set (and `warmup_dir`
+set, see below), Flodni completes the head and tail windows of each file the
+library API files (`POST /api/library/add`), in the background, so the first
+play starts from the SSD instead of waiting for the swarm. It is implemented
+and tested against fakes; the end-to-end test that adds a title, stops the
+seeder and reads the windows back is not written yet (`docs/roadmap.md`).
+
+- **Cost.** It downloads the windows (by default 64 MiB of head and 16 MiB of
+  tail per file, `warmup_head_size_mb` and `warmup_tail_size_mb`) from the
+  swarm for every file of every title added, played or not. A private tracker
+  may count that download against the account; that is why it is off by
+  default. A pack added episode by episode warms each episode.
+- **Switch.** `warm_on_add` is read at each add, so a change saved in the
+  control panel applies to the next add. Switching it off drops the queue and
+  stops a running fill at its next check. It works only with `warmup_dir` set
+  (index mode, where nothing reaches the SSD before its pieces pass their
+  checksum). With `warm_on_add` set and `warmup_dir` empty, Flodni logs one
+  warning and warms nothing.
+- **What it does.** An add that wrote stubs hands the new files to an
+  in-memory queue (4096 files; over that a file is dropped and counted as
+  `dropped_queue_full`). Two workers take one title at a time and fill each
+  file's windows in 4 MiB chunks, writing only verified bytes. A restart
+  forgets the queue; nothing re-queues files that were not warmed yet.
+- **Pause.** While a read-ahead pump runs, or a playback the media server
+  confirmed (or that the read pattern shows) still has an open file, the
+  warmer stops. A running fill stops at its next check, up to one fetch (8 s)
+  later; the file goes back to the front of the queue and nothing is
+  recorded. It resumes after playback was clear on two checks 5 s apart.
+- **Removal.** Removing the torrent cancels its queued files and stops a
+  running fill; a later add of the same hash starts again. A fill that
+  outlived the removal has its cache files removed once more.
+- **Room.** It checks for room before it fetches. It may evict only files
+  never played, oldest first, and only when the state database is on and at
+  least one play has been recorded. Without that evidence it evicts nothing:
+  a file with no room is dropped (`cache: dropped_quota` or
+  `dropped_no_evidence`) and counted as `no_room`.
+- **Closed torrents.** A torrent the engine closed is woken from its hash
+  alone, and only if the engine still stores it: the stored record brings
+  back the metainfo, the private flag and the trackers it was added with, so
+  a private torrent gets no DHT, PEX or public tracker from the wake. A hash
+  the engine does not store, or stores without its metainfo, is refused: the
+  job is skipped, counted as `wake_error`, and nothing is recorded. The check
+  and the wake are two steps. A removal that lands between them is not
+  caught: the torrent can come back in the engine until it is removed again.
+  A read through the mount on a closed torrent has the same narrow window.
+  It is not closed yet (`docs/ideas.md`).
+- **Outcomes.** One per file attempt, the `outcome` label of
+  `flodni_warm_fills_total{trigger="add"}`:
+
+| Outcome | `readability` | `cache` | Per-torrent record |
+|---|---|---|---|
+| `warmed`: windows complete and a swarm delivery time is known | `warmed` | `cached` | `last_swarm_read_at` set to the delivery time, failure count reset |
+| `present`: complete, no delivery time | `present` | `cached` | untouched |
+| `already_warm`: the windows were complete | unchanged (`warmed` if this file's own earlier attempt delivered) | `cached` | stamped only in that case |
+| `no_room` | unchanged | `dropped_quota` or `dropped_no_evidence` | untouched |
+| `failed`: a chunk did not verify in time | `failed`, `failed_attempts` +1 | unchanged | untouched |
+| `evicted`: quota eviction took the windows during the fill | unchanged | `evicted`, not retried | untouched |
+| `lost`: the windows vanished with no eviction mark | unchanged (`warmed` if a delivery was seen) | `lost` | stamped if `warmed` |
+| `write_failed`: another error, such as a failed write | as `lost` | `write_failed` | as `lost` |
+| `wake_error`, `dropped_queue_full` | nothing recorded | | |
+| `skipped`: a file left behind after a `wake_error`, or after a `failed` with no peers or no running torrent | nothing recorded | | |
+
+- **Delivery time.** The time kept is the latest swarm delivery seen across
+  the attempts of a file, so a fill paused at 20:00 and finished at 23:00 from
+  RAM carries 20:00. If a media server scan filled the windows from the swarm
+  first, that scan recorded its own delivery, and an `already_warm` fill adds
+  nothing.
+- **Retries.** `lost` and `write_failed` are retried from memory after 10
+  minutes, 1 hour and 6 hours, then left alone
+  (`flodni_warm_cache_failures_total` makes a failing disk visible). After a
+  timeout with no peers, or a torrent the engine did not have running, the rest
+  of that title's files are skipped without a record; they are not retried.
+- **Log line.** Each attempt logs one line, `[Warm] ` followed by a JSON
+  object: `hash` (full), `file` (index), `trigger` (`add`), `outcome` (also
+  `stopped` and `cancelled` for fills that recorded nothing), `cache`,
+  `reason`, `head_bytes`, `tail_bytes`, `delivered_pieces`, `delivered_at`,
+  `evicted` (files evicted for room) and `duration_ms`. It carries no path.
+- **Metrics.** `flodni_warm_fills_total{trigger="add",outcome}` (every outcome
+  from 0), `flodni_warm_fill_bytes_total{trigger,window}`,
+  `flodni_warm_cache_failures_total{reason}`, `flodni_warm_queue_files` and
+  `flodni_warm_paused`.
+- **Limits.** The queue and the retries are in memory. The eviction time is
+  kept in whole seconds. Catch-up for files added before the switch was on is
+  not built. Without the state database it still fills, evicts nothing, and
+  its records stay in memory and are not served. A wake that fails for a
+  passing reason (the engine busy) also skips the title; nothing retries it
+  until catch-up exists.
 
 ## Metrics
 
@@ -379,7 +472,11 @@ scraper on the same host or Docker network.
 | `flodni_warmup_cache_quota_bytes` | gauge | none | Its size limit; only with the cache enabled. |
 | `flodni_warmup_evictions_total` | counter | `window` | Files removed by quota eviction, `head` or `tail`. |
 | `flodni_warmup_evicted_bytes_total` | counter | `window` | Their apparent size in bytes. |
-| `flodni_warm_fills_total` | counter | `trigger`, `outcome` | Per-file warm records written; only `trigger="mount"` today, `outcome` `warmed` (the engine holds a swarm delivery stamp) or `cached` (it does not). Needs the state database and index mode. |
+| `flodni_warm_fills_total` | counter | `trigger`, `outcome` | Warm fills. `trigger="mount"`: per-file records the mount path wrote, `outcome` `warmed` (the engine holds a swarm delivery stamp) or `cached` (it does not); needs the state database and index mode. `trigger="add"`: warm on add attempts, `outcome` as in "Warm on add", every value present from 0. |
+| `flodni_warm_fill_bytes_total` | counter | `trigger`, `window` | Bytes warm on add wrote, `window` `head` or `tail`, also by fills that did not finish. |
+| `flodni_warm_cache_failures_total` | counter | `reason` | Warm on add attempts that lost a window or could not write it: `lost` or `write_failed`. |
+| `flodni_warm_queue_files` | gauge | none | Files waiting for warm on add. |
+| `flodni_warm_paused` | gauge | none | 1 while warm on add is paused for a playback. |
 | `flodni_warmup_files` | gauge | `window` | Media files with a warm window on disk now: `head` counts heads at or above the 1 MiB ready floor, `tail` counts tails fully covered. Only with the cache enabled. |
 | `flodni_playback_starts_total` | counter | none | Playbacks the media server webhook confirmed (not playing to playing). |
 | `flodni_playback_webhooks_received_total` | counter | `matched` | Play and resume webhooks for a movie or an episode; `matched` is `true` when the webhook resolved to one file, else `false`. |

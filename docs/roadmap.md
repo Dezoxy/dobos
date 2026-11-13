@@ -189,7 +189,9 @@ finished.
    playback session is open and records each outcome per file in the
    readability record; only pieces the swarm delivered count as success. The
    end-to-end test adds a fixture, waits, stops the seeder and reads both
-   windows back.
+   windows back. Built (PR 3b) and tested against fakes: `warm_on_add`, the
+   queue, the pause, the per-file outcomes and their metrics. The end-to-end
+   test is not written, so the step is not finished.
 3. **Catch-up and retries.** At startup the warmer queues the library files
    it has never warmed, at a configurable pace, so a bulk import is worked
    off across restarts without a persistent queue. Catch-up never evicts: at
@@ -340,6 +342,18 @@ finished.
   array, and `flodni_warm_fills_total{trigger="mount"}` counts them. Nothing
   fills windows on its own yet: the warmer, its `warm_on_add` setting and its
   outcomes are not built.
+- 2026-11-12, readiness step 2, PR 3b: the warmer. With `warm_on_add` (off by
+  default, needs `warmup_dir`) a library add that wrote stubs queues each new
+  file; two workers fill its head and tail windows in the background, pause
+  while a playback is open, wake a closed torrent only if the engine still
+  stores it, evict only never-played files and only with evidence of plays, and
+  record each outcome per file (`present`, `failed`, `dropped_quota`,
+  `dropped_no_evidence`, `evicted`, `lost`, `write_failed`; `warmed` also stamps
+  `last_swarm_read_at`). Cache-side failures retry in memory at 10 minutes, 1
+  hour and 6 hours. New series: `flodni_warm_fills_total{trigger="add"}`,
+  `flodni_warm_fill_bytes_total`, `flodni_warm_cache_failures_total`,
+  `flodni_warm_queue_files`, `flodni_warm_paused`. Tested against fakes; the
+  end-to-end test (PR 4) is not written, so step 2 is not finished.
 - 2026-11-12, readiness step 4, phase a: Flodni counts bytes past the head and
   tail windows that the engine or the read-ahead cache serve to a session with
   no confirmed playback, logs each session once at the margin

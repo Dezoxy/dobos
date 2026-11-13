@@ -10,6 +10,7 @@ flodni = softwareSystem "Flodni" "Presents torrents as ordinary media files and 
         library = component "Library Manager" "Turns a torrent into named stub files, and replaces or removes them. internal/library." "Go" "Layer Runtime"
         control = component "Control API and Panel" "HTTP API and control panel for configuration, library operations and metrics, with an optional bearer token. main.go, internal/apiauth, internal/library." "Go net/http" "Layer Runtime,Web UI"
         warmup = component "Index Cache" "Keeps each file's head and index bytes on disk so a scan or a seek answers before the swarm does. internal/warmup." "Go" "Layer Runtime"
+        warmer = component "Warm on Add" "Fills the head and tail windows of newly filed files in the background, pausing while a playback is open. Off by default. internal/warmer." "Go" "Layer Runtime"
     }
 
     stubs = container "Stub Library" "Small files on the host, one per title, that name a torrent and a file inside it." "Files on disk" "Layer Data,Storage"
@@ -21,6 +22,10 @@ flodni = softwareSystem "Flodni" "Presents torrents as ordinary media files and 
     daemon.vfs -> stubs "Lists and resolves" "File I/O"
     daemon.library -> stubs "Writes, replaces and removes" "File I/O"
     daemon.library -> daemon.engine "Adds and drops torrents in" "In-process"
+    daemon.library -> daemon.warmer "Hands newly filed files to" "In-process"
+    daemon.warmer -> daemon.warmup "Fills the windows of files in" "In-process"
+    daemon.warmer -> state "Records per-file warm outcomes in" "In-process"
+    daemon.warmer -> daemon.engine "Reads pieces from, and wakes stored torrents in" "In-process"
     daemon.control -> daemon.library "Runs library operations through" "In-process"
     daemon.control -> daemon.engine "Reads session and health state from" "HTTP on loopback"
     daemon.control -> config "Reads and writes" "File I/O"

@@ -94,6 +94,12 @@ type Config struct {
 	// WarmupDir; upstream keeps 64 MB and 16 MB.
 	WarmupHeadSizeMB int64 `json:"warmup_head_size_mb"`
 	WarmupTailSizeMB int64 `json:"warmup_tail_size_mb"`
+	// WarmOnAdd completes the head and tail windows of every file the library API files
+	// (Dezoxy fork, Readiness step 2): the swarm is read once, at add time, instead of
+	// at the first play. Off by default: it downloads those windows for every title
+	// added, which costs download volume on a private tracker. Read at each add, and
+	// effective only with WarmupDir set.
+	WarmOnAdd bool `json:"warm_on_add"`
 	// PlayedProtectionDays is how long a play confirmed by the media server keeps a
 	// file out of the first rounds of quota eviction, counted from its last play.
 	// After that the file ranks as never played. 0 means a play protects forever;

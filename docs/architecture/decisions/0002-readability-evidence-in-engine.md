@@ -79,9 +79,9 @@ consistent with a table that already holds the same per-torrent key.
 
 - Records readability per torrent (exists: the failure counter, the time of
   the last swarm-served read, and the reason and source of the last
-  failure), later per file (designed).
-- Fills head and tail cache windows in index mode: today only when a file
-  is read; on add and at startup once the warmer ships (designed).
+  failure), and per file (exists, experimental).
+- Fills head and tail cache windows in index mode: when a file is read, and
+  on add (exists, experimental, off by default); at startup (designed).
 - Bounds the bytes that readers other than playback may pull from the
   swarm (designed).
 - Carries out a replacement it is handed through the library API, and keeps
@@ -134,12 +134,12 @@ Status of each part:
 | Time of the last swarm-served read, reason and source of the last failure | Exists |
 | One `[Session]` log line per closed session: bytes by serving path, `swarm_served`, file index (the README documents it as a contract) | Exists; sessions open at shutdown and reads after a session closes are not counted |
 | Prometheus text exposition at `GET /metrics/prometheus`: session latency histograms, read counts and bytes by serving path, session outcomes, dead-swarm verdicts, warmup cache size and evictions (the README lists the series) | Exists |
-| Per-file warm record: readability and cache state per file, served as the experimental `files` array on `GET /api/torrents/health` (state database schema 14); the engine stamps each piece with its completion time, and a read through the mount that completes a file's windows records it | Exists, **experimental**; written only by the mount path in index mode, `warmed` and `cached` only; the warmer's outcomes (`present`, `failed`, retries) are **designed, not implemented** |
+| Per-file warm record: readability and cache state per file, served as the experimental `files` array on `GET /api/torrents/health` (state database schema 14); the engine stamps each piece with its completion time, a read through the mount that completes a file's windows records it, and warm on add records each of its outcomes | Exists, **experimental**; written by the mount path in index mode (`warmed`, `cached`) and by warm on add (all outcomes: `present`, `failed`, `dropped_*`, `lost`, `write_failed`) |
 | Played and evicted state per file (state database schema 13); quota eviction takes head and tail together, files never played first, then played files, oldest first; one `[WarmupEvict]` log line per eviction; `flodni_playback_starts_total` and `flodni_warmup_cold_reopen_total` | Exists; "played" is a playback confirmed by the media server webhook, so without webhooks nothing is ever played and the order is oldest first |
 | Internal list of files whose head and tail windows are on disk; `flodni_warmup_files{window}` and `flodni_readability_torrents{state}` built on it and on the record | Exists; the per-file list is internal and not served, only the aggregates are exported |
-| Background fills evict only files never played, or nothing | **Designed, not implemented**; the eviction function takes such a policy (and a set of protected files), and nothing outside the fill primitive and the tests uses it yet |
-| The fill primitive: completes one file's head and tail windows in chunks from a torrent the engine already has, writing only verified bytes, with room made first under the policy above | Exists as an internal function with no caller |
-| Warm on add, catch-up and retries | **Designed, not implemented**; the fill primitive and the per-file record above are the only parts that exist |
+| Background fills evict only files never played, or nothing | Exists for warm on add: it evicts never-played files, oldest first, only with the state database attached and at least one play recorded, and nothing otherwise |
+| The fill primitive: completes one file's head and tail windows in chunks from a torrent the engine already has, writing only verified bytes, with room made first under the policy above | Exists; warm on add calls it |
+| Warm on add: after a library add that wrote stubs, a background queue (two workers, 4096 files, in memory) fills each new file's windows; off by default (`warm_on_add`, needs `warmup_dir`); pauses while a playback is open; records each outcome per file; retries cache-side failures at 10 minutes, 1 hour and 6 hours | Exists, **experimental**; tested against fakes, the end-to-end test is **not written**. Catch-up at startup and the day-scale retry of failed warms are **designed, not implemented** |
 | Byte budget for non-playback readers: bytes past the windows served to unconfirmed sessions are counted and logged (`[ReaderBudget]`, `flodni_unconfirmed_read_*`) | Counting exists; refusal **designed, not implemented** |
 
 What the endpoint does:
@@ -157,8 +157,8 @@ What the endpoint does:
   with the count at 0 and the time of the read.
 - Rows go when a torrent is removed from the library and are pruned at
   startup, after a complete scan of the library.
-- Per-file records exist (experimental): the mount path writes them today and
-  the warmer, not built, will record each of its outcomes per file. Sessions
+- Per-file records exist (experimental): the mount path and warm on add write
+  them, the warmer with each of its outcomes per file. Sessions
   carry a path, a hash and the file index their stub holds, but the
   per-torrent table has no file key.
 
@@ -182,19 +182,25 @@ is updated when it does.
 - Negative: warming puts load on swarms and adds announces and downloads
   nobody requested, which is why it is off by default.
 - Negative: warming competes for the cache quota. The rule that background
-  fills evict only files never played, or stop at a full quota, is designed.
-  Today a new head file evicts files never played first, then played files,
-  each oldest first; a play protects its file for 90 days by default.
+  fills evict only files never played, or stop at a full quota, is built for
+  warm on add. A new head file made by a read still evicts files never played
+  first, then played files, each oldest first; a play protects its file for
+  90 days by default.
 - Negative: Flodni grows a public read-only contract that has to stay
   stable, and the success rule has to be kept by every writer of the
   record.
 - Warm on add and catch-up waited for the read stall in Reliability step 6,
-  now fixed in the cache. Warming pauses while a playback session is open.
-- Index mode (`warmup_dir` set, `pump_on_open` off) is a prerequisite for
-  warming. The cache-window list and `flodni_warmup_files` exist wherever
-  the warmup cache is on; outside index mode tail coverage does not
-  survive a restart, so the tail count starts at 0 again.
-- No model or view changes are needed now; they come with the warmer step.
+  now fixed in the cache. Warm on add pauses while a playback session is
+  open (built).
+- Index mode (`warmup_dir` set; the cache's verified-write mode) is a
+  prerequisite for warming. The code checks only `warmup_dir`: warm on add
+  also runs with `pump_on_open` on, which changes how scans read, not where
+  the windows are written. The cache-window list and `flodni_warmup_files`
+  exist wherever the warmup cache is on; outside index mode tail coverage
+  does not survive a restart, so the tail count starts at 0 again.
+- The model has the warmer: a "Warm on Add" component in the daemon, fed by
+  the library manager, filling the index cache and reading from the engine
+  (`docs/architecture/model/containers.dsl`).
 
 ## Links
 

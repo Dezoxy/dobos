@@ -122,3 +122,31 @@ func TestDropPublicTrackersOnWake(t *testing.T) {
 		}
 	}
 }
+
+// WakeStored (internal/gostorm/native) wakes a closed torrent from a bare magnet, and
+// AddTorrent fills in the stored record: the metainfo and the trackers it was saved
+// with. For a private torrent the spec the client gets must then carry its own tracker
+// only, whatever the retracker mode (hard rule 3).
+func TestBareMagnetWakeOfAStoredPrivateTorrentKeepsOnlyItsOwnTrackers(t *testing.T) {
+	yes := true
+	own := "http://seeder.example/announce"
+	def := func() []string { return []string{"udp://public.example:1337/announce"} }
+	file := func() []string { return []string{"udp://file.example:80/announce"} }
+	public := func() []string { return append(def(), file()...) }
+	stored := &torrent.TorrentSpec{
+		InfoBytes: testInfoBytes(t, &yes),
+		Trackers:  [][]string{{own}, def(), file()},
+	}
+	for mode := 0; mode <= 3; mode++ {
+		spec := &torrent.TorrentSpec{} // what a bare magnet parses to
+		// What AddTorrent injects from the stored record.
+		spec.InfoBytes = stored.InfoBytes
+		spec.Trackers = mergeTrackerTiers(spec.Trackers, stored.Trackers)
+		// What NewTorrent applies before the client sees the spec.
+		dropPublicTrackers(spec, public)
+		retrackSpec(spec, mode, def, file)
+		if want := [][]string{{own}}; !reflect.DeepEqual(spec.Trackers, want) {
+			t.Errorf("mode %d: trackers = %v, want %v", mode, spec.Trackers, want)
+		}
+	}
+}

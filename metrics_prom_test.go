@@ -74,6 +74,7 @@ func TestHandlePrometheus(t *testing.T) {
 		"flodni_fuse_short_reads_total", "flodni_fuse_short_read_results_total", "flodni_fetch_dedup_total",
 		"flodni_unconfirmed_read_bytes_total", "flodni_unconfirmed_read_sessions_total",
 		"flodni_playback_webhooks_received_total", "flodni_warm_fills_total",
+		"flodni_warm_fill_bytes_total", "flodni_warm_cache_failures_total", "flodni_warm_queue_files", "flodni_warm_paused",
 	} {
 		if !strings.Contains(body, "# TYPE "+fam+" ") {
 			t.Errorf("family %s missing", fam)

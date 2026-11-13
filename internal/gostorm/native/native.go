@@ -2,6 +2,7 @@ package native
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"flodni/internal/gostorm/torr/state"
 	apiUtils "flodni/internal/gostorm/web/api/utils"
 	"log"
+	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -91,6 +94,38 @@ func ActivePeers(hash string) int {
 		return 0
 	}
 	return t.Torrent.Stats().ActivePeers
+}
+
+// ErrNotStored means the engine keeps no record of the hash, so WakeStored refused it.
+var ErrNotStored = errors.New("the engine does not store this torrent")
+
+var reHexHash = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+
+// storedMagnet is the link WakeStored hands to Wake: the bare hash, with no tracker, no
+// peer and no name. AddTorrent fills in what the engine stored for the hash.
+func storedMagnet(hash string) string { return "magnet:?xt=urn:btih:" + hash }
+
+// WakeStored wakes a torrent the engine closed, for a caller that has no link of its own
+// (Dezoxy fork, warm on add). It refuses a hash the engine no longer stores: Wake would
+// add it from the bare magnet, with the public trackers and the DHT, and a private
+// torrent (BEP 27) must never get those (hard rule 3). For a stored hash AddTorrent
+// restores the trackers and the info it was added with. The check and the add are not
+// one step; a removal between them is the same exposure the mount's rewake has.
+func (c *NativeClient) WakeStored(ctx context.Context, hash string) error {
+	if !reHexHash.MatchString(hash) {
+		return fmt.Errorf("%w: malformed hash", ErrNotStored)
+	}
+	hash = strings.ToLower(hash)
+	t := torr.PeekTorrent(hash)
+	if t == nil {
+		return ErrNotStored
+	}
+	// A closed torrent whose record holds no metainfo would be added as a bare magnet:
+	// its private flag unknown, so the DHT and PEX stay on until the metainfo arrives.
+	if t.UnderlyingTorrent() == nil && (t.TorrentSpec == nil || len(t.TorrentSpec.InfoBytes) == 0) {
+		return fmt.Errorf("%w: its record holds no metainfo", ErrNotStored)
+	}
+	return c.Wake(ctx, storedMagnet(hash), -1)
 }
 
 // Wake triggers the start of a torrent (Ghost -> Active) entirely in-memory

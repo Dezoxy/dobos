@@ -69,6 +69,11 @@ type Config struct {
 	TVSection    int
 	// RefreshDelay is how long refreshes are coalesced for; 0 means the default.
 	RefreshDelay time.Duration
+	// OnAdded, when set, is called once after an add that wrote stubs, not for a
+	// title that was already present and not for a failure. Each file carries the
+	// engine's file id. It runs under the hash locks, so it must only enqueue:
+	// memory only, never blocking.
+	OnAdded func(hash string, files []AddedFile)
 }
 
 // Manager adds and removes library entries on behalf of external clients: it does what
@@ -392,6 +397,9 @@ func (m *Manager) Add(ctx context.Context, req AddRequest) (*AddResponse, error)
 		return nil, err
 	}
 
+	if m.cfg.OnAdded != nil {
+		m.cfg.OnAdded(hash, files)
+	}
 	m.scheduleRefresh(m.section(kind))
 	m.cfg.Logger.Printf("[LibraryAPI] Added %s %q (%s): %d file(s)", kind, req.Title, hash[:8], len(files))
 	return &AddResponse{Hash: hash, Title: req.Title, Type: kind, Files: files}, nil
