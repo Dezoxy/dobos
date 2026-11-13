@@ -118,6 +118,45 @@ Releases and deployment are scheduled separately.
    end-to-end test. Both causes were in the cache and are fixed (see the
    Done list); what the engine still leaves open is in
    [ideas.md](ideas.md).
+7. **Say when no play webhook arrives.** Three features act only on a
+   playback the media server's webhook confirmed: played-file protection,
+   the reader budget's refusal and the keep-alive below. Without a webhook
+   configured and reachable they silently do nothing. Designed, not built:
+   Flodni logs at start whether a play webhook has arrived and which of
+   those features are therefore active, and warns, also in
+   `/api/health`, when reads happen through the mount but no play webhook
+   has arrived for a number of days. The README says plainly that these
+   features need the webhook.
+8. **Keep a playing torrent connected.** The engine closes a torrent that
+   has had no reader for its idle timeout (`TorrentDisconnectTimeout`,
+   15 s by default), which keeps idle titles cheap: they neither leech nor
+   seed. A media server reads in bursts, and a direct play or a throttled
+   transcoder can wait longer than that between reads. The torrent then
+   closes and the next read reopens it, with a new announce and a new
+   search for peers; on a swarm of a few seeders each reopening costs
+   seconds. A play webhook already marks the torrent as not to expire, but
+   the mark sits on the engine's torrent object: it is set only if the
+   torrent is loaded when the webhook arrives, and a reopened torrent comes
+   back without it. Phase a is designed, not built, and changes no
+   behaviour: it counts the engine's idle closes, the reopens of a closed
+   torrent for a read, and the reads slower than one second, each split by
+   whether the file had a webhook-confirmed playback, and adds them to the
+   session record. Phase b is designed, not built: while a file has a
+   confirmed playback its torrent is not closed for idleness. The hold is
+   decided at the moment of expiry from the playback state, so it survives
+   a reopening. A stop webhook ends it at once; otherwise it ends 15
+   minutes after the last read or play or resume webhook
+   (`playback_keepalive_minutes`, one off switch), and a pause does not
+   extend it. At most 4 torrents are held at once (a config key; the cap
+   times the engine's per-torrent cache must stay well under the memory
+   limit), and a torrent over the cap falls back to today's idle close.
+   Releases are counted by reason and losses to the cap are counted. It is
+   on by default, and the effective settings are logged at start next to
+   the webhook status of step 7. A reader with no confirmed playback, a
+   scan, warm on add and catch-up keep today's idle close, and a held
+   torrent gets no tracker or peer source it would not have had. Entry
+   condition for phase b: an end-to-end test that sends webhooks shows a
+   confirmed playback whose torrent closes for idleness today.
 
 ## Readability evidence
 
