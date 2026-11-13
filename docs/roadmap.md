@@ -249,18 +249,18 @@ finished.
    sees a pass with nothing to do, then stops the seeder and reads both windows
    back from the SSD. The quota stop, the exclusion of evicted files, the
    overwrite of a stale eviction mark and the 20-hour rule rest on unit tests.
-4. **A byte budget for readers that are not playback.** Phase a is built:
-   Flodni counts the bytes a file serves, from the engine or the read-ahead
-   cache, to a session with no confirmed playback, past its two windows, and
-   logs each session once when it crosses a margin
+4. **A byte budget for readers that are not playback.** [FINISHED] Phase a is
+   built: Flodni counts the bytes a file serves, from the engine or the
+   read-ahead cache, to a session with no confirmed playback, past its two
+   windows, and logs each session once when it crosses a margin
    (`unconfirmed_read_margin_mb`); it measures only and refuses nothing.
    Phase b is built, opt-in and off by default (`refuse_unconfirmed_reads`):
    past the budget it stops fetching from the swarm for such a reader and
    serves only what is cached; a refused read waits 15 s for a webhook, then
    fails with EIO, and the pump is parked, not cancelled. It is tested against
-   a fake engine; the end-to-end variant with the switch on is not built.
-   The budget lifts as soon as a session registers, applies only once
-   a matched playback webhook has been seen since start
+   a fake engine and end to end (`budget-refusal`, below); the pump park is
+   fake-engine only. The budget lifts as soon as a session registers, applies
+   only once a matched playback webhook has been seen since start
    (`flodni_playback_webhooks_received_total{matched="true"}`), and a refusal
    never counts as a failed read in the readability record. Entry condition
    for phase b: the end-to-end test sends a play webhook in the middle of an
@@ -268,9 +268,15 @@ finished.
    completes, `flodni_unconfirmed_read_sessions_total{outcome="confirmed_late"}`
    counts it and `flodni_playback_webhooks_received_total{matched="true"}`
    counts the webhook. That condition is met: the end-to-end variant
-   `late-confirm` does exactly that. The step stays unfinished: the
-   end-to-end test of the refusal (a scan-like reader cut at the margin, the
-   hold lifted by a late webhook) is the remaining part.
+   `late-confirm` does exactly that. The end-to-end variant `budget-refusal`
+   runs the refusal against the real mount: a scan is cut with EIO at the
+   windows plus the margin (20 to 32 MiB of a 150 MiB file), with one
+   `refused` line and no failed read, the seeder is asked for nothing more,
+   a late play lifts the hold, and a stop gives the next reader a fresh
+   margin; while a reader is held, other opens and reads of the file answer
+   in under 1 s. The pump park rests on fake-engine tests only. The step is
+   finished; the switch stays off by default, and the owner turns it on after
+   reading `late_ms` and `matched="false"` on the host.
 
 ## Done
 
@@ -501,4 +507,12 @@ finished.
   held (a 15 s budget hold, a 30 s slot wait, fetch retries). Open now returns
   `FOPEN_KEEP_CACHE` when another handle of the path is live; the first open
   still drops the cache. Unit tests pin the flag; the real-kernel check is the
-  budget-refusal variant's open probe, not yet in `main`.
+  `budget-refusal` variant (item 9: opens and reads under 1 s during a hold).
+- 2026-11-13, readiness step 4: the opt-in refusal is tested end to end. The
+  variant `budget-refusal` (`make e2e`) cuts a scan with EIO at the windows plus
+  the margin after a 15 s hold, with no failed read and no dead-swarm verdict,
+  asks the seeder for nothing more, lifts the hold with a late play, gives the
+  next reader a fresh margin after a stop, and keeps other opens and reads of
+  the file under 1 s while a reader is held. The test found that a held read
+  froze every new open of the file; #133 fixed it. The pump park rests on
+  fake-engine tests only.

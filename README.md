@@ -338,10 +338,11 @@ and `[DeadSwarm]` lines are unchanged, and their wording is not a contract.
 
 ## Reader budget (counting always; refusal opt-in, off by default)
 
-Counting is implemented and always on. Refusal is implemented in code and
-tests, opt-in and off by default (`refuse_unconfirmed_reads`); the end-to-end
-test with the switch on is not built yet, so it has not run against a real
-mount. A file that no media server has confirmed as playing can still be read
+Counting is implemented and always on. Refusal is implemented, opt-in and off
+by default (`refuse_unconfirmed_reads`). It is tested against a fake engine
+and end to end: the `budget-refusal` variant of `make e2e` runs it against the
+real mount and engine (below); the parked pump is covered by the fake engine
+only. A file that no media server has confirmed as playing can still be read
 end to end by a scanner, a hasher or a copy. Flodni counts what such a reader
 takes past the head and tail windows and logs the session once. With the
 switch off it never refuses or slows a read.
@@ -403,9 +404,12 @@ switch off it never refuses or slows a read.
     full, the SSD head and tail windows, the tail-window fetch, reads wholly
     inside a window, the wake at open, and warm on add and catch-up. A
     request that is only partly cached, or that crosses a window edge, is
-    refused whole. The kernel is expected to retry page by page, which
-    serves the cached pages and fails at the first uncached one; that is
-    not verified until the end-to-end test exists.
+    refused whole. The kernel retries page by page, which serves the cached
+    pages and fails at the first uncached one. Measured end to end: a reader
+    that started 512 KiB before the 20 MiB cut, where the read-ahead cache
+    held bytes up to 32 MiB, got exactly the cached 12.5 MiB (the cache hits
+    grew by the same 13107200 bytes), half a 1 MiB request past the last
+    whole one. When nothing was cached at that offset, the reader got none.
   - **The pump** (`pump_on_open`, or the one started for inferred playback)
     is parked while its next chunk would be refused: its engine reader stays
     open and unread, and it resumes on confirmation. It is never cancelled.
@@ -429,7 +433,11 @@ switch off it never refuses or slows a read.
     what the pump had fetched ahead when the margin was crossed. A miss
     inside the head window fetches a full read-ahead that can run past the
     window edge, and the warm-landing prefetch fetches the whole chunk around
-    a window read. The size of the overshoot is not measured yet.
+    a window read. Measured end to end (pump off, windows 4 MiB, margin
+    16 MiB): a scan got 20 to 32 MiB before the refusal, the 20 MiB cut plus
+    up to 12 MiB of read-ahead already in flight, and the engine pulled no
+    more from the seeder afterwards (622 bytes in 16 s). With the pump on it
+    is not measured.
   - **Limits, check before turning it on.** A webhook later than 15 s, lost,
     or matched to the wrong file breaks that play shortly after the margin
     (a resume on a recently played file with a lost webhook is refused too:
@@ -456,6 +464,28 @@ switch off it never refuses or slows a read.
     open. A parked pump resumes when its session closes (no session, no
     refusal); for inferred playback it can then fetch up to the read-ahead
     budget once.
+- **End-to-end test.** The `budget-refusal` variant (margin 16 MiB, windows
+  4 MiB, `pump_on_open` off, auth off) reads 40 MiB from the middle of the
+  fixture with no matched webhook (not armed: it passes), arms the gate with
+  a play and a stop, and then: a `dd` of the file fails with `EIO` after at
+  least the windows plus the margin and far below the file size, with one
+  `refused` line (`"enforced":true`, `held_ms` near 15000, no file name) and
+  no failed read in `/api/sessions`, in
+  `flodni_fuse_short_read_results_total{result="failed"}` or the readability
+  record; the seeder is asked for nothing more; page-aligned reads inside
+  both windows still succeed; while a reader is held, `stat`, the reads of a
+  descriptor opened before the hold, and fresh opens reading a head and a
+  tail window (buffered and `O_DIRECT`) each answer in under 1 s (since the
+  page-cache fix above); a reader killed mid-hold is not a failed read;
+  a play that arrives 5 s into a held full read lifts the hold (the sha256
+  matches, `holds_total{result="lifted"}` and
+  `confirmed_after_refusal_total` move); after a play and a stop a new
+  reader gets the margin again before it is refused; and when the session
+  closes there is no `[DeadSwarm]` line. It reads the whole file only once,
+  held, because re-fetching pieces the engine's 128 MiB cache already
+  evicted stalls the engine for tens of seconds (the stall the other
+  variants report) and would show as a timeout, not a refusal. Not covered
+  end to end: the pump park with `pump_on_open` on.
 - **Refusal series (all start at 0 and move only with the switch on):**
   `flodni_unconfirmed_read_refused_reads_total`,
   `flodni_unconfirmed_read_holds_total{result="lifted|refused"}` and
