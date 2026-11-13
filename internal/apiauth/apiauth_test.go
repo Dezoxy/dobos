@@ -54,6 +54,10 @@ func TestMiddleware(t *testing.T) {
 		{"prometheus needs token", tok, "GET", "/metrics/prometheus", "", 401},
 		{"prometheus with header", tok, "GET", "/metrics/prometheus", "Bearer " + tok, 200},
 		{"query token rejected on prometheus", tok, "GET", "/metrics/prometheus?token=" + tok, "", 401},
+		{"warmup evict needs token", tok, "POST", "/api/warmup/evict", "", 401},
+		{"warmup evict wrong token", tok, "POST", "/api/warmup/evict", "Bearer wrong", 401},
+		{"warmup evict with header", tok, "POST", "/api/warmup/evict", "Bearer " + tok, 200},
+		{"query token rejected on warmup evict", tok, "POST", "/api/warmup/evict?token=" + tok, "", 401},
 		{"query token rejected on library", tok, "POST", "/api/library/add?token=" + tok, "", 401},
 	}
 	for _, tt := range tests {
