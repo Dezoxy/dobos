@@ -216,6 +216,8 @@ play is confirmed.
 - **The cap.** At most `playback_keepalive_max_torrents` torrents are held at
   once. The most recently active win; a torrent over the cap falls back to the
   plain idle close and is counted once in `flodni_keepalive_evicted_total`.
+  The ranking counts every confirmed playback, including torrents that still
+  have a reader and so need no hold, so the held gauge can sit below the cap.
   Each held torrent keeps its engine cache, up to `CacheSize` (default
   128 MB), and its peer connections. Size the cap so that cap x `CacheSize`
   stays well under the container's memory limit: four held torrents at 512 MB
@@ -223,8 +225,11 @@ play is confirmed.
   with the number of plays. A held torrent keeps uploading what its cache
   holds, under the configured limits, for the play plus the ceiling.
 - **The off switch.** `playback_keepalive_minutes` (default 15, read live) is
-  the one switch: 0 turns the keep-alive off and every torrent idle-closes as
-  before. A negative value or one over 1440 is logged and replaced by 15.
+  the one switch: 0 turns the keep-alive off and every torrent idle-closes, a
+  confirmed one included (priority no longer holds a torrent open). A negative
+  value or one over 1440 is logged and replaced by 15. A ceiling above 15
+  minutes is cut short when no handle is open, because the playback state is
+  dropped 15 minutes after the last activity.
   `playback_keepalive_max_torrents` (default 4, read live) is the cap, never a
   switch: its minimum is 1, and 0 or a negative value is logged and replaced
   by 4.

@@ -142,9 +142,9 @@ type Config struct {
 	// PlaybackKeepaliveMinutes is the keep-alive's idle ceiling (keepalive.go): a torrent
 	// with a webhook-confirmed playback is not closed for idleness until this many
 	// minutes after the last read or play/resume webhook, or until the stop webhook. It
-	// is the keep-alive's one off switch: 0 turns it off and every torrent idle-closes as
-	// before. A negative or absurd (over a day) value is replaced by the default (15).
-	// Read live.
+	// is the keep-alive's one off switch: 0 turns it off and every torrent idle-closes,
+	// a confirmed one included (priority no longer holds it). A negative or absurd (over
+	// a day) value is replaced by the default (15). Read live.
 	PlaybackKeepaliveMinutes int `json:"playback_keepalive_minutes"`
 	// PlaybackKeepaliveMaxTorrents caps how many torrents the keep-alive holds at once,
 	// the most recently active first. The rest fall back to the plain idle close. Minimum
