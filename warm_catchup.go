@@ -17,6 +17,8 @@ import (
 // A pass lists the stubs, keeps the files that are not warm on disk, not evicted and not
 // failing, and feeds them to the warmer slowly, newest first. It never evicts: a full
 // cache ends the pass. It needs warm_on_add, warmup_dir and the state database.
+// With warm_catchup_scope "retries" (roadmap, step 8) it keeps only the files warm on
+// add attempted and did not finish; the cold backlog is left alone.
 
 const (
 	// catchupRetryWait is how long a file or its hash is left alone after an attempt.
@@ -27,6 +29,15 @@ const (
 	catchupMaxFailed = 4
 	// catchupInterval is the time between the end of a pass and the start of the next.
 	catchupInterval = 6 * time.Hour
+	// catchupQueuedAfter is how long a file may stay queued by warm on add, with no
+	// outcome recorded, before the scope "retries" counts it an unfinished attempt.
+	catchupQueuedAfter = time.Hour
+)
+
+// Scopes of warm_catchup_scope.
+const (
+	scopeAll     = "all"
+	scopeRetries = "retries"
 )
 
 // States of a file, as the predicate says. stateWarm is not a backlog and has no
@@ -38,10 +49,11 @@ const (
 	stateGaveUp     = "gave_up"
 	stateEvicted    = "evicted"
 	stateNotStored  = "not_stored"
+	stateOutOfScope = "out_of_scope" // gauge and predicate: not a retry, and the scope is "retries"
 	stateLeftNoRoom = "left_no_room" // gauge only: files a pass left because the cache was full
 )
 
-var catchupGaugeStates = []string{statePending, stateRetryWait, stateGaveUp, stateEvicted, stateNotStored, stateLeftNoRoom}
+var catchupGaugeStates = []string{statePending, stateRetryWait, stateGaveUp, stateEvicted, stateNotStored, stateOutOfScope, stateLeftNoRoom}
 
 // catchupFile is what the predicate reads about one file.
 type catchupFile struct {
@@ -50,6 +62,21 @@ type catchupFile struct {
 	evicted            bool     // the eviction mark or the time of an eviction is set
 	hashFailedRecently bool     // some file of the same hash failed under 20 h ago
 	notStored          bool     // WakeStored refused the hash in this process
+	retriesOnly        bool     // warm_catchup_scope is "retries"
+}
+
+// unfinished reports a file warm on add attempted and did not finish: a failed read, a
+// cache state that says the windows were not kept, or a queued mark that no outcome
+// cleared within catchupQueuedAfter (a restart mid-warm, a wake error, a full queue).
+// A file never attempted, or only cached, is the cold backlog and is none of these.
+func unfinished(w fileWarm, now time.Time) bool {
+	switch {
+	case w.readability == readFailed:
+		return true
+	case w.cache == cacheDroppedQuota, w.cache == cacheDroppedNoEvidence, w.cache == cacheLost, w.cache == cacheWriteFailed:
+		return true
+	}
+	return w.queuedAt > 0 && now.Sub(time.Unix(w.queuedAt, 0)) > catchupQueuedAfter
 }
 
 // failedRecently reports a failed record whose last attempt is under 20 h old.
@@ -66,6 +93,8 @@ func catchupState(f catchupFile, now time.Time) string {
 		return stateWarm // whatever the record says: the disk is the truth
 	case f.evicted || f.warm.cache == cacheEvicted:
 		return stateEvicted
+	case f.retriesOnly && !unfinished(f.warm, now):
+		return stateOutOfScope // before the waits: the cold backlog is not waiting, it is not ours
 	case f.warm.readability == readFailed && f.warm.failedAttempts >= catchupMaxFailed:
 		return stateGaveUp
 	case f.warm.lastAttemptAt > 0 && now.Sub(time.Unix(f.warm.lastAttemptAt, 0)) < catchupRetryWait:
@@ -94,14 +123,27 @@ func (x *fileStateIndex) CatchupFact(k warmup.FileKey) (fileWarm, bool) {
 
 // catchupGauge is flodni_warm_catchup_files: the backlog as of the last pass.
 type catchupGauge struct {
-	mu sync.Mutex
-	m  map[string]int64
+	mu    sync.Mutex
+	m     map[string]int64
+	scope string // the scope of the last pass; "" before the first
 }
 
 func (g *catchupGauge) set(m map[string]int64) {
 	g.mu.Lock()
 	g.m = m
 	g.mu.Unlock()
+}
+
+func (g *catchupGauge) setScope(s string) {
+	g.mu.Lock()
+	g.scope = s
+	g.mu.Unlock()
+}
+
+func (g *catchupGauge) getScope() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.scope
 }
 
 func (g *catchupGauge) get() map[string]int64 {
@@ -123,9 +165,21 @@ func collectCatchupProm(w *promtext.Writer, g *catchupGauge) {
 	for _, st := range catchupGaugeStates {
 		s = append(s, promSample(m[st], lbl("state", st)))
 	}
+	sc := g.getScope()
+	w.Gauge("flodni_warm_catchup_scope",
+		"The warm_catchup_scope the last catch-up pass ran with: 1 for that scope, 0 for the other; both 0 before the first pass. all = every library file not warm, evicted or failing; retries = only the files warm on add attempted and did not finish.",
+		promSample(b2i(sc == scopeAll), lbl("scope", scopeAll)),
+		promSample(b2i(sc == scopeRetries), lbl("scope", scopeRetries)))
 	w.Gauge("flodni_warm_catchup_files",
-		"Library files catch-up has not warmed, as of the last pass, by state: pending (candidates, also those a pass left because it was stopped, the pace was set to 0 or its disk failed), retry_wait (attempted under 20 hours ago, or a file of the same torrent failed), gave_up (4 failed attempts), evicted (quota eviction removed it: left to play), not_stored (the engine refused to wake the torrent) and left_no_room (candidates the last pass left because the cache was full). Already warm files are not counted.",
+		"Library files catch-up has not warmed, as of the last pass, by state: pending (candidates, also those a pass left because it was stopped, the pace was set to 0 or its disk failed), retry_wait (attempted under 20 hours ago, or a file of the same torrent failed), gave_up (4 failed attempts), evicted (quota eviction removed it: left to play), not_stored (the engine refused to wake the torrent), out_of_scope (scope retries only: files warm on add never attempted, left to a play or to scope all) and left_no_room (candidates the last pass left because the cache was full). Already warm files are not counted.",
 		s...)
+}
+
+func b2i(b bool) int64 {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // catchupSwitchOff is the one requirement that is a choice, not a fault: no warning.
@@ -156,6 +210,7 @@ type catchup struct {
 	record   func(warmUpdate)
 	target   warmer.Target
 	perHour  func() int
+	scope    func() string // warm_catchup_scope; nil means "all"
 	now      func() time.Time
 	stop     <-chan struct{}
 	poll     time.Duration // the feeder's wait for an idle warmer; 0 means 1 s
@@ -163,6 +218,7 @@ type catchup struct {
 	gauge    *catchupGauge
 
 	passMu     sync.Mutex // held for a whole pass: the no-room flag is shared
+	passScope  string     // the scope the running pass reads once at its start
 	warnedOnce sync.Once
 }
 
@@ -180,6 +236,12 @@ func newCatchup(w *warmer.Warmer, x *fileStateIndex, list func() ([]library.Item
 				return c.WarmCatchupPerHour
 			}
 			return 0
+		},
+		scope: func() string {
+			if c := gc(); c != nil {
+				return c.WarmCatchupScope
+			}
+			return scopeAll
 		},
 		now:   time.Now,
 		stop:  backgroundStopChan,
@@ -278,6 +340,14 @@ func groups(items []library.Item) []*group {
 	return out
 }
 
+// scopeNow is the scope of this pass: "retries" or, for anything else, "all".
+func (c *catchup) scopeNow() string {
+	if c.scope != nil && c.scope() == scopeRetries {
+		return scopeRetries
+	}
+	return scopeAll
+}
+
 // classify applies the predicate to a group. It returns the pending files by index and
 // the count of every state. A file that is warm on disk but whose record does not say
 // cached gets that record, with no wake.
@@ -306,7 +376,7 @@ func (c *catchup) classify(g *group) ([]warmer.File, map[string]int64) {
 		key := warmup.FileKey{Hash: g.hash, FileIdx: i}
 		f := facts[i]
 		st := catchupState(catchupFile{complete: c.complete(key), warm: f.w, evicted: f.evicted,
-			hashFailedRecently: hashFailed, notStored: notStored}, now)
+			hashFailedRecently: hashFailed, notStored: notStored, retriesOnly: c.passScope == scopeRetries}, now)
 		switch st {
 		case stateWarm:
 			if f.w.cache != cacheCached {
@@ -356,6 +426,8 @@ func (c *catchup) runPass() bool {
 	}
 	defer c.passMu.Unlock()
 	started := time.Now()
+	c.passScope = c.scopeNow() // read once: the whole pass runs under one scope
+	c.gauge.setScope(c.passScope)
 	items, err := c.list()
 	if err != nil {
 		c.logf("WARNING: [WarmCatchup] cannot list the library: %v", err)
@@ -372,9 +444,9 @@ func (c *catchup) runPass() bool {
 	for _, cd := range cands {
 		files += len(cd.Files)
 	}
-	c.logLine(map[string]interface{}{"event": "pass_start", "candidate_hashes": len(cands), "pending": files,
+	c.logLine(map[string]interface{}{"event": "pass_start", "scope": c.passScope, "candidate_hashes": len(cands), "pending": files,
 		"retry_wait": counts[stateRetryWait], "gave_up": counts[stateGaveUp], "evicted": counts[stateEvicted],
-		"not_stored": counts[stateNotStored]})
+		"not_stored": counts[stateNotStored], "out_of_scope": counts[stateOutOfScope]})
 
 	fd := &warmer.Feeder{
 		Target:  c.target,
@@ -413,8 +485,8 @@ func (c *catchup) runPass() bool {
 	after[statePending] -= noRoom
 	after[stateLeftNoRoom] = noRoom
 	c.gauge.set(after)
-	c.logLine(map[string]interface{}{"event": "pass_end", "fed_hashes": res.Hashes, "fed": res.Fed, "no_room": res.NoRoom,
+	c.logLine(map[string]interface{}{"event": "pass_end", "scope": c.passScope, "fed_hashes": res.Hashes, "fed": res.Fed, "no_room": res.NoRoom,
 		"left": res.Left, "pending": after[statePending], "retry_wait": after[stateRetryWait], "gave_up": after[stateGaveUp],
-		"evicted": after[stateEvicted], "not_stored": after[stateNotStored], "seconds": int(time.Since(started).Seconds())})
+		"evicted": after[stateEvicted], "not_stored": after[stateNotStored], "out_of_scope": after[stateOutOfScope], "seconds": int(time.Since(started).Seconds())})
 	return true
 }
