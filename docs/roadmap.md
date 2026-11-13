@@ -278,6 +278,62 @@ finished.
    finished; the switch stays off by default, and the owner turns it on after
    reading `late_ms` and `matched="false"` on the host.
 
+## Before a deployment relies on it
+
+These came out of reviews of the removal path, the cache directory and the
+file mapping. Steps 1 to 4 should land before a deployment depends on
+Flodni; steps 5 to 7 can land at any time. All are designed, not built.
+
+1. **One wake path, and removals that stay removed.** The mount's open and
+   its read-time rewake wake a closed torrent from a bare magnet without
+   checking that the engine still stores it; only warm on add's
+   `WakeStored` checks. A handle left open across a removal therefore
+   re-adds the hash on its next read, with no stored metainfo, so a private
+   torrent gets DHT and PEX until its metainfo arrives (hard rule 3), and a
+   removed torrent can be stored again. All wakes go through one path that
+   refuses a hash the engine no longer stores, and a removal racing a wake
+   leaves the torrent neither loaded nor stored. Tests remove a batch of
+   torrents with fakes and injected ordering while wakes, reads and fills
+   run, and one end-to-end run removes several titles back to back while
+   another is read. Unlinking one episode of a pack through the mount
+   removes the whole torrent today; it should follow the same reference
+   check as a library removal.
+2. **A missing cache disk means no cache.** With `warmup_dir` on a
+   separately mounted disk that is absent at start, Flodni creates the
+   directory on the filesystem underneath and fills it to the quota, and it
+   re-creates the directory at runtime if it vanishes. Flodni warns when
+   `warmup_dir` is set but the cache did not start, never re-creates the
+   directory after start, does not count a failed deletion as an eviction,
+   and says once that a read-only directory means no cache. The README
+   names the deployment side: make the start depend on the mount, keep the
+   empty mountpoint unwritable, and use a journalling filesystem.
+3. **Never serve another file's bytes.** An open trusts the stub's file
+   index when a warm head exists under it, and otherwise resolves the file
+   by size and name, so a stub whose index is stale can be served from the
+   wrong file. Flodni's own stubs resolve to themselves; a stale index needs
+   a stub from elsewhere or a rare tie in the file order. First a counter
+   for opens where the resolved index differs from the stub's, then guards:
+   the warmer refuses a file whose engine length differs from the stub's
+   size, and the warm shortcut checks the resolved file when the torrent is
+   loaded. File ids come from the engine's own file list, and hashes are
+   lower-cased.
+4. **Align the tail window to a page.** The kernel reads whole 4 KiB pages,
+   so a read of exactly the last N MiB of a file whose size is not
+   page-aligned starts a page before an N MiB tail window, and that page
+   comes from the engine instead of the cache. The end-to-end test measured
+   12 KiB so. The tail window's start is rounded down to a page boundary.
+5. **End-to-end variants as parallel jobs.** CI runs each variant on its
+   own runner, so wall time stays near the longest variant as variants are
+   added, and variants can no longer collide on container names.
+6. **Free cache space on request.** The quota is read once at start, and a
+   lower quota evicts only when a new head is written. A call evicts down to
+   a given size now, in the normal order: never-played files first, oldest
+   first, and played files only after them.
+7. **Remove by the full hash.** Removal by hash matches stub names on eight
+   hex digits; stubs from older tools carry the first or the last eight, so
+   some are missed, and a stub of another torrent could match. It matches
+   the full hash in the stub's own link instead.
+
 ## Done
 
 - 2026-11-11, trim step 1: telemetry, the update check, the MCP server and
