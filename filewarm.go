@@ -22,6 +22,13 @@ const (
 
 	cacheCached  = "cached"
 	cacheEvicted = "evicted" // quota eviction removed the windows
+
+	// Cache states warm on add writes when the windows were not kept (the values of
+	// warmer.Cache*): the scope "retries" of catch-up feeds these files again.
+	cacheDroppedQuota      = "dropped_quota"
+	cacheDroppedNoEvidence = "dropped_no_evidence"
+	cacheLost              = "lost"
+	cacheWriteFailed       = "write_failed"
 )
 
 // fileWarm is the record of one file, times in Unix seconds, 0 = unset. Empty
@@ -33,11 +40,16 @@ type fileWarm struct {
 	firstFailedAt  int64
 	lastAttemptAt  int64
 	lastDeliveryAt int64
+	// queuedAt is the time warm on add queued the file, 0 when it waits for no attempt.
+	// An attempt that records an outcome clears it. It is not a record of the API
+	// (recorded ignores it): it only tells the catch-up scope "retries" that an attempt
+	// began and never finished.
+	queuedAt int64
 }
 
 func (w *fileWarm) merge(r metadb.FileState) {
-	if w.readability == "" && w.cache == "" && w.failedAttempts == 0 && w.lastDeliveryAt == 0 {
-		*w = fileWarm{r.Readability, r.Cache, r.FailedAttempts, r.FirstFailedAt, r.LastAttemptAt, r.LastSwarmDeliveryAt}
+	if w.readability == "" && w.cache == "" && w.failedAttempts == 0 && w.lastDeliveryAt == 0 && w.queuedAt == 0 {
+		*w = fileWarm{r.Readability, r.Cache, r.FailedAttempts, r.FirstFailedAt, r.LastAttemptAt, r.LastSwarmDeliveryAt, r.QueuedAt}
 	}
 }
 
@@ -53,6 +65,8 @@ type warmUpdate struct {
 	cache       string
 	deliveredAt time.Time
 	attemptAt   time.Time
+	queuedAt    time.Time // warm on add queued the file now
+	clearQueued bool      // an attempt recorded an outcome: the queued mark ends
 }
 
 // apply returns the record after u. warmed resets the failure streak; failed counts
@@ -84,6 +98,12 @@ func (w fileWarm) apply(u warmUpdate, now time.Time) fileWarm {
 	}
 	if !u.attemptAt.IsZero() {
 		w.lastAttemptAt = u.attemptAt.Unix()
+	}
+	if u.clearQueued {
+		w.queuedAt = 0
+	}
+	if !u.queuedAt.IsZero() {
+		w.queuedAt = u.queuedAt.Unix()
 	}
 	if at := u.deliveredAt.Unix(); !u.deliveredAt.IsZero() && at > w.lastDeliveryAt {
 		w.lastDeliveryAt = at
@@ -125,7 +145,7 @@ func (x *fileStateIndex) RecordWarm(u warmUpdate) bool {
 		err := st.SaveFileWarm(metadb.FileWarm{
 			Hash: k.Hash, FileIdx: k.FileIdx, Readability: next.readability, Cache: next.cache,
 			FailedAttempts: next.failedAttempts, FirstFailedAt: next.firstFailedAt,
-			LastAttemptAt: next.lastAttemptAt, LastSwarmDeliveryAt: next.lastDeliveryAt,
+			LastAttemptAt: next.lastAttemptAt, LastSwarmDeliveryAt: next.lastDeliveryAt, QueuedAt: next.queuedAt,
 			UpdatedAt: now.Unix(),
 		})
 		if err != nil {

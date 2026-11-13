@@ -88,7 +88,13 @@ func addWarmerDeps(x *fileStateIndex, stop <-chan struct{}) warmer.Deps {
 		EvictedSince: x.EvictedSince,
 		Record: func(u warmer.Update) {
 			x.RecordWarm(warmUpdate{key: u.Key, readability: u.Readability, cache: u.Cache,
-				deliveredAt: u.DeliveredAt, attemptAt: u.AttemptAt})
+				deliveredAt: u.DeliveredAt, attemptAt: u.AttemptAt, clearQueued: u.ClearQueued})
+		},
+		Queued: func(keys []warmup.FileKey) {
+			now := x.now()
+			for _, k := range keys {
+				x.RecordWarm(warmUpdate{key: k, queuedAt: now})
+			}
 		},
 		SwarmRead: func(hash string, at time.Time) {
 			db := stateDB
