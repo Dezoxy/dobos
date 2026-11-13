@@ -623,3 +623,63 @@ func TestFillBesideRemovals(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// RoomOnly is the pre-flight of catch-up (Readiness step 3): it answers "already warm"
+// and "is there room" and does nothing else.
+func TestFillRoomOnlyNeverFetchesOrRequests(t *testing.T) {
+	s := newSwarm(fillFile).allArrive()
+	d := fillEnv(t, s)
+	req := fillReq()
+	req.Policy, req.RoomOnly = EvictNone, true
+	res, err := d.FillWindows(req)
+	if err != nil || res.AlreadyWarm || res.HeadBytes != 0 || res.TailBytes != 0 || res.DeliveredPieces != 0 {
+		t.Fatalf("room available: res=%+v err=%v, want a zero result and nil", res, err)
+	}
+	if s.fetchCount() != 0 || s.requestCount() != 0 {
+		t.Fatalf("%d fetches, %d requests: RoomOnly must not touch the swarm", s.fetchCount(), s.requestCount())
+	}
+	if len(onDisk(t, d)) != 0 {
+		t.Fatal("RoomOnly wrote a head")
+	}
+}
+
+func TestFillRoomOnlyReportsAWarmFileAndFetchesNothing(t *testing.T) {
+	s := newSwarm(fillFile).allArrive()
+	d := fillEnv(t, s)
+	if _, err := d.FillWindows(fillReq()); err != nil {
+		t.Fatal(err)
+	}
+	fetches, reqs := s.fetchCount(), s.requestCount()
+	req := fillReq()
+	req.Policy, req.RoomOnly = EvictNone, true
+	res, err := d.FillWindows(req)
+	if err != nil || !res.AlreadyWarm {
+		t.Fatalf("res=%+v err=%v, want AlreadyWarm", res, err)
+	}
+	if s.fetchCount() != fetches || s.requestCount() != reqs {
+		t.Fatal("RoomOnly fetched for a warm file")
+	}
+}
+
+func TestFillRoomOnlyWithEvictNoneReportsNoRoomAndEvictsNothing(t *testing.T) {
+	s := newSwarm(fillFile).allArrive()
+	d := fillEnv(t, s)
+	// Nothing is played, so an evicting policy could make room; EvictNone must not.
+	crowded(t, d, map[string]time.Duration{"a-1": 3 * time.Hour, "b-1": 2 * time.Hour, "c-1": time.Hour})
+	var evicted int
+	OnEvicted = func(ev []Eviction) { evicted += len(ev) }
+	req := fillReq()
+	req.Policy, req.RoomOnly = EvictNone, true
+	res, err := d.FillWindows(req)
+	if !errors.Is(err, ErrNoRoom) {
+		t.Fatalf("err = %v, want ErrNoRoom", err)
+	}
+	if res.Evicted != 0 || evicted != 0 || s.fetchCount() != 0 || s.requestCount() != 0 {
+		t.Fatalf("res=%+v evicted=%d fetches=%d requests=%d", res, evicted, s.fetchCount(), s.requestCount())
+	}
+	for _, stem := range []string{"a-1", "b-1", "c-1"} {
+		if !exists(d.dir+"/"+stem+warmupSuffix) || !exists(d.dir+"/"+stem+tailSuffix) {
+			t.Fatalf("%s was evicted", stem)
+		}
+	}
+}

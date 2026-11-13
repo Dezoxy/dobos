@@ -20,8 +20,20 @@ import (
 	"flodni/internal/warmup"
 )
 
-// Trigger is the label of every fill, log line and counter this package makes.
+// Trigger is the label of every warm on add fill, log line and counter.
 const Trigger = "add"
+
+// TriggerCatchup labels the fills of catch-up (Readiness step 3): files of the library
+// that were never warmed, handed in by AddCatchup. A catch-up file never evicts.
+const TriggerCatchup = "catchup"
+
+// Triggers lists every trigger, so the metrics can emit each at 0.
+var Triggers = []string{Trigger, TriggerCatchup}
+
+// ErrNotStored is what WakeStored returns for a hash the engine refuses to wake because
+// it no longer stores the torrent (hard rule 3). Any other wake error means busy or
+// broken; this one means the hash can never be woken from here.
+var ErrNotStored = errors.New("the engine does not store this torrent")
 
 // Outcomes of an attempt, the outcome label of flodni_warm_fills_total. A pause, a
 // shutdown and a removal record nothing and are not outcomes.
@@ -94,7 +106,7 @@ type Deps struct {
 	// Live reports that the engine holds the torrent in RAM.
 	Live func(hash string) bool
 	// WakeStored wakes a closed torrent from the hash alone and must refuse a hash the
-	// engine no longer stores (hard rule 3).
+	// engine no longer stores (hard rule 3), with an error that wraps ErrNotStored.
 	WakeStored func(ctx context.Context, hash string) error
 	// Policy is the eviction policy in force now: never EvictAny.
 	Policy func() warmup.EvictPolicy
@@ -130,11 +142,20 @@ type Deps struct {
 	EvictWait   time.Duration // 0 means 1 s: how long to wait for the eviction mark
 }
 
-// Stats is a snapshot for the metrics.
+// TriggerStats is one trigger's share of the fills.
+type TriggerStats struct {
+	Fills     map[string]int64 // by outcome; every outcome present
+	HeadBytes int64
+	TailBytes int64
+}
+
+// Stats is a snapshot for the metrics. Fills, HeadBytes and TailBytes add up every
+// trigger; ByTrigger splits them, with every trigger present.
 type Stats struct {
 	Fills         map[string]int64 // by outcome; every outcome present
 	HeadBytes     int64
 	TailBytes     int64
+	ByTrigger     map[string]TriggerStats
 	CacheFailures map[string]int64 // by reason; every reason present
 	QueueFiles    int
 	Paused        bool
@@ -143,6 +164,7 @@ type Stats struct {
 type file struct {
 	idx       int
 	size      int64
+	trigger   string    // Trigger or TriggerCatchup; it stays with the file across requeues and retries
 	delivered time.Time // latest swarm delivery seen for this file, across attempts
 	retries   int
 }
@@ -171,6 +193,8 @@ type Warmer struct {
 	epoch   map[string]uint64
 	paused  bool
 	closed  bool
+	noRoom  bool            // a catch-up file found no room; the feeder reads and resets it
+	refused map[string]bool // hashes WakeStored refused as not stored, until a later Add
 
 	// recMu is held while an attempt writes its records; Cancel passes through it.
 	recMu sync.Mutex
@@ -179,9 +203,9 @@ type Warmer struct {
 	protected map[warmup.FileKey]int
 
 	smu           sync.Mutex
-	fills         map[string]int64
-	headBytes     int64
-	tailBytes     int64
+	fills         map[string]map[string]int64 // by trigger, then outcome
+	headBytes     map[string]int64            // by trigger
+	tailBytes     map[string]int64
 	cacheFailures map[string]int64
 }
 
@@ -216,8 +240,12 @@ func New(d Deps) *Warmer {
 	}
 	w := &Warmer{
 		d: d, pending: map[string]*job{}, running: map[string]*job{}, tomb: map[string]bool{},
-		epoch: map[string]uint64{}, protected: map[warmup.FileKey]int{},
-		fills: zeroed(Outcomes), cacheFailures: zeroed(CacheFailureReasons),
+		epoch: map[string]uint64{}, protected: map[warmup.FileKey]int{}, refused: map[string]bool{},
+		fills: map[string]map[string]int64{}, headBytes: map[string]int64{}, tailBytes: map[string]int64{},
+		cacheFailures: zeroed(CacheFailureReasons),
+	}
+	for _, t := range Triggers {
+		w.fills[t] = zeroed(Outcomes)
 	}
 	w.ctx, w.cancel = context.WithCancel(context.Background())
 	w.cond = sync.NewCond(&w.mu)
@@ -257,26 +285,57 @@ func (w *Warmer) Add(hash string, files []File) {
 		return
 	}
 	delete(w.tomb, hash)
-	dropped := 0
+	delete(w.refused, hash) // a re-add stores the torrent again
+	w.enqueueFilesLocked(hash, files, Trigger)
+}
+
+// AddCatchup queues files of the library that were never warmed (Readiness step 3) and
+// returns how many it took, queued already included. Unlike Add it never clears a
+// removal's tombstone: a removed hash is not a candidate. A file of the hash that warm
+// on add has queued stays an add file. Nothing calls it yet.
+func (w *Warmer) AddCatchup(hash string, files []File) int {
+	if w == nil || !w.d.Enabled() {
+		return 0
+	}
+	hash = strings.ToLower(hash)
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed || w.tomb[hash] {
+		return 0
+	}
+	return w.enqueueFilesLocked(hash, files, TriggerCatchup)
+}
+
+// enqueueFilesLocked queues the valid files for the hash under the trigger, counts the
+// ones the full queue dropped, and returns how many it took.
+func (w *Warmer) enqueueFilesLocked(hash string, files []File, trigger string) int {
+	dropped, taken := 0, 0
 	for _, f := range files {
 		if f.Size <= 0 || f.Index < 0 {
 			continue
 		}
-		if !w.enqueueLocked(hash, &file{idx: f.Index, size: f.Size}) {
+		if w.enqueueLocked(hash, &file{idx: f.Index, size: f.Size, trigger: trigger}) {
+			taken++
+		} else {
 			dropped++
 		}
 	}
-	w.count(OutcomeDroppedQueueFull, dropped)
+	w.count(trigger, OutcomeDroppedQueueFull, dropped)
 	w.cond.Broadcast()
+	return taken
 }
 
 // enqueueLocked adds one file to the hash's pending job, creating it. It reports false
-// when the queue is full. A file already queued for the hash is kept as it is.
+// when the queue is full. A file already queued for the hash is kept as it is, except
+// that an add of a file queued by catch-up upgrades it to the add trigger.
 func (w *Warmer) enqueueLocked(hash string, f *file) bool {
 	j := w.pending[hash]
 	if j != nil {
 		for _, q := range j.files {
 			if q.idx == f.idx {
+				if q.trigger == TriggerCatchup && f.trigger == Trigger {
+					q.trigger = Trigger
+				}
 				return true
 			}
 		}
@@ -289,7 +348,18 @@ func (w *Warmer) enqueueLocked(hash string, f *file) bool {
 		w.pending[hash] = j
 		w.fifo = append(w.fifo, hash)
 	}
-	j.files = append(j.files, f)
+	at := len(j.files)
+	if f.trigger == Trigger { // an add file goes ahead of the catch-up files
+		for i, q := range j.files {
+			if q.trigger == TriggerCatchup {
+				at = i
+				break
+			}
+		}
+	}
+	j.files = append(j.files, nil)
+	copy(j.files[at+1:], j.files[at:])
+	j.files[at] = f
 	w.queued++
 	return true
 }
@@ -325,17 +395,28 @@ func (w *Warmer) Cancel(hash string) {
 // Stats returns a snapshot. A nil Warmer reports every series at 0.
 func (w *Warmer) Stats() Stats {
 	if w == nil {
-		return Stats{Fills: zeroed(Outcomes), CacheFailures: zeroed(CacheFailureReasons)}
+		st := Stats{Fills: zeroed(Outcomes), CacheFailures: zeroed(CacheFailureReasons),
+			ByTrigger: map[string]TriggerStats{}}
+		for _, t := range Triggers {
+			st.ByTrigger[t] = TriggerStats{Fills: zeroed(Outcomes)}
+		}
+		return st
 	}
-	st := Stats{Fills: map[string]int64{}, CacheFailures: map[string]int64{}}
+	st := Stats{Fills: zeroed(Outcomes), CacheFailures: map[string]int64{}, ByTrigger: map[string]TriggerStats{}}
 	w.smu.Lock()
-	for k, v := range w.fills {
-		st.Fills[k] = v
+	for _, t := range Triggers {
+		ts := TriggerStats{Fills: map[string]int64{}, HeadBytes: w.headBytes[t], TailBytes: w.tailBytes[t]}
+		for k, v := range w.fills[t] {
+			ts.Fills[k] = v
+			st.Fills[k] += v
+		}
+		st.ByTrigger[t] = ts
+		st.HeadBytes += ts.HeadBytes
+		st.TailBytes += ts.TailBytes
 	}
 	for k, v := range w.cacheFailures {
 		st.CacheFailures[k] = v
 	}
-	st.HeadBytes, st.TailBytes = w.headBytes, w.tailBytes
 	w.smu.Unlock()
 	w.mu.Lock()
 	st.QueueFiles, st.Paused = w.queued, w.paused
@@ -343,13 +424,58 @@ func (w *Warmer) Stats() Stats {
 	return st
 }
 
-func (w *Warmer) count(outcome string, n int) {
+func (w *Warmer) count(trigger, outcome string, n int) {
 	if n == 0 {
 		return
 	}
 	w.smu.Lock()
-	w.fills[outcome] += int64(n)
+	w.fills[trigger][outcome] += int64(n)
 	w.smu.Unlock()
+}
+
+// Idle reports that nothing is queued or running and no pause or playback is on: the moment the
+// catch-up feeder may hand in the next hash. A nil Warmer is idle.
+func (w *Warmer) Idle() bool {
+	if w == nil {
+		return true
+	}
+	w.mu.Lock()
+	idle := w.queued == 0 && len(w.running) == 0 && !w.paused
+	w.mu.Unlock()
+	// paused is set only when a worker polls, and none does with an empty queue.
+	return idle && !w.d.PlaybackOpen()
+}
+
+// NoRoom reports that a catch-up file found the quota full since ResetNoRoom: catch-up
+// never evicts, so the feeder ends its pass.
+func (w *Warmer) NoRoom() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.noRoom
+}
+
+// ResetNoRoom lowers the NoRoom flag; the feeder does it when a pass starts.
+func (w *Warmer) ResetNoRoom() {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.noRoom = false
+	w.mu.Unlock()
+}
+
+// NotStored reports that WakeStored refused the hash as not stored in this process,
+// until a later Add of it. A busy or failed wake does not set it.
+func (w *Warmer) NotStored(hash string) bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.refused[strings.ToLower(hash)]
 }
 
 // cancelledLocked: the job's hash was removed since the job was queued. A tombstone
@@ -505,11 +631,12 @@ func (w *Warmer) next() *job {
 type action int
 
 const (
-	actNext      action = iota // the file is done: go on
-	actRequeue                 // paused: put this file and the rest back
-	actSkipRest                // the swarm or the wake failed: leave the job's other files
-	actCancelled               // the hash was removed
-	actClosed                  // shutdown
+	actNext        action = iota // the file is done: go on
+	actRequeue                   // paused: put this file and the rest back
+	actSkipRest                  // the swarm or the wake failed: leave the job's other files
+	actSkipCatchup               // a catch-up file found no room: leave the job's other catch-up files
+	actCancelled                 // the hash was removed
+	actClosed                    // shutdown
 )
 
 func (w *Warmer) runJob(j *job) {
@@ -538,9 +665,28 @@ func (w *Warmer) runJob(j *job) {
 			// The files left behind are counted, so the outcomes add up to the files
 			// queued. Not when the switch was turned off: that drops the queue.
 			if w.d.Enabled() {
-				w.count(OutcomeSkipped, len(j.files)-1)
+				for _, q := range j.files[1:] {
+					w.count(q.trigger, OutcomeSkipped, 1)
+				}
 			}
 			return
+		case actSkipCatchup:
+			// Catch-up found the quota full and never evicts. An add file merged into
+			// this job may still evict under its own policy, so only the catch-up
+			// files are left.
+			var keep []*file
+			skipped := 0
+			for _, q := range j.files[1:] {
+				if q.trigger == TriggerCatchup {
+					skipped++
+				} else {
+					keep = append(keep, q)
+				}
+			}
+			if w.d.Enabled() {
+				w.count(TriggerCatchup, OutcomeSkipped, skipped)
+			}
+			j.files = keep
 		case actClosed:
 			return
 		case actCancelled:
@@ -576,15 +722,19 @@ func (w *Warmer) requeue(j *job) {
 		w.pending[j.hash] = p
 		w.fifo = append([]string{j.hash}, w.fifo...)
 	}
-	have := map[int]bool{}
+	queued := map[int]*file{}
 	for _, f := range p.files {
-		have[f.idx] = true
+		queued[f.idx] = f
 	}
 	var front []*file
 	for _, f := range j.files {
-		if !have[f.idx] {
-			front = append(front, f)
+		if q := queued[f.idx]; q != nil {
+			if f.trigger == Trigger {
+				q.trigger = Trigger // an add file is never handed down to catch-up
+			}
+			continue
 		}
+		front = append(front, f)
 	}
 	p.files = append(front, p.files...)
 	w.queued += len(front)
@@ -606,7 +756,7 @@ func (w *Warmer) scheduleRetry(j *job, f *file) {
 			return
 		}
 		if !w.enqueueLocked(j.hash, f) {
-			w.count(OutcomeDroppedQueueFull, 1)
+			w.count(f.trigger, OutcomeDroppedQueueFull, 1)
 			return
 		}
 		w.cond.Broadcast()
@@ -621,7 +771,7 @@ func (w *Warmer) record(j *job, f *file, u Update, outcome string, retry, stampS
 	if w.cancelled(j) {
 		return false
 	}
-	w.count(outcome, 1)
+	w.count(f.trigger, outcome, 1)
 	if retry {
 		w.smu.Lock()
 		w.cacheFailures[u.Cache]++
@@ -640,7 +790,7 @@ func (w *Warmer) record(j *job, f *file, u Update, outcome string, retry, stampS
 func (w *Warmer) attemptSafe(j *job, f *file) (act action) {
 	defer func() {
 		if r := recover(); r != nil {
-			w.d.Log(fmt.Sprintf("WARNING: warm on add: recovered on %s/%d: %v", j.hash, f.idx, r))
+			w.d.Log(fmt.Sprintf("WARNING: warm (%s): recovered on %s/%d: %v", f.trigger, j.hash, f.idx, r))
 			act = actSkipRest
 		}
 	}()
@@ -699,15 +849,70 @@ func (w *Warmer) logAttempt(l logLine, delivered time.Time, started time.Time) {
 	w.d.Log("[Warm] " + string(b))
 }
 
-// attempt warms one file: wake if needed, fill, then record the outcome.
+// preflight is a catch-up file's first step, before any wake: RoomOnly asks the cache
+// whether the windows are warm and whether there is room, and fetches nothing. It
+// returns warm when both windows are complete (the caller records cache=cached and
+// wakes nothing). It returns done with an action when the job's file is over: no room
+// (nothing recorded, flag raised, the job's other catch-up files left) or a removal.
+// Any other error is returned: the attempt wakes nothing and records it as a
+// cache-side failure.
+func (w *Warmer) preflight(j *job, f *file, key warmup.FileKey, line *logLine, started time.Time) (warm bool, preErr error, act action, done bool) {
+	res, err := w.d.Fill(warmup.FillRequest{
+		Key: key, FileSize: f.size, Policy: warmup.EvictNone, Trigger: TriggerCatchup,
+		Protect: w.protect, RoomOnly: true,
+	})
+	switch {
+	case w.cancelled(j):
+		line.Outcome = "cancelled"
+		w.logAttempt(*line, f.delivered, started)
+		return false, nil, actCancelled, true
+	case errors.Is(err, warmup.ErrNoRoom):
+		return false, nil, w.catchupNoRoom(f, line, started), true
+	case err != nil:
+		return false, err, actNext, false
+	}
+	return res.AlreadyWarm, nil, actNext, false
+}
+
+// catchupNoRoom ends a catch-up file that found the quota full. Catch-up never evicts,
+// and the full quota says nothing about the file: it counts the outcome, records
+// nothing (no cache state, above all not dropped_no_evidence), raises the flag for the
+// feeder and leaves the job's other catch-up files (add files of the job still run).
+func (w *Warmer) catchupNoRoom(f *file, line *logLine, started time.Time) action {
+	w.count(f.trigger, OutcomeNoRoom, 1)
+	w.mu.Lock()
+	w.noRoom = true
+	w.mu.Unlock()
+	line.Outcome = OutcomeNoRoom
+	w.logAttempt(*line, f.delivered, started)
+	return actSkipCatchup
+}
+
+// attempt warms one file: wake if needed, fill, then record the outcome. A catch-up
+// file is first checked by preflight, so nothing is woken for a warm file or a full
+// quota, and it always fills under EvictNone, never the policy warm on add reads.
 func (w *Warmer) attempt(j *job, f *file) action {
 	key := warmup.FileKey{Hash: j.hash, FileIdx: f.idx}
 	started := time.Now()
-	line := logLine{Hash: j.hash, File: f.idx, Trigger: Trigger}
+	line := logLine{Hash: j.hash, File: f.idx, Trigger: f.trigger}
+	catchup := f.trigger == TriggerCatchup
+
+	var pre warmup.FillResult
+	var preErr error
+	warm := false
+	if catchup {
+		var act action
+		var done bool
+		if warm, preErr, act, done = w.preflight(j, f, key, &line, started); done {
+			return act
+		}
+		pre = warmup.FillResult{AlreadyWarm: warm}
+	}
+	settled := warm || preErr != nil // the pre-flight answered: no wake, no fill
 
 	// Wake: only a torrent the engine closed, and only through WakeStored, which
 	// refuses a hash it no longer stores. The tombstone is checked on both sides.
-	if !w.d.Live(j.hash) {
+	if !settled && !w.d.Live(j.hash) {
 		if w.cancelled(j) {
 			return actCancelled
 		}
@@ -718,7 +923,12 @@ func (w *Warmer) attempt(j *job, f *file) action {
 			if w.cancelled(j) {
 				return actCancelled
 			}
-			w.count(OutcomeWakeError, 1)
+			if errors.Is(err, ErrNotStored) {
+				w.mu.Lock()
+				w.refused[j.hash] = true
+				w.mu.Unlock()
+			}
+			w.count(f.trigger, OutcomeWakeError, 1)
 			line.Outcome, line.Reason = OutcomeWakeError, err.Error()
 			w.logAttempt(line, f.delivered, started)
 			return actSkipRest
@@ -728,15 +938,22 @@ func (w *Warmer) attempt(j *job, f *file) action {
 		}
 	}
 
-	policy := w.d.Policy()
 	attemptAt := w.d.Now()
-	res, err := w.d.Fill(warmup.FillRequest{
-		Key: key, FileSize: f.size, Policy: policy, Trigger: warmup.TriggerWarmAdd,
-		Protect: w.protect, Stop: func() bool { return w.stopFill(j) },
-	})
+	res, err := pre, preErr
+	policy := warmup.EvictNone
+	if !settled {
+		trigger := TriggerCatchup
+		if !catchup {
+			policy, trigger = w.d.Policy(), warmup.TriggerWarmAdd
+		}
+		res, err = w.d.Fill(warmup.FillRequest{
+			Key: key, FileSize: f.size, Policy: policy, Trigger: trigger,
+			Protect: w.protect, Stop: func() bool { return w.stopFill(j) },
+		})
+	}
 	w.smu.Lock()
-	w.headBytes += res.HeadBytes
-	w.tailBytes += res.TailBytes
+	w.headBytes[f.trigger] += res.HeadBytes
+	w.tailBytes[f.trigger] += res.TailBytes
 	w.smu.Unlock()
 	line.HeadBytes, line.TailBytes, line.DeliveredPieces, line.Evicted = res.HeadBytes, res.TailBytes, res.DeliveredPieces, res.Evicted
 
@@ -770,7 +987,14 @@ func (w *Warmer) attempt(j *job, f *file) action {
 		return actCancelled
 	}
 
+	if catchup && errors.Is(err, warmup.ErrNoRoom) { // the room went between pre-flight and fill
+		return w.catchupNoRoom(f, &line, started)
+	}
+
 	u := Update{Key: key, AttemptAt: attemptAt}
+	if warm {
+		u.AttemptAt = time.Time{} // no attempt ran: the pre-flight found the windows warm
+	}
 	act := actNext
 	retry := false
 	stampSwarm := false
