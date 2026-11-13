@@ -353,7 +353,8 @@ play starts from the SSD instead of waiting for the swarm. It is implemented
 and tested against fakes and, for one title, end to end: `make e2e` adds a
 fixture with the switch on, waits for the fill, stops the seeder and reads both
 windows back from the SSD. Pause, the wake of a closed torrent and removal
-while queued are covered by unit tests only.
+while queued are covered by unit tests only (the `catch-up` variant does wake a
+closed torrent and reports the engine's state for it before the pass).
 
 - **Cost.** It downloads the windows (by default 64 MiB of head and 16 MiB of
   tail per file, `warmup_head_size_mb` and `warmup_tail_size_mb`) from the
@@ -432,8 +433,12 @@ while queued are covered by unit tests only.
   `outcome` (also `stopped` and `cancelled` for fills that recorded nothing),
   `cache`, `reason`, `head_bytes`, `tail_bytes`, `delivered_pieces`, `delivered_at`,
   `evicted` (files evicted for room) and `duration_ms`. It carries no path.
-- **Catch-up.** Experimental, tested against fakes (the end-to-end variant is
-  not written yet). It warms the titles that are already in the library: the
+- **Catch-up.** Experimental, tested against fakes and, for one title, end to
+  end (`make e2e`, variant `catch-up`: off, then on after a restart, then a
+  second restart that feeds nothing, then the windows read back with the seeder
+  dead). The quota stop, the exclusion of evicted files, the overwrite of a
+  stale eviction mark and the 20-hour rule are covered by unit tests only. It
+  warms the titles that are already in the library: the
   ones filed before `warm_on_add` was on, and the ones whose warm failed or was
   dropped. It runs only with `warm_on_add` on, `warmup_dir` set and the state
   database attached (without the database an eviction mark would not survive a

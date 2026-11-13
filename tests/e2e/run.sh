@@ -333,6 +333,18 @@ is_running() {
   [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]
 }
 
+# catchup_config warm_on_add file: the catch-up variant's config. Written with `cat >` so
+# a rewrite keeps the inode (the container bind-mounts the single file).
+catchup_config() {
+  cat >"$2" <<JSON
+{"telemetry": false, "telemetry_url": "", "scheduler": {"enabled": false},
+ "physical_source_path": "$SOURCE_PATH", "fuse_mount_path": "$MOUNT_PATH",
+ "pump_on_open": false, "warmup_dir": "/cache/index",
+ "warmup_head_size_mb": 16, "warmup_tail_size_mb": 8, "disk_warmup_quota_gb": 1,
+ "warm_on_add": $1, "warm_catchup_per_hour": 3600}
+JSON
+}
+
 write_config() { # variant file
   local variant=$1 file=$2
   case "$variant" in
@@ -374,6 +386,12 @@ JSON
  "warmup_head_size_mb": 16, "warmup_tail_size_mb": 8, "disk_warmup_quota_gb": 1,
  "warm_on_add": $warm}
 JSON
+      ;;
+    catch-up)
+      # The warm-on-add windows with the warmer off and catch-up at its fastest pace:
+      # the first pass runs 1 s after a start. The variant rewrites this file in place
+      # with warm_on_add true.
+      catchup_config false "$file"
       ;;
     slow-seeder) write_config default "$file" ;;
     *) echo "unknown variant $variant" >&2; return 1 ;;
@@ -635,6 +653,59 @@ read_source() {
   awk -v s="source=\"$2\"" 'index($0, "flodni_read_bytes_total{") == 1 && index($0, s) { printf "%d", $2; f = 1 } END { if (!f) printf "0" }' <<<"$1"
 }
 
+# check_readback v path head_want tail_want: the seeder dies, the head (8 MiB) and the
+# tail (4 MiB) are read back through the mount and compared with the seeder's hashes, and
+# every byte must come from the SSD windows. The read counters must be 0 before (the
+# variant has not read through the mount since the process started).
+check_readback() {
+  local v=$1 path=$2 head_want=$3 tail_want=$4
+  echo "killing $seeder" >&2
+  docker kill "$seeder" >/dev/null
+  local first got ms size body
+  size=$(docker exec "$flodni" stat -c %s "$path")
+  # Measurement only: the first read of the head after the kill, then the whole head.
+  first=$(docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sh -c "s=\$(date +%s%N); dd if='$path' of=/dev/null bs=4096 count=1 status=none && e=\$(date +%s%N) && echo \$(( (e - s) / 1000000 ))") || first=failed
+  echo "LATENCY ($v): first 4 KiB of the head after the kill: ${first} ms" >&2
+  if ! got=$(docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sh -c "s=\$(date +%s%N); h=\$(head -c 8388608 '$path' | sha256sum) && e=\$(date +%s%N) && echo \"\${h%% *} \$(( (e - s) / 1000000 ))\""); then
+    echo "FAIL ($v): head read of 8 MiB failed or timed out after the seeder was killed" >&2
+    dump_diagnostics
+    return 1
+  fi
+  ms=${got#* } got=${got%% *}
+  echo "LATENCY ($v): head 8 MiB read and hash: ${ms} ms" >&2
+  if [ "$got" != "$head_want" ]; then
+    echo "FAIL ($v): head sha256 mismatch: got $got, want $head_want" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if ! got=$(docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sh -c "s=\$(date +%s%N); h=\$(tail -c 4194304 '$path' | sha256sum) && e=\$(date +%s%N) && echo \"\${h%% *} \$(( (e - s) / 1000000 ))\""); then
+    echo "FAIL ($v): tail read of 4 MiB failed or timed out after the seeder was killed" >&2
+    dump_diagnostics
+    return 1
+  fi
+  ms=${got#* } got=${got%% *}
+  echo "LATENCY ($v): tail 4 MiB read and hash: ${ms} ms (file size $size)" >&2
+  if [ "$got" != "$tail_want" ]; then
+    echo "FAIL ($v): tail sha256 mismatch: got $got, want $tail_want" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): head 8 MiB and tail 4 MiB match the seeder's sha256 with the seeder dead" >&2
+
+  # Reads by source: every byte from the SSD windows (the counters were 0 before).
+  body=$(prom_body)
+  local fb rc wh wt
+  fb=$(read_source "$body" fetch_block) rc=$(read_source "$body" racache_hit)
+  wh=$(read_source "$body" warmup_head) wt=$(read_source "$body" warmup_tail)
+  echo "READS ($v): fetch_block=$fb racache_hit=$rc warmup_head=$wh warmup_tail=$wt" >&2
+  if [ "$wh" -lt $((8 * 1048576)) ] || [ "$wt" -lt $((4 * 1048576)) ] || [ "$fb" -ne 0 ] || [ "$rc" -ne 0 ]; then
+    echo "FAIL ($v): the reads did not come from the SSD windows: want warmup_head >= 8 MiB, warmup_tail >= 4 MiB, fetch_block 0, racache_hit 0" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): reads served from warmup_head and warmup_tail only" >&2
+}
+
 # run_warm_on_add: the warmer against the real engine. Add the fixture with warm_on_add
 # on and read nothing through the mount; wait for the fill; check the evidence (metric,
 # [Warm] line, per-file row, torrent record); kill the seeder; read the head and the
@@ -647,7 +718,7 @@ run_warm_on_add() {
   local out="$dir/out" v=warm-on-add
   wait_for_file "$out/expected.sha256" "$WAIT_SECONDS" "$v"
   wait_for_file "$out/fuse_path" "$WAIT_SECONDS" "$v"
-  local hash head_want tail_want path size
+  local hash head_want tail_want path
   hash=$(cat "$out/hash") head_want=$(cat "$out/head8m.sha256") tail_want=$(cat "$out/tail4m.sha256")
   path="$MOUNT_PATH/$(cat "$out/fuse_path")"
   echo "step add: $((SECONDS - t0))s since start" >&2
@@ -729,54 +800,235 @@ run_warm_on_add() {
   echo "ok ($v): files row $row" >&2
   echo "ok ($v): torrent record ${trow}" >&2
 
-  # Step 3: the seeder dies, the windows are read back from the SSD.
-  echo "killing $seeder" >&2
-  docker kill "$seeder" >/dev/null
-  local first got ms
-  size=$(docker exec "$flodni" stat -c %s "$path")
-  # Measurement only: the first read of the head after the kill, then the whole head.
-  first=$(docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sh -c "s=\$(date +%s%N); dd if='$path' of=/dev/null bs=4096 count=1 status=none && e=\$(date +%s%N) && echo \$(( (e - s) / 1000000 ))") || first=failed
-  echo "LATENCY ($v): first 4 KiB of the head after the kill: ${first} ms" >&2
-  if ! got=$(docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sh -c "s=\$(date +%s%N); h=\$(head -c 8388608 '$path' | sha256sum) && e=\$(date +%s%N) && echo \"\${h%% *} \$(( (e - s) / 1000000 ))\""); then
-    echo "FAIL ($v): head read of 8 MiB failed or timed out after the seeder was killed" >&2
-    dump_diagnostics
-    return 1
-  fi
-  ms=${got#* } got=${got%% *}
-  echo "LATENCY ($v): head 8 MiB read and hash: ${ms} ms" >&2
-  if [ "$got" != "$head_want" ]; then
-    echo "FAIL ($v): head sha256 mismatch: got $got, want $head_want" >&2
-    dump_diagnostics
-    return 1
-  fi
-  if ! got=$(docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sh -c "s=\$(date +%s%N); h=\$(tail -c 4194304 '$path' | sha256sum) && e=\$(date +%s%N) && echo \"\${h%% *} \$(( (e - s) / 1000000 ))\""); then
-    echo "FAIL ($v): tail read of 4 MiB failed or timed out after the seeder was killed" >&2
-    dump_diagnostics
-    return 1
-  fi
-  ms=${got#* } got=${got%% *}
-  echo "LATENCY ($v): tail 4 MiB read and hash: ${ms} ms (file size $size)" >&2
-  if [ "$got" != "$tail_want" ]; then
-    echo "FAIL ($v): tail sha256 mismatch: got $got, want $tail_want" >&2
-    dump_diagnostics
-    return 1
-  fi
-  echo "ok ($v): head 8 MiB and tail 4 MiB match the seeder's sha256 with the seeder dead" >&2
-
-  # Reads by source: every byte from the SSD windows (the counters were 0 before).
-  body=$(prom_body)
-  local fb rc wh wt
-  fb=$(read_source "$body" fetch_block) rc=$(read_source "$body" racache_hit)
-  wh=$(read_source "$body" warmup_head) wt=$(read_source "$body" warmup_tail)
-  echo "READS ($v): fetch_block=$fb racache_hit=$rc warmup_head=$wh warmup_tail=$wt" >&2
-  if [ "$wh" -lt $((8 * 1048576)) ] || [ "$wt" -lt $((4 * 1048576)) ] || [ "$fb" -ne 0 ] || [ "$rc" -ne 0 ]; then
-    echo "FAIL ($v): the reads did not come from the SSD windows: want warmup_head >= 8 MiB, warmup_tail >= 4 MiB, fetch_block 0, racache_hit 0" >&2
-    dump_diagnostics
-    return 1
-  fi
-  echo "ok ($v): reads served from warmup_head and warmup_tail only" >&2
+  check_readback "$v" "$path" "$head_want" "$tail_want" || return 1
   echo "NOTE ($v): pause/wake and removal while queued are not exercised here; the replacement variant runs with warm_on_add off" >&2
   echo "PASS ($v): windows filled by the warmer, read back with the seeder dead, $((SECONDS - t0))s" >&2
+
+  stop_stack
+}
+
+# catchup_lines: the [WarmCatchup] lines of the container's whole log (a restart keeps it).
+catchup_lines() { docker logs "$flodni" 2>&1 | grep -F '[WarmCatchup] ' || true; }
+
+# json_num line key: the integer value of "key" in a JSON log line, empty if absent.
+json_num() { grep -o "\"$2\":[0-9]*" <<<"$1" | head -n 1 | cut -d: -f2; }
+
+# catchup_zero body label: every catch-up and add fill series, the catch-up fill bytes
+# and every backlog gauge state must be 0. Prints the series it checked.
+catchup_zero() {
+  local body=$1 label=$2 bad
+  bad=$(grep -E '^(flodni_warm_fills_total\{trigger="(add|catchup)"|flodni_warm_fill_bytes_total\{trigger="catchup"|flodni_warm_catchup_files\{)' <<<"$body" | awk '$2 != 0' || true)
+  if [ -n "$bad" ] || ! grep -q '^flodni_warm_catchup_files{state="pending"} 0$' <<<"$body"; then
+    echo "FAIL ($label): want every add/catch-up fill series, the catch-up bytes and the gauge at 0: ${bad:-gauge missing}" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($label): add and catch-up fills, catch-up bytes and the backlog gauge are all 0" >&2
+}
+
+# catchup_pass label want_passes: after a restart, wait up to 120 s for the want_passes-th
+# [WarmCatchup] pass_end line. Fails fast, with the [Warm] and [WarmCatchup] lines, on a
+# wake_error outcome or a container that exited. A first pass that feeds nothing is not
+# retried for 6 hours, so waiting longer would only hide it. Sets pass_start_line and
+# pass_end_line.
+catchup_pass() {
+  local label=$1 want=$2 deadline=$((SECONDS + 120)) lines n
+  while :; do
+    lines=$(catchup_lines)
+    n=$(grep -c '"event":"pass_end"' <<<"$lines" || true)
+    [ "$n" -ge "$want" ] && break
+    if ! is_running "$flodni" || docker logs "$flodni" 2>&1 | grep -F '[Warm] ' | grep -qF '"outcome":"wake_error"'; then
+      echo "FAIL ($label): a container exited or a wake_error was logged before pass $want ended" >&2
+      docker logs "$flodni" 2>&1 | grep -E '\[Warm(Catchup)?\] ' >&2 || true
+      dump_diagnostics
+      return 1
+    fi
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "FAIL ($label): no pass_end number $want in 120 s" >&2
+      docker logs "$flodni" 2>&1 | grep -E '\[Warm(Catchup)?\] |WARNING' >&2 || true
+      dump_diagnostics
+      return 1
+    fi
+    sleep 1
+  done
+  pass_start_line=$(grep -F '"event":"pass_start"' <<<"$lines" | sed -n "${want}p")
+  pass_end_line=$(grep -F '"event":"pass_end"' <<<"$lines" | sed -n "${want}p")
+  echo "ok ($label): $pass_start_line" >&2
+  echo "ok ($label): $pass_end_line" >&2
+}
+
+# gostorm_list: the engine's torrent list (POST /torrents list on 8090; the variant sets
+# no token), over /dev/tcp, body only. Empty until the engine's API is up.
+gostorm_list() {
+  docker exec "$flodni" bash -c 'b="{\"action\":\"list\"}"
+    exec 3<>/dev/tcp/127.0.0.1/8090 && printf "POST /torrents HTTP/1.0\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${#b}\r\n\r\n%s" "$b" >&3 && cat <&3' 2>/dev/null | sed '1,/^\r$/d' || true
+}
+
+# run_catchup: catch-up (#124, #125) against the real engine across daemon restarts.
+# Off phase: the fixture is added with warm_on_add false and nothing reads it, so catch-up
+# must stay silent. Then config.json is rewritten in place with warm_on_add true and the
+# container restarted (state and cache are volumes, the stub stays in the container's
+# layer): the first pass, 1 s after the start, must warm the title with trigger catchup.
+# A second restart must find nothing to do. Last, the seeder dies and the windows are read
+# back from the SSD. The quota stop, the eviction exclusion, the stale-evicted overwrite
+# and the 20 h rule are unit tests only (warm_catchup_test.go, internal/warmer).
+run_catchup() {
+  local dir t0=$SECONDS
+  start_stack catch-up
+  local out="$dir/out" v=catch-up
+  wait_for_file "$out/expected.sha256" "$WAIT_SECONDS" "$v"
+  wait_for_file "$out/fuse_path" "$WAIT_SECONDS" "$v"
+  local hash head_want tail_want path
+  hash=$(cat "$out/hash") head_want=$(cat "$out/head8m.sha256") tail_want=$(cat "$out/tail4m.sha256")
+  path="$MOUNT_PATH/$(cat "$out/fuse_path")"
+  echo "step add: $((SECONDS - t0))s since start" >&2
+
+  # Step 1: off phase. The first pass (1 s after the start, long done) was skipped.
+  local body lines
+  sleep 5
+  lines=$(catchup_lines)
+  if [ -n "$lines" ] || docker logs "$flodni" 2>&1 | grep -qF 'WARNING: [WarmCatchup]'; then
+    echo "FAIL ($v): off phase: a [WarmCatchup] line or warning was logged: $lines" >&2
+    dump_diagnostics
+    return 1
+  fi
+  body=$(prom_body)
+  catchup_zero "$body" "$v off" || return 1
+  echo "ok ($v): off phase: no [WarmCatchup] line, no catch-up warning" >&2
+
+  # Step 2: warm_on_add on, in place, restart. The torrent is only a record in the engine's
+  # database after the restart; poll the engine's list to see its state before the pass.
+  echo "step restart 1: warm_on_add true, warm_catchup_per_hour 3600" >&2
+  catchup_config true "$dir/config.json"
+  local r0=$SECONDS list="" stat=""
+  docker restart "$flodni" >/dev/null
+  while [ "$((SECONDS - r0))" -lt 20 ]; do
+    list=$(gostorm_list)
+    stat=$(grep -o "\"hash\":\"$hash\"[^}]*" <<<"$list" | grep -o '"stat_string":"[^"]*"' | head -n 1 | cut -d'"' -f4 || true)
+    [ -n "$stat" ] && break
+    sleep 0.2
+  done
+  echo "WAKE ($v): engine list right after the restart: ${stat:-no entry}" >&2
+  local wake_seen=${stat:-none}
+  catchup_pass "$v restart 1" 1 || return 1
+  local start1=$pass_start_line end1=$pass_end_line
+  echo "step catch-up: $((SECONDS - r0))s from the restart to pass_end" >&2
+  if [ "$(json_num "$start1" pending)" != 1 ] || [ "$(json_num "$start1" candidate_hashes)" != 1 ]; then
+    echo "FAIL ($v): pass_start wants candidate_hashes 1 and pending 1: $start1" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if [ "$(json_num "$end1" fed)" != 1 ] || [ "$(json_num "$end1" fed_hashes)" != 1 ]; then
+    echo "FAIL ($v): pass_end wants fed_hashes 1 and fed 1: $end1" >&2
+    docker logs "$flodni" 2>&1 | grep -E '\[Warm(Catchup)?\] ' >&2 || true
+    dump_diagnostics
+    return 1
+  fi
+  body=$(prom_body)
+  local cu add_bad bytes rt
+  cu=$(awk '/^flodni_warm_fills_total\{trigger="catchup",outcome="warmed"\} / { printf "%d", $2 }' <<<"$body")
+  add_bad=$(grep -E '^flodni_warm_fills_total\{trigger="add"' <<<"$body" | awk '$2 != 0' || true)
+  bytes=$(awk '/^flodni_warm_fill_bytes_total\{trigger="catchup"/ { n += $2 } END { printf "%d", n }' <<<"$body")
+  rt=0
+  local src n
+  for src in fetch_block racache_hit warmup_head warmup_tail; do
+    n=$(read_source "$body" "$src")
+    rt=$((rt + n))
+  done
+  if [ "${cu:-0}" -ne 1 ] || [ -n "$add_bad" ] || [ "${bytes:-0}" -le 0 ] || [ "$rt" -ne 0 ]; then
+    echo "FAIL ($v): want catchup warmed 1, every add outcome 0, catch-up bytes > 0, read bytes 0: warmed=${cu:-absent} add_nonzero='$add_bad' bytes=$bytes read=$rt" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): $(grep -E '^flodni_warm_fills_total\{trigger="catchup",outcome="warmed"\}' <<<"$body"), every trigger=add outcome 0, catch-up fill bytes $bytes, flodni_read_bytes_total 0" >&2
+  echo "PROM ($v): $(grep -E '^flodni_warm_fill_bytes_total\{trigger="catchup"' <<<"$body" | tr '\n' ' ')" >&2
+  # Every gauge state is 0 once the pass has ended (the gauge is set before the line).
+  if [ -n "$(grep -E '^flodni_warm_catchup_files\{' <<<"$body" | awk '$2 != 0')" ]; then
+    echo "FAIL ($v): a backlog gauge state is not 0 after pass_end: $(grep -E '^flodni_warm_catchup_files\{' <<<"$body" | tr '\n' ' ')" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): after pass_end every flodni_warm_catchup_files state is 0" >&2
+
+  local line json idx
+  line=$(docker logs "$flodni" 2>&1 | grep -F '[Warm] ' | grep -F '"trigger":"catchup"' || true)
+  if [ "$(wc -l <<<"$line" | tr -d ' ')" != 1 ] || [ -z "$line" ]; then
+    echo "FAIL ($v): want exactly one [Warm] line with trigger catchup: ${line:-none}" >&2
+    dump_diagnostics
+    return 1
+  fi
+  json=${line#*\[Warm\] }
+  idx=$(json_num "$json" file)
+  if ! grep -qF "\"hash\":\"$hash\"" <<<"$json" || ! grep -qF '"outcome":"warmed"' <<<"$json" ||
+    grep -qE 'Flodni\.E2E|\.mkv|/mnt/' <<<"$json"; then
+    echo "FAIL ($v): the catch-up [Warm] line is not warmed for $hash or carries a path: $json" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): [Warm] $json" >&2
+
+  local row="" trow="" deadline=$((SECONDS + 30))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    body=$(health_body)
+    row=$(grep -o "{\"file_index\":$idx,[^}]*}" <<<"$body" || true)
+    trow=$(grep -o "{\"hash\":\"$hash\"[^}]*" <<<"$body" || true)
+    [ -n "$row" ] && break
+    sleep 1
+  done
+  if [[ "$row" != *'"readability":"warmed"'* || "$row" != *'"cache":"cached"'* ||
+    "$row" != *'"last_swarm_delivery_at":"'* || "$row" != *'"last_attempt_at":"'* ]]; then
+    echo "FAIL ($v): files row of file $idx wants readability warmed, cache cached, last_swarm_delivery_at and last_attempt_at set: ${row:-none}" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if [[ "$trow" != *'"last_swarm_read_at":"'* ]]; then
+    echo "FAIL ($v): the torrent record has no last_swarm_read_at: ${trow:-none}" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): files row $row" >&2
+  echo "ok ($v): torrent record ${trow}" >&2
+  local attempt1
+  attempt1=$(grep -o '"last_attempt_at":"[^"]*"' <<<"$row")
+
+  # The WakeStored claim: a woken torrent was closed. Only the engine's list right after
+  # the start can show it, and the pass runs 1 s after the start, so say what was seen.
+  if [[ "$wake_seen" == *"in db"* ]]; then
+    echo "ok ($v): WakeStored on a closed private torrent shown: the engine listed it as \"${wake_seen}\" when its API first answered, before the pass fed it" >&2
+  else
+    echo "NOTE ($v): the WakeStored-on-a-closed-private-torrent claim is unverified by this run: the engine list when its API first answered showed \"${wake_seen}\"" >&2
+  fi
+
+  # Step 3: a second restart with the same config finds nothing to do.
+  echo "step restart 2: no config change" >&2
+  docker restart "$flodni" >/dev/null
+  catchup_pass "$v restart 2" 2 || return 1
+  local start2=$pass_start_line end2=$pass_end_line
+  if [ "$(json_num "$start2" pending)" != 0 ] || [ "$(json_num "$end2" fed)" != 0 ]; then
+    echo "FAIL ($v): second pass wants pending 0 and fed 0: $start2 / $end2" >&2
+    dump_diagnostics
+    return 1
+  fi
+  body=$(prom_body)
+  catchup_zero "$body" "$v restart 2" || return 1
+  if [ "$(docker logs "$flodni" 2>&1 | grep -F '[Warm] ' | grep -cF '"trigger":"catchup"')" != 1 ]; then
+    echo "FAIL ($v): a second catch-up [Warm] line appeared after the second restart" >&2
+    dump_diagnostics
+    return 1
+  fi
+  local row2 attempt2
+  row2=$(health_body | grep -o "{\"file_index\":$idx,[^}]*}" || true)
+  attempt2=$(grep -o '"last_attempt_at":"[^"]*"' <<<"$row2")
+  if [ -z "$attempt1" ] || [ "$attempt1" != "$attempt2" ] || [[ "$row2" != *'"cache":"cached"'* ]]; then
+    echo "FAIL ($v): the files row changed or is gone after the second restart: before $attempt1, after: ${row2:-none}" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): second restart: pending 0, fed 0, no catch-up fill or bytes, no new [Warm] line, $attempt2 unchanged" >&2
+
+  # Step 4: the windows survive the restarts: read them back with the seeder dead.
+  check_readback "$v" "$path" "$head_want" "$tail_want" || return 1
+  echo "PASS ($v): off phase silent, one catch-up fill after a restart, none after the next, read back with the seeder dead, $((SECONDS - t0))s" >&2
 
   stop_stack
 }
@@ -787,5 +1039,6 @@ if want_variant default; then run_variant default; fi
 if want_variant slow-seeder; then run_variant slow-seeder; fi
 if want_variant index-cache; then run_variant index-cache; fi
 if want_variant warm-on-add; then run_warm_on_add; fi
+if want_variant catch-up; then run_catchup; fi
 if want_variant replacement; then run_replacement; fi
 echo "e2e: all variants passed" >&2
