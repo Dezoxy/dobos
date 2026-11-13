@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
+	"flodni/internal/gostorm/native"
 	"flodni/internal/library"
 	"flodni/internal/promtext"
 	"flodni/internal/warmer"
@@ -71,7 +73,12 @@ func addWarmerDeps(x *fileStateIndex, stop <-chan struct{}) warmer.Deps {
 			if warmWake == nil {
 				return errors.New("no engine client")
 			}
-			return warmWake(ctx, hash)
+			err := warmWake(ctx, hash)
+			if errors.Is(err, native.ErrNotStored) {
+				// Refused, not busy: the warmer remembers it for the catch-up feeder.
+				return fmt.Errorf("%w: %v", warmer.ErrNotStored, err)
+			}
+			return err
 		},
 		Policy: x.WarmPolicy,
 		Fill: func(req warmup.FillRequest) (warmup.FillResult, error) {

@@ -9,8 +9,9 @@ import (
 
 // Dezoxy fork: the fill primitive of Readiness step 2 (warm on add). It completes one
 // media file's head and tail windows from a torrent the engine already has, in chunks,
-// and writes only verified bytes. Its only caller is warm on add (internal/warmer,
-// off by default); catch-up is not built (docs/roadmap.md).
+// and writes only verified bytes. Its only caller is the warmer
+// (internal/warmer): warm on add, off by default, and the pre-flight of catch-up
+// (Readiness step 3, RoomOnly), which nothing feeds yet (docs/roadmap.md).
 //
 // Why not WriteChunk or fillIndexTail: WriteChunk is asynchronous and drops silently,
 // and creates the head under EvictAny; fillIndexTail allocates a whole window, holds no
@@ -71,6 +72,12 @@ type FillRequest struct {
 	// true ends the fill with ErrStopped. A reader already blocked in a fetch (up to
 	// 8 s) finishes first, so the latency is up to one fetch.
 	Stop func() bool
+	// RoomOnly returns after the already-warm check and the room check, before any
+	// fetch or request: nil when there is room, AlreadyWarm in the result when both
+	// windows are complete, ErrNoRoom when there is none. It is catch-up's pre-flight,
+	// so a torrent is woken only for a file that can be filled. With EvictNone it
+	// evicts nothing; with another policy the room check evicts as it does for a fill.
+	RoomOnly bool
 }
 
 // FillResult is what one call did, also when it returned an error.
@@ -146,6 +153,9 @@ func (d *DiskWarmupCache) FillWindows(req FillRequest) (FillResult, error) {
 	res.Evicted = len(evicted)
 	if !room {
 		return res, ErrNoRoom
+	}
+	if req.RoomOnly {
+		return res, nil
 	}
 
 	fileDeadline := time.Now().Add(fillFileTimeout)
