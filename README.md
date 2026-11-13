@@ -62,6 +62,20 @@ fits inside Docker's default 10 s `stop_grace_period`. A longer grace period
 is fine; do not set it below 10 s, or Docker kills the process before the
 deadline.
 
+### Page cache on a second open
+
+The kernel drops a file's cached pages at every open unless the filesystem
+says to keep them, and that drop waits for every page a read in flight still
+holds, so one slow read (a fetch, a slot wait, the opt-in budget hold below)
+would freeze every new open of the file. Flodni keeps the cache
+(`FOPEN_KEEP_CACHE`) when another handle of the same path is already open, so
+a second reader is not held up by the first one's slow read. The first open of
+a path, with no handle live, still drops the cache, which is what clears the
+pages of a release that was replaced. Reads on an already open descriptor were
+never affected. The pages stay valid because a file's inode number comes
+from its torrent file (hash and index), so a replacement release has another
+inode and its own cache.
+
 The command-line paths (the entrypoint's `FLODNI_SOURCE_PATH` and
 `FLODNI_MOUNT_PATH`) win over `physical_source_path` and `fuse_mount_path` in
 `config.json`; a different value there is logged and overridden.
@@ -426,8 +440,9 @@ switch off it never refuses or slows a read.
     its session closed are not budgeted. Held reads occupy FUSE background
     slots for up to 15 s: with `fuse_max_inflight_mb` set, each held read
     keeps about 4 MB checked out (at the 16 MB floor, four held reads stop
-    the whole mount for up to 15 s), and `MaxBackground` is 25, so a few
-    handles held in parallel stall read-ahead for every file. A hold adds up
+    the whole mount for up to 15 s). A hold also keeps the kernel's pages of
+    that file locked, so an open of a file with no other live handle waits for
+    it (see "Page cache on a second open"). A hold adds up
     to 15 s to one read on top of the slot wait and fetch bounds, and can
     outlast the 4 s refill budget.
   - **More limits.** The tally is per file across opens: a player that opens

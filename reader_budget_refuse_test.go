@@ -384,3 +384,49 @@ func TestWindowReadNeitherStartsNorRearmsAHold(t *testing.T) {
 		t.Fatal("a window read in between re-armed the hold")
 	}
 }
+
+// Guard, not a regression test: the gate shares no lock with the read path, so a hold on
+// one handle does not delay another handle of the same file. It passes without the
+// open-flags fix. The end-to-end stall was the kernel's open-time invalidation, which
+// only a real kernel (make e2e) can pin.
+func TestReadOnAnotherHandleIsNotBlockedWhileOneSleepsInTheGate(t *testing.T) {
+	useFreshReadPath(t)
+	s, _ := refuseEnv(t, 0) // margin 0: any miss past the windows is held
+	unconfirmedReadHold = 5 * time.Second
+	chunk := pattern(int(16 * mb))
+	raCache.Put(s.path, 0, int64(len(chunk))-1, chunk)
+
+	a := readHandle(s.path, s.size)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = a.Read(ctx, make([]byte, 256*1024), 200*mb)
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+
+	for limit := time.Now().Add(2 * time.Second); !a.budgetHold.held.Load(); {
+		if time.Now().After(limit) {
+			t.Fatal("handle A never reached the gate")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	b := readHandle(s.path, s.size)
+	start := time.Now()
+	res, errno := b.Read(context.Background(), make([]byte, 64*1024), 64*1024)
+	if errno != 0 || res == nil || res.Size() != 64*1024 {
+		t.Fatalf("window read on handle B: res=%v errno=%v", res, errno)
+	}
+	if errno := b.budgetGate(context.Background(), 0, 4096); errno != 0 {
+		t.Fatalf("window gate on handle B: errno = %v", errno)
+	}
+	if d := time.Since(start); d > 200*time.Millisecond {
+		t.Fatalf("handle B waited %v behind handle A's hold", d)
+	}
+	select {
+	case <-done:
+		t.Fatal("handle A left the gate early")
+	default:
+	}
+}

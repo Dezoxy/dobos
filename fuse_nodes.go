@@ -767,9 +767,30 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 		}
 	}
 
-	activeHandles.Store(h, true)
+	return h, storeOpenHandle(h), 0
+}
 
-	return h, 0, 0
+// openFlags decides the FUSE open flags (Dezoxy fork). Without FOPEN_KEEP_CACHE the
+// kernel invalidates the file's page cache at every open and waits for each page a
+// read in flight keeps locked: one slow read (a budget hold, a slot wait, a fetch)
+// stalls every other open of the file until it answers. A file with a live handle has
+// not changed since that handle's open, so its cache is kept; the first open still
+// invalidates, which is what drops the pages of a replaced release. Never
+// unconditional: with ExplicitDataCacheControl nothing else drops the pages.
+func openFlags(otherHandleLive bool) uint32 {
+	if otherHandleLive {
+		return fuse.FOPEN_KEEP_CACHE
+	}
+	return 0
+}
+
+// storeOpenHandle adds h to activeHandles and returns its open flags. The question
+// "is another handle live" is asked before h is stored: asked after, it is always
+// true and the flag becomes unconditional.
+func storeOpenHandle(h *MkvHandle) uint32 {
+	flags := openFlags(anyLiveHandleFor(h.path))
+	activeHandles.Store(h, true)
+	return flags
 }
 
 // approximateMetadataSize estimates the memory footprint of a Metadata entry
