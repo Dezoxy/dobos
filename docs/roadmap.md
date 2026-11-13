@@ -223,7 +223,8 @@ finished.
    unconfirmed read that has crossed the margin, and shows the read
    completes, `flodni_unconfirmed_read_sessions_total{outcome="confirmed_late"}`
    counts it and `flodni_playback_webhooks_received_total{matched="true"}`
-   counts the webhook. Until then those counters rest on unit tests only.
+   counts the webhook. That condition is met: the end-to-end variant
+   `late-confirm` does exactly that. Phase b stays designed, not built.
 
 ## Done
 
@@ -418,3 +419,12 @@ finished.
   announce, a minute later. `MarkComplete` now evicts down to capacity
   before the engine records the piece. 0 of 40 `default` runs stalled,
   against 4 of 24 before.
+- 2026-11-13, readiness step 4, entry condition for phase b: the end-to-end
+  variant `late-confirm` (`make e2e`) holds a full read of the fixture half
+  way once it has crossed an 8 MiB margin, posts a play webhook for the file
+  in the middle of the read, and lets the read finish. The sha256 matches,
+  `flodni_playback_webhooks_received_total{matched="true"}` counts the
+  webhook, and when the session closes
+  `flodni_unconfirmed_read_sessions_total{outcome="confirmed_late"}` counts
+  it, with the `confirmed_late` `[ReaderBudget]` line. Test only; phase b is
+  designed, not built.

@@ -15,11 +15,14 @@
 # fail); E2E_PROM_DUMP=<file> saves the /metrics/prometheus body of each
 # non-replacement variant (the last one wins; a scrape sample for the docs);
 # E2E_ONLY=<variant> runs just that variant (default, slow-seeder,
-# index-cache, warm-on-add, replacement). slow-seeder is default with a seeder that
+# index-cache, warm-on-add, catch-up, late-confirm, replacement). slow-seeder is default with a seeder that
 # keeps the engine's 1 MiB per-peer request allowance. The index-cache variant runs
 # with a random FLODNI_API_TOKEN: the seeder must see 401 without the bearer
 # header before its authorised add, and the same for GoStorm's 8090 (401 on
 # POST /torrents, 200 on /echo); the other variants run with auth off.
+# The late-confirm variant (margin 8 MiB, auth off) reads half the fixture, waits
+# for the over_margin [ReaderBudget] line, posts a play webhook for the file in the
+# middle of the read, finishes the read and waits for the session to close.
 # E2E_WARM_NEGATIVE=1 runs the warm-on-add variant with the switch off: it must
 # fail at step 2 (no fill). It is not part of make e2e.
 set -euo pipefail
@@ -385,6 +388,18 @@ JSON
  "pump_on_open": false, "warmup_dir": "/cache/index",
  "warmup_head_size_mb": 16, "warmup_tail_size_mb": 8, "disk_warmup_quota_gb": 1,
  "warm_on_add": $warm}
+JSON
+      ;;
+    late-confirm)
+      # The index-cache windows with a small margin, so the read crosses it after
+      # 4 MiB of head and 8 MiB counted. No API token: the webhook route sits behind
+      # the same bearer middleware as the rest, and auth is covered by index-cache.
+      cat >"$file" <<JSON
+{"telemetry": false, "telemetry_url": "", "scheduler": {"enabled": false},
+ "physical_source_path": "$SOURCE_PATH", "fuse_mount_path": "$MOUNT_PATH",
+ "pump_on_open": false, "warmup_dir": "/cache/index",
+ "warmup_head_size_mb": 4, "warmup_tail_size_mb": 4, "disk_warmup_quota_gb": 1,
+ "unconfirmed_read_margin_mb": 8}
 JSON
       ;;
     catch-up)
@@ -1033,6 +1048,129 @@ run_catchup() {
   stop_stack
 }
 
+# post_webhook body: POST a JSON webhook to the control port from inside the container
+# (no curl in the image); prints the response, status line first.
+post_webhook() {
+  docker exec "$flodni" bash -c 'body=$1
+    exec 3<>/dev/tcp/127.0.0.1/9080 && printf "POST /plex/webhook HTTP/1.0\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: %d\r\n\r\n%s" "${#body}" "$body" >&3 && cat <&3' _ "$1" 2>/dev/null || true
+}
+
+# run_late_confirm: the entry condition for the reader budget's phase b. A full read
+# of the fixture is held half way, after the session has crossed the 8 MiB margin
+# (the over_margin [ReaderBudget] line is the proof, polled for). A play webhook for
+# the file is then posted in the middle of the read, and the read is let go on. The
+# read must complete with the right sha256, the webhook must count matched="true",
+# and the session, which resolves when it closes (60 s idle plus up to 60 s to the
+# next cleanup tick), must count as confirmed_late and not as unconfirmed.
+run_late_confirm() {
+  local dir t0=$SECONDS v=late-confirm
+  start_stack "$v"
+  local out="$dir/out"
+  wait_for_file "$out/expected.sha256" "$WAIT_SECONDS" "$v"
+  wait_for_file "$out/fuse_path" "$WAIT_SECONDS" "$v"
+  local expected path name
+  expected=$(cat "$out/expected.sha256")
+  path="$MOUNT_PATH/$(cat "$out/fuse_path")"
+  name=$(basename "$path")
+  echo "step add: $((SECONDS - t0))s since start" >&2
+
+  # One open file description: the second dd continues where the first stopped, and
+  # the file stays open through the pause. iflag=fullblock makes count=24 mean 24 MiB.
+  docker exec "$flodni" rm -f /tmp/late.go
+  docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sh -c \
+    '( dd bs=1048576 count=24 iflag=fullblock status=none; \
+       until [ -e /tmp/late.go ]; do sleep 0.1; done; \
+       dd bs=1048576 status=none ) < "$1" | sha256sum' _ "$path" >"$out/late.sha" 2>"$out/late.err" &
+  local reader=$!
+
+  local deadline=$((SECONDS + 120)) lines=""
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    lines=$(docker logs "$flodni" 2>&1 | grep -F '[ReaderBudget] ' || true)
+    grep -qF '"event":"over_margin"' <<<"$lines" && break
+    kill -0 "$reader" 2>/dev/null || break
+    sleep 0.5
+  done
+  if ! grep -qF '"event":"over_margin"' <<<"$lines"; then
+    echo "FAIL ($v): no over_margin [ReaderBudget] line before the webhook: ${lines:-none}" >&2
+    kill "$reader" 2>/dev/null || true
+    dump_diagnostics
+    return 1
+  fi
+  echo "step crossed: $((SECONDS - t0))s since start, $(grep -F '"event":"over_margin"' <<<"$lines")" >&2
+
+  # The payload is what Plex sends, reduced to what the handler reads: the event, the
+  # library type and the file name of the part, which is the exact-match key.
+  local payload resp
+  payload='{"event":"media.play","Metadata":{"title":"E2E Fixture","year":2026,"librarySectionType":"movie","Media":[{"Part":[{"file":"/data/movies/'"$name"'"}]}]}}'
+  resp=$(post_webhook "$payload")
+  if ! head -n 1 <<<"$resp" | grep -q ' 200 '; then
+    echo "FAIL ($v): webhook post: $(head -n 1 <<<"$resp")" >&2
+    kill "$reader" 2>/dev/null || true
+    dump_diagnostics
+    return 1
+  fi
+  echo "step webhook: $((SECONDS - t0))s since start, $(head -n 1 <<<"$resp" | tr -d '\r')" >&2
+  docker exec "$flodni" touch /tmp/late.go
+
+  if ! wait "$reader"; then
+    echo "FAIL ($v): the held read failed or timed out: $(cat "$out/late.err")" >&2
+    dump_diagnostics
+    return 1
+  fi
+  local actual
+  actual=$(awk '{ print $1 }' "$out/late.sha")
+  if [ "$actual" != "$expected" ]; then
+    echo "FAIL ($v): sha256 mismatch after the webhook: got ${actual:-none}, want $expected" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): the read completed across the webhook, sha256 $actual" >&2
+
+  local body matched unmatched late unconf
+  body=$(prom_body)
+  matched=$(awk '/^flodni_playback_webhooks_received_total\{matched="true"\} / { printf "%d", $2 }' <<<"$body")
+  unmatched=$(awk '/^flodni_playback_webhooks_received_total\{matched="false"\} / { printf "%d", $2 }' <<<"$body")
+  if [ "${matched:-0}" != 1 ] || [ "${unmatched:-0}" != 0 ]; then
+    echo "FAIL ($v): flodni_playback_webhooks_received_total matched=true ${matched:-absent}, matched=false ${unmatched:-absent}, want 1 and 0" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): $(grep -E '^flodni_playback_webhooks_received_total\{matched="true"\}' <<<"$body")" >&2
+
+  # The session resolves at close: 60 s idle, then the cleanup tick (60 s). Poll 150 s.
+  local c0=$SECONDS
+  deadline=$((SECONDS + 150))
+  late="" unconf=""
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    body=$(prom_body)
+    late=$(awk '/^flodni_unconfirmed_read_sessions_total\{outcome="confirmed_late"\} / { printf "%d", $2 }' <<<"$body")
+    unconf=$(awk '/^flodni_unconfirmed_read_sessions_total\{outcome="unconfirmed"\} / { printf "%d", $2 }' <<<"$body")
+    [ "${late:-0}" -ge 1 ] || [ "${unconf:-0}" -ge 1 ] && break
+    sleep 2
+  done
+  if [ "${late:-0}" != 1 ] || [ "${unconf:-0}" != 0 ]; then
+    echo "FAIL ($v): after $((SECONDS - c0)) s the sessions are confirmed_late ${late:-absent}, unconfirmed ${unconf:-absent}, want 1 and 0" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): $(grep -E '^flodni_unconfirmed_read_sessions_total\{' <<<"$body" | tr '\n' ' ')(session closed $((SECONDS - c0)) s after the read)" >&2
+
+  lines=$(docker logs "$flodni" 2>&1 | grep -F '[ReaderBudget] ' || true)
+  if [ "$(sed -n 's/.*"event":"\([a-z_]*\)".*/\1/p' <<<"$lines" | tr '\n' ' ')" != "over_margin confirmed_late " ]; then
+    echo "FAIL ($v): want [ReaderBudget] lines over_margin then confirmed_late, got: ${lines:-none}" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if ! grep -Eq '"event":"confirmed_late".*"late_ms":[0-9]+' <<<"$lines" || grep -qF "$name" <<<"$lines"; then
+    echo "FAIL ($v): the confirmed_late line lacks late_ms or carries the file name: $lines" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): $(grep -F '"event":"confirmed_late"' <<<"$lines")" >&2
+  echo "PASS ($v): a play webhook in the middle of a read past the margin is confirmed_late and counted, read intact, $((SECONDS - t0))s" >&2
+  stop_stack
+}
+
 want_variant() { [ -z "${E2E_ONLY:-}" ] || [ "$E2E_ONLY" = "$1" ]; }
 
 if want_variant default; then run_variant default; fi
@@ -1040,5 +1178,6 @@ if want_variant slow-seeder; then run_variant slow-seeder; fi
 if want_variant index-cache; then run_variant index-cache; fi
 if want_variant warm-on-add; then run_warm_on_add; fi
 if want_variant catch-up; then run_catchup; fi
+if want_variant late-confirm; then run_late_confirm; fi
 if want_variant replacement; then run_replacement; fi
 echo "e2e: all variants passed" >&2
