@@ -298,15 +298,23 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
    another is read. Unlinking one episode of a pack through the mount
    removes the whole torrent today; it should follow the same reference
    check as a library removal.
-2. **A missing cache disk means no cache.** With `warmup_dir` on a
-   separately mounted disk that is absent at start, Flodni creates the
-   directory on the filesystem underneath and fills it to the quota, and it
-   re-creates the directory at runtime if it vanishes. Flodni warns when
-   `warmup_dir` is set but the cache did not start, never re-creates the
-   directory after start, does not count a failed deletion as an eviction,
-   and says once that a read-only directory means no cache. The README
-   names the deployment side: make the start depend on the mount, keep the
-   empty mountpoint unwritable, and use a journalling filesystem.
+2. **A missing cache disk means no cache.** [FINISHED] With `warmup_dir` on
+   a separately mounted disk that is absent at start, Flodni used to create
+   the directory on the filesystem underneath and fill it to the quota, and
+   to re-create it at runtime if it vanished. Now it warns when `warmup_dir`
+   is set but the cache did not start, never re-creates the directory after
+   start, does not count a failed deletion as an eviction (and keeps the old
+   total when the quota walk cannot read the directory), serves reads from a
+   read-only directory without writing, has a fill check the directory before
+   it fetches (a distinct error, counted as write_failed), and warns when
+   `warmup_dir` shares a filesystem with its parent. A missing
+   `.dense-migrated` next to a populated cache no longer drops every head:
+   each head is checked for holes and only those go. The startup inode prune
+   has the same "the walk was whole" guard as the other prunes. The README
+   names the deployment side (the "Cache disk" section). A disk that is
+   absent at start still gets a cache on the filesystem underneath, with at
+   most a WARNING; keeping it off that filesystem is the deployment's job
+   (README, "Cache disk").
 3. **Never serve another file's bytes.** An open trusts the stub's file
    index when a warm head exists under it, and otherwise resolves the file
    by size and name, so a stub whose index is stale can be served from the
@@ -595,3 +603,13 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
   keep loading. The `warm-on-add` end-to-end variant is back to a 4 MiB tail
   window with the same assertion: 0 bytes through `fetch_block` for the 4 MiB
   tail read.
+- 2026-11-13, before a deployment relies on it, step 2: a cache disk that
+  vanishes at runtime means no cache, and one absent at start gets a cache on
+  the filesystem underneath with at most a WARNING (the deployment keeps it
+  off that, see the README's "Cache disk"). The cache directory is created at
+  start only, a failed
+  unlink is not an eviction, an unreadable directory keeps the old total, a
+  read-only directory serves reads, and a start warns when the cache did not
+  initialise or `warmup_dir` is not a separate mount. A missing
+  `.dense-migrated` checks each head for holes (`SEEK_DATA`/`SEEK_HOLE`) and
+  drops only those; the startup inode prune needs a whole walk.

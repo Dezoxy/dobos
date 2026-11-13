@@ -563,6 +563,50 @@ are off by default.
   so the rate is a lower bound. Neither counts a play whose webhook matches
   no open file.
 
+### Cache disk
+
+With `warmup_dir` on its own disk, make the disk part of the start. This is
+the deployment side; Flodni cannot tell an unmounted disk from an empty
+directory.
+
+- Make the start depend on the mount: `RequiresMountsFor=` in the systemd
+  unit, or a Compose bind mount without `create_host_path` (so Docker fails
+  instead of creating the path on the host).
+- Keep the empty mountpoint unwritable (`chattr +i` on it while nothing is
+  mounted), so a create under it fails.
+- Use a journalling filesystem (ext4 or XFS). Heads are not synced, and FAT,
+  exFAT and NTFS can expose bytes that were extended but never written after
+  an unclean unplug.
+- Restart Flodni after the disk returns. A directory that vanished at runtime
+  is not re-created, and the totals are not rebuilt without a restart.
+- Never delete `.dense-migrated` by hand. A missing marker next to a populated
+  cache now checks every head for holes at the next start and drops only
+  those (one WARNING line with the counts, and each dropped head named), so a
+  deleted marker costs a scan, not the cache; a cache that has the marker is
+  not checked. Copy a cache without sparse options (no `rsync -S`, no
+  `cp --sparse=always`), and keep the marker with the copy: a head with a
+  stored run of zeros reads as a hole. ZFS with compression does the same
+  (it stores all-zero records as holes), so with a missing marker it can drop
+  heads that hold long zero runs.
+
+What Flodni does in each case:
+
+- **Absent at start.** It creates the directory and runs on whatever
+  filesystem holds the path, with a WARNING `warmup_dir is not a separate
+  mount` when the directory already existed on its parent's filesystem. That
+  is only a hint, since a plain directory looks the same, and it does not
+  refuse to start. If the directory cannot be created, it logs a WARNING and
+  runs with no cache.
+- **Vanished at runtime.** Nothing re-creates it. Head and tail writes and
+  fills fail and log, reads miss and go to the engine, and the quota walk
+  keeps its old total instead of storing 0. A hung filesystem can still block
+  reads; there is no timeout.
+- **Read-only.** Heads already there are served (one WARNING, once); nothing
+  new is written, and a file the quota cannot unlink is neither evicted nor
+  marked evicted.
+- **Full.** Failed creates and writes are logged, nothing false is recorded,
+  and a fill reports that the file was evicted.
+
 ## Warm on add
 
 **Experimental, off by default.** With `warm_on_add` set (and `warmup_dir`
