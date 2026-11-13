@@ -118,15 +118,17 @@ Releases and deployment are scheduled separately.
    end-to-end test. Both causes were in the cache and are fixed (see the
    Done list); what the engine still leaves open is in
    [ideas.md](ideas.md).
-7. **Say when no play webhook arrives.** Three features act only on a
-   playback the media server's webhook confirmed: played-file protection,
-   the reader budget's refusal and the keep-alive below. Without a webhook
-   configured and reachable they silently do nothing. Designed, not built:
-   Flodni logs at start whether a play webhook has arrived and which of
-   those features are therefore active, and warns, also in
-   `/api/health`, when reads happen through the mount but no play webhook
-   has arrived for a number of days. The README says plainly that these
-   features need the webhook.
+7. **Say when no play webhook arrives.** [FINISHED] Three features act only
+   on a playback the media server's webhook confirmed: played-file
+   protection, the reader budget's refusal and the keep-alive below.
+   Without a webhook configured and reachable they silently do nothing.
+   Flodni logs at start whether a play webhook has matched and which of the
+   built features are active, and warns when readers play through the mount
+   but no play webhook has matched for `playback_webhook_warn_days`: a log
+   line, `warnings` in `/api/health` (advisory, never a status change) and
+   `flodni_warning{name="no_play_webhook"}`. The README's "Play webhook"
+   section says plainly that these features need the webhook. The keep-alive
+   is not part of this step; it stays designed, in step 8.
 8. **Keep a playing torrent connected.** The engine closes a torrent that
    has had no reader for its idle timeout (`TorrentDisconnectTimeout`,
    15 s by default), which keeps idle titles cheap: they neither leech nor
@@ -472,3 +474,15 @@ finished.
   `flodni_unconfirmed_read_sessions_total{outcome="confirmed_late"}` counts
   it, with the `confirmed_late` `[ReaderBudget]` line. Test only; phase b is
   designed, not built.
+- 2026-11-13, reliability step 7: Flodni says when no play webhook arrives. The
+  state database (schema 15, `daemon_marks`) keeps the last matched webhook, the
+  last unmatched webhook and the last unconfirmed reader session, written at
+  most hourly. At start a `[Webhook]` line states the last matched webhook,
+  whether played-file protection has a recorded play and whether the reader
+  budget refusal is on. When a reader session closed unconfirmed within
+  `playback_webhook_warn_days` (default 7, 0 = off) and no play webhook matched
+  in that time, a `WARNING: [Webhook]` line (marked as possibly false when
+  every caller was a known hasher or analysis tool), `warnings` in
+  `/api/health` (never changes the status or the HTTP code) and
+  `flodni_warning{name="no_play_webhook"}` report it. The README has a "Play
+  webhook" section. The keep-alive remains designed, not built.

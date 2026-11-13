@@ -127,6 +127,12 @@ type Config struct {
 	// refused or slowed.
 	RefuseUnconfirmedReads bool `json:"refuse_unconfirmed_reads"`
 
+	// PlaybackWebhookWarnDays is the window of the "no play webhook" warning
+	// (webhook_status.go): it is raised when a reader session closed unconfirmed in the
+	// last N days and no play webhook matched a file in that time. 0 turns the warning
+	// off; a negative or absurd value is replaced by the default (7). Read live.
+	PlaybackWebhookWarnDays int `json:"playback_webhook_warn_days"`
+
 	// --- External Services (V1.4.6) ---
 	Plex struct {
 		URL         string `json:"url"`
@@ -209,6 +215,7 @@ func LoadConfig() Config {
 		PlayedProtectionDays:    90,
 		UnconfirmedReadMarginMB: 64,
 		WarmCatchupPerHour:      20,
+		PlaybackWebhookWarnDays: 7,
 
 		GoStormBaseURL: "http://127.0.0.1:8090",
 		MetricsPort:    9080,
@@ -405,6 +412,12 @@ func (c *Config) finalize() {
 		c.UnconfirmedReadMarginMB = 64
 	}
 	c.UnconfirmedReadMargin = c.UnconfirmedReadMarginMB * 1024 * 1024
+
+	// Above 100 years the window is a typo, not a choice. 0 stays 0: warning off.
+	if c.PlaybackWebhookWarnDays < 0 || c.PlaybackWebhookWarnDays > 36500 {
+		log.Printf("[Config] WARNING: playback_webhook_warn_days %d is out of range; using 7", c.PlaybackWebhookWarnDays)
+		c.PlaybackWebhookWarnDays = 7
+	}
 
 	// Calculate MetadataCacheSize in bytes
 	c.MetadataCacheSize = c.MetadataCacheSizeMB * 1024 * 1024

@@ -376,6 +376,7 @@ func main() {
 					logger.Printf("WARNING: Failed to reload InodeMap from DB: %v", err)
 				}
 				registry.SetRegistryDB(stateDB)
+				webhookStatus.attach(stateDB)
 				if err := fileStates.attach(stateDB); err != nil {
 					logger.Printf("WARNING: Failed to load file state: %v (played marks stay in memory, no warm records)", err)
 				} else if gc().WarmupDir != "" {
@@ -411,6 +412,8 @@ func main() {
 			}
 		}
 	}
+
+	startWebhookStatus(webhookStatus, backgroundStopChan)
 
 	finishGlobalInodeMapInit(logger)
 

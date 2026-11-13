@@ -293,5 +293,17 @@ CREATE TABLE IF NOT EXISTS metadata_failures (
 	}
 	_, _ = d.db.Exec(`INSERT OR IGNORE INTO schema_version (version, description) VALUES (14, 'add file_state warm columns')`)
 
+	// Schema 15, additive: daemon-level times, one row per name, Unix seconds. Today:
+	// the last play webhook that matched a file, the last that did not, and the last
+	// unconfirmed reader session (webhook_status.go).
+	if _, err := d.db.Exec(`
+		CREATE TABLE IF NOT EXISTS daemon_marks (
+		    name TEXT PRIMARY KEY,
+		    at   INTEGER NOT NULL
+		)`); err != nil {
+		return err
+	}
+	_, _ = d.db.Exec(`INSERT OR IGNORE INTO schema_version (version, description) VALUES (15, 'add daemon_marks table')`)
+
 	return nil
 }

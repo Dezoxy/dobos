@@ -88,6 +88,75 @@ is set and returns status words only. The image's health check runs
 exits 0 on HTTP 200 and 1 otherwise; run it with
 `docker exec <container> flodni healthcheck`.
 
+The body also carries `warnings`, an array that is always present and is `[]`
+when nothing is wrong. Its one value today is `no_play_webhook`, an advisory:
+it never changes `status` or the HTTP code, so a deployment without a play
+webhook stays healthy. The array is computed from memory, without a check.
+See "Play webhook" below for what raises it.
+
+## Play webhook
+
+Some features act on a play that the media server reports by webhook, and do
+nothing without one. A webhook that never arrives, is refused by the token
+check or matches no file looks exactly like a library nobody plays: nothing
+fails, the features are just inactive.
+
+| Feature | Needs the webhook to | State |
+| --- | --- | --- |
+| Played-file protection (see "Warmup cache eviction") | mark a file played, so eviction ranks it last | Built |
+| Reader budget refusal (see "Reader budget") | arm: refusal starts at the first matched play webhook after start, and a webhook confirms a play | Built, opt-in, off by default (`refuse_unconfirmed_reads`) |
+| Keep-alive of a confirmed play | hold a confirmed play's resources across pauses | Designed, not built |
+
+- **Set it up.** Point the media server's webhook at
+  `http://<host>:<metrics_port>/plex/webhook` (Plex) or `/webhook`
+  (Jellyfin). With `api_token` set, the URL needs `?token=<token>`, because
+  these servers cannot send headers; without it every webhook is answered
+  401 and nothing is counted. A webhook counts when it is a play or resume
+  of a movie or an episode. It is matched when it resolves to one file of
+  the library.
+- **Check it.** The startup line, `[Webhook]`, says when the last matched
+  play webhook arrived (`never` if none), whether played-file protection has
+  a recorded play (`active`) or not (`inactive`), whether the reader budget
+  refusal is `off` or `on` (it arms at the first matched play webhook after
+  that start, never from a stored time), and the warning window. At run time
+  `flodni_playback_webhooks_received_total{matched}` counts the webhooks and
+  `flodni_playback_webhook_last_timestamp_seconds{matched}` is the time of the
+  last of each kind (0 = none seen). `matched="false"` moving while
+  `matched="true"` does not means webhooks arrive but resolve to no file.
+  A webhook refused for a missing or wrong token logs
+  `[Control] 401 POST /plex/webhook from <address>` (or `/webhook`).
+- **The warning.** It is raised when a reader session crossed
+  `unconfirmed_read_margin_mb` and closed with no play confirmed within
+  `playback_webhook_warn_days`, and no matched play webhook arrived in that
+  time (a webhook never received counts). It appears as `no_play_webhook` in
+  the `warnings` array of `/api/health`, as
+  `flodni_warning{name="no_play_webhook"}` set to 1, and as one
+  `WARNING: [Webhook]` log line when it turns on (one more line when it
+  clears, none while it holds). It is re-evaluated hourly and when such a
+  session closes. A session that crossed the margin is one the budget
+  counted; see "Reader budget" for what counts.
+- **A false warning.** A hasher, a copy or a media server's analysis pass
+  also closes as an unconfirmed session, so the warning can fire in a
+  library where nobody played anything and none was expected. When every
+  such session since start (or since the last matched webhook) came from a
+  process named like a known hasher or analysis tool (`md5sum`, `sha1sum`,
+  `sha224sum`, `sha256sum`, `sha384sum`, `sha512sum`, `b2sum`, `cksum`,
+  `xxhsum`, `ffprobe`, `mediainfo`), the log line says it is possibly a false
+  warning. The warning still fires; nothing is excluded. The name is empty
+  for a reader in another PID namespace (a media server in its own
+  container), which then counts as unknown, so the note appears only for
+  tools run where Flodni can see the process. The process name is
+  not known for times restored from a restart, so a restart removes that
+  note. A file smaller than the head and tail windows plus the margin never
+  crosses the margin, so a library of only small files stays silent.
+- **`playback_webhook_warn_days`** in `config.json` (default 7, read live; 0
+  turns the warning off, the startup line and the series stay; a negative or
+  absurd value is logged and replaced by 7).
+- **State.** The three times (last matched webhook, last unmatched webhook,
+  last unconfirmed session) are in the state database table `daemon_marks`
+  (schema 15), written at most once an hour each. With the state database
+  off they live since start and are gone at restart.
+
 ## Readability record
 
 `GET /api/torrents/health` on the control port lists what Flodni has
@@ -404,7 +473,8 @@ are off by default.
 - **State.** The marks are in the state database table `file_state` (schema
   13): the last play and whether the quota evicted the file. Schema 14 adds
   the experimental per-file record (see "Per-file records") to the same
-  rows. Eviction removes bytes only; the readability record stays. A torrent
+  rows; schema 15 adds `daemon_marks`, three daemon times (see "Play
+  webhook"). Eviction removes bytes only; the readability record stays. A torrent
   removed from the library loses its marks, and a startup prune after a
   complete library scan drops the marks of torrents that left it.
 - **Log line.** Each evicted file logs one line, `[WarmupEvict] ` followed by
@@ -628,6 +698,9 @@ scraper on the same host or Docker network.
 | `flodni_warmup_files` | gauge | `window` | Media files with a warm window on disk now: `head` counts heads at or above the 1 MiB ready floor, `tail` counts tails fully covered. Only with the cache enabled. |
 | `flodni_playback_starts_total` | counter | none | Playbacks the media server webhook confirmed (not playing to playing). |
 | `flodni_playback_webhooks_received_total` | counter | `matched` | Play and resume webhooks for a movie or an episode; `matched` is `true` when the webhook resolved to one file, else `false`. |
+| `flodni_playback_webhook_last_timestamp_seconds` | gauge | `matched` | Unix time of the last play or resume webhook for a movie or an episode, `matched` as above; 0 = none seen. Persisted hourly with the state database. See Play webhook. |
+| `flodni_unconfirmed_read_last_session_timestamp_seconds` | gauge | none | Unix time of the last session that crossed `unconfirmed_read_margin_mb` and closed unconfirmed; 0 = none seen. |
+| `flodni_warning` | gauge | `name` | 1 while an advisory warning holds, else 0. `no_play_webhook`: see Play webhook. Never affects `/api/health` status. |
 | `flodni_unconfirmed_read_bytes_total` | counter | none | Bytes past the head and tail windows that readers took from files with no confirmed playback, whichever path served them. Not bytes downloaded. See Reader budget. |
 | `flodni_unconfirmed_read_sessions_total` | counter | `outcome` | Sessions that crossed `unconfirmed_read_margin_mb`, each counted once when it closes: `confirmed_late` if a webhook confirmed the file afterwards, else `unconfirmed`. |
 | `flodni_unconfirmed_read_refused_reads_total` | counter | none | Reads the reader budget refused with EIO. Moves only with `refuse_unconfirmed_reads` on. See Reader budget. |

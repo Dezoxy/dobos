@@ -194,8 +194,9 @@ type TTFFSession struct {
 	unconfirmedCache atomic.Int64
 	overMarginAt     atomic.Int64
 	confirmedLateAt  atomic.Int64
-	budgetResolved   atomic.Bool   // sessions_total counted (CAS-once)
-	callerPid        atomic.Uint32 // the latest Open's caller, from the FUSE context
+	budgetResolved   atomic.Bool            // sessions_total counted (CAS-once)
+	callerPid        atomic.Uint32          // the latest Open's caller, from the FUSE context
+	overMarginComm   atomic.Pointer[string] // the caller's process name when the session crossed the margin
 	callerUID        atomic.Uint32
 
 	// budgetFloor is the tally when a webhook last confirmed the file: refusal counts
