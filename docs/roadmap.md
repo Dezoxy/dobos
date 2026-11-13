@@ -322,9 +322,9 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
    page-aligned starts a page before an N MiB tail window, and that page
    comes from the engine instead of the cache. The end-to-end test measured
    12 KiB so. The tail window's start is rounded down to a page boundary.
-5. **End-to-end variants as parallel jobs.** CI runs each variant on its
-   own runner, so wall time stays near the longest variant as variants are
-   added, and variants can no longer collide on container names.
+5. **End-to-end variants as parallel jobs.** [FINISHED] CI runs each variant
+   on its own runner, so wall time stays near the longest variant as variants
+   are added, and variants can no longer collide on container names.
 6. **Free cache space on request.** The quota is read once at start, and a
    lower quota evicts only when a new head is written. A call evicts down to
    a given size now, in the normal order: never-played files first, oldest
@@ -574,6 +574,10 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
   the file under 1 s while a reader is held. The test found that a held read
   froze every new open of the file; #133 fixed it. The pump park rests on
   fake-engine tests only.
+- 2026-11-13, readiness step 5: CI runs each end-to-end variant on its own
+  runner (a matrix after the image job, which hands over both images as an
+  artifact), and one job named `End-to-end` fails if any variant failed; it is
+  the check to require.
 - 2026-11-13, before a deployment relies on it, step 7: removal by hash
   (`POST /api/library/remove`), the already-present check of an add and the
   reference check before a torrent is dropped match the full 40-hex hash in each

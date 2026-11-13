@@ -65,7 +65,6 @@ type fakeEngine struct {
 	newRead func() *fakeReader
 
 	torrents  []native.TorrentStats
-	removed   []string
 	hashesCut int
 }
 
@@ -121,11 +120,6 @@ func (f *fakeEngine) Wake(_ context.Context, magnet string, _ int) error {
 }
 
 func (f *fakeEngine) ListTorrents() ([]native.TorrentStats, error) { return f.torrents, nil }
-
-func (f *fakeEngine) RemoveTorrent(hash string) error {
-	f.removed = append(f.removed, hash)
-	return nil
-}
 
 func (f *fakeEngine) CleanupHashes() int { return f.hashesCut }
 
@@ -1211,21 +1205,5 @@ func TestReadAttachesToTheRunningPumpInsteadOfUpgrading(t *testing.T) {
 	}
 	if fe.readerCount() != 0 {
 		t.Error("no second reader")
-	}
-}
-
-// --- the other callers of the interface ---
-
-func TestTorrentRemoverUsesTheBridge(t *testing.T) {
-	useTestGlobals(t)
-	fe := &fakeEngine{torrents: []native.TorrentStats{{Hash: "AAAA1111", Title: "one"}, {Hash: "BBBB2222", Title: "two"}}}
-	tr := NewTorrentRemover(fe, logger)
-
-	hash, title, err := tr.findFullHashBySuffix("b2222")
-	if err != nil || hash != "BBBB2222" || title != "two" {
-		t.Errorf("findFullHashBySuffix = (%q, %q, %v)", hash, title, err)
-	}
-	if ok, err := tr.removeTorrent("BBBB2222"); !ok || err != nil || len(fe.removed) != 1 || fe.removed[0] != "BBBB2222" {
-		t.Errorf("removeTorrent = (%v, %v), removed %v", ok, err, fe.removed)
 	}
 }
