@@ -248,3 +248,56 @@ func TestPruneSparesAFreshWarmRow(t *testing.T) {
 		t.Fatalf("dropped %v", dropped)
 	}
 }
+
+// A database at schema 15 gains queued_at once, keeps its rows and round-trips the
+// column (roadmap step 8).
+func TestMigrationAddsQueuedAt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v15.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`CREATE TABLE schema_version (version INTEGER PRIMARY KEY, description TEXT, applied_at INTEGER DEFAULT 0)`,
+		`INSERT INTO schema_version (version, description) VALUES (15, 'x')`,
+		`CREATE TABLE file_state (hash TEXT NOT NULL, file_idx INTEGER NOT NULL,
+			last_played_at INTEGER NOT NULL DEFAULT 0, evicted_at INTEGER NOT NULL DEFAULT 0,
+			readability TEXT NOT NULL DEFAULT '', cache_state TEXT NOT NULL DEFAULT '',
+			failed_attempts INTEGER NOT NULL DEFAULT 0, first_failed_at INTEGER NOT NULL DEFAULT 0,
+			last_attempt_at INTEGER NOT NULL DEFAULT 0, last_swarm_delivery_at INTEGER NOT NULL DEFAULT 0,
+			warm_updated_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (hash, file_idx))`,
+		`INSERT INTO file_state (hash, file_idx, readability, cache_state) VALUES ('old', 3, 'warmed', 'cached')`,
+	} {
+		if _, err := raw.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = raw.Close()
+	for i := 0; i < 2; i++ {
+		d, err := New(path, nopLogger{})
+		if err != nil {
+			t.Fatalf("open %d: %v", i, err)
+		}
+		var v int
+		if err := d.db.QueryRow(`SELECT COUNT(*) FROM schema_version WHERE version = 16`).Scan(&v); err != nil || v != 1 {
+			t.Fatalf("open %d: version 16 rows = %d, err %v", i, v, err)
+		}
+		old := states(t, d)[FileKey{"old", 3}]
+		if old.QueuedAt != 0 || old.Readability != "warmed" || old.Cache != "cached" {
+			t.Fatalf("open %d: old row = %+v", i, old)
+		}
+		if err := d.SaveFileWarm(FileWarm{Hash: "NEW", FileIdx: 1, QueuedAt: 123, UpdatedAt: 9}); err != nil {
+			t.Fatal(err)
+		}
+		if n := states(t, d)[FileKey{"new", 1}]; n.QueuedAt != 123 {
+			t.Fatalf("open %d: new row = %+v", i, n)
+		}
+		if err := d.SaveFileWarm(FileWarm{Hash: "NEW", FileIdx: 1, Cache: "lost", UpdatedAt: 10}); err != nil {
+			t.Fatal(err)
+		}
+		if n := states(t, d)[FileKey{"new", 1}]; n.QueuedAt != 0 || n.Cache != "lost" {
+			t.Fatalf("open %d: a save without queued_at must clear it: %+v", i, n)
+		}
+		_ = d.Close()
+	}
+}

@@ -305,5 +305,14 @@ CREATE TABLE IF NOT EXISTS metadata_failures (
 	}
 	_, _ = d.db.Exec(`INSERT OR IGNORE INTO schema_version (version, description) VALUES (15, 'add daemon_marks table')`)
 
+	// Schema 16, additive: the time warm on add queued the file, Unix seconds, 0 when
+	// the file is not waiting for an attempt. Cleared when an attempt records an outcome;
+	// a row older than an hour is a file warm on add never finished (warm_catchup_scope).
+	if err := d.addColumn("file_state", "queued_at",
+		`ALTER TABLE file_state ADD COLUMN queued_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	_, _ = d.db.Exec(`INSERT OR IGNORE INTO schema_version (version, description) VALUES (16, 'add file_state.queued_at')`)
+
 	return nil
 }

@@ -24,6 +24,7 @@ type FileState struct {
 	LastAttemptAt       int64
 	LastSwarmDeliveryAt int64
 	WarmUpdatedAt       int64
+	QueuedAt            int64
 }
 
 // FileWarm is the warm record of one media file, as SaveFileWarm replaces it.
@@ -37,16 +38,17 @@ type FileWarm struct {
 	FirstFailedAt       int64
 	LastAttemptAt       int64
 	LastSwarmDeliveryAt int64
+	QueuedAt            int64 // 0 when the file is not waiting for an attempt
 	UpdatedAt           int64
 }
 
-// SaveFileWarm upserts the warm columns of one file. It never touches
+// SaveFileWarm upserts the warm columns (queued_at included) of one file. It never touches
 // last_played_at or evicted_at: the marks and the record have separate writers.
 func (d *DB) SaveFileWarm(w FileWarm) error {
 	_, err := d.db.Exec(`
 		INSERT INTO file_state (hash, file_idx, readability, cache_state, failed_attempts,
-			first_failed_at, last_attempt_at, last_swarm_delivery_at, warm_updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			first_failed_at, last_attempt_at, last_swarm_delivery_at, queued_at, warm_updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(hash, file_idx) DO UPDATE SET
 			readability = excluded.readability,
 			cache_state = excluded.cache_state,
@@ -54,9 +56,10 @@ func (d *DB) SaveFileWarm(w FileWarm) error {
 			first_failed_at = excluded.first_failed_at,
 			last_attempt_at = excluded.last_attempt_at,
 			last_swarm_delivery_at = excluded.last_swarm_delivery_at,
+			queued_at = excluded.queued_at,
 			warm_updated_at = excluded.warm_updated_at`,
 		strings.ToLower(w.Hash), w.FileIdx, w.Readability, w.Cache, w.FailedAttempts,
-		w.FirstFailedAt, w.LastAttemptAt, w.LastSwarmDeliveryAt, w.UpdatedAt)
+		w.FirstFailedAt, w.LastAttemptAt, w.LastSwarmDeliveryAt, w.QueuedAt, w.UpdatedAt)
 	return err
 }
 
@@ -113,7 +116,7 @@ func (d *DB) ClearFileEvicted(hash string, fileIdx int) error {
 func (d *DB) LoadFileStates() ([]FileState, error) {
 	rows, err := d.db.Query(`
 		SELECT hash, file_idx, last_played_at, evicted_at, readability, cache_state, failed_attempts,
-			first_failed_at, last_attempt_at, last_swarm_delivery_at, warm_updated_at
+			first_failed_at, last_attempt_at, last_swarm_delivery_at, warm_updated_at, queued_at
 		FROM file_state ORDER BY hash, file_idx`)
 	if err != nil {
 		return nil, err
@@ -123,7 +126,7 @@ func (d *DB) LoadFileStates() ([]FileState, error) {
 	for rows.Next() {
 		var s FileState
 		if err := rows.Scan(&s.Hash, &s.FileIdx, &s.LastPlayedAt, &s.EvictedAt, &s.Readability, &s.Cache,
-			&s.FailedAttempts, &s.FirstFailedAt, &s.LastAttemptAt, &s.LastSwarmDeliveryAt, &s.WarmUpdatedAt); err != nil {
+			&s.FailedAttempts, &s.FirstFailedAt, &s.LastAttemptAt, &s.LastSwarmDeliveryAt, &s.WarmUpdatedAt, &s.QueuedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
