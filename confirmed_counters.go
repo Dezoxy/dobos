@@ -14,6 +14,10 @@ var keepaliveCounters struct {
 	idleCloses [2]atomic.Int64
 	reopens    [2]atomic.Int64
 	stalls     [2]atomic.Int64
+	// Keep-alive hold (phase b), in keepalive.go: releases by reason (0 stop, 1
+	// ceiling) and torrents that lost to the cap.
+	releases [2]atomic.Int64
+	evicted  atomic.Int64
 }
 
 func confirmedIdx(confirmed bool) int {
@@ -23,18 +27,62 @@ func confirmedIdx(confirmed bool) int {
 	return 0
 }
 
-// confirmedHashes is the set of torrent hashes with a confirmed playback, rebuilt at
-// most once a second like playbackOpenCache: scanners register thousands of paths and
-// the idle ticker asks every second, so a walk per call would be quadratic. A webhook
-// can therefore take up to a second to show in the label.
+// confirmedHashes is the per-torrent snapshot of confirmed playback, rebuilt at most
+// once a second like playbackOpenCache: scanners register thousands of paths and the
+// idle ticker asks every second, so a walk per call would be quadratic. A torrent is in
+// it when a file of it is confirmed and not stopped; its value is the last activity of
+// those files, the later of the last read and the last play/resume webhook (a pause
+// does not touch either). A webhook that confirms or stops a file zeroes `at`
+// (invalidateConfirmed), so those take effect at once; a read shows within a second.
+// The map is replaced, never changed in place, so a caller may use it after unlocking.
 var (
 	confirmedHashesNow = time.Now
 	confirmedHashes    struct {
 		mu  sync.Mutex
 		at  time.Time
-		set map[string]struct{}
+		gen uint64
+		set map[string]time.Time
 	}
 )
+
+// confirmedSnapshot returns the current snapshot and its generation, rebuilding it when
+// it is over a second old. It takes no engine lock.
+func confirmedSnapshot() (map[string]time.Time, uint64, time.Time) {
+	confirmedHashes.mu.Lock()
+	defer confirmedHashes.mu.Unlock()
+	now := confirmedHashesNow()
+	if confirmedHashes.set == nil || now.Sub(confirmedHashes.at) >= time.Second {
+		set := make(map[string]time.Time)
+		playbackRegistry.Range(func(_, v any) bool {
+			ps, ok := v.(*PlaybackState)
+			if !ok || ps.Hash == "" {
+				return true
+			}
+			ps.mu.RLock()
+			live := ps.IsHealthy && !ps.IsStopped
+			last := ps.ConfirmedAt
+			if ps.LastReadAt.After(last) {
+				last = ps.LastReadAt
+			}
+			ps.mu.RUnlock()
+			if cur, seen := set[ps.Hash]; live && (!seen || last.After(cur)) {
+				set[ps.Hash] = last
+			}
+			return true
+		})
+		confirmedHashes.set, confirmedHashes.at = set, now
+		confirmedHashes.gen++
+	}
+	return confirmedHashes.set, confirmedHashes.gen, now
+}
+
+// invalidateConfirmed makes the next lookup rebuild the snapshot. The webhook handler
+// calls it after a confirm or a stop.
+func invalidateConfirmed() {
+	confirmedHashes.mu.Lock()
+	confirmedHashes.at = time.Time{}
+	confirmedHashes.mu.Unlock()
+}
 
 // hashConfirmed reports whether any file of the torrent has a webhook-confirmed
 // playback. It takes no engine lock, so the idle-close hook may call it.
@@ -42,20 +90,8 @@ func hashConfirmed(hash string) bool {
 	if hash == "" {
 		return false
 	}
-	confirmedHashes.mu.Lock()
-	defer confirmedHashes.mu.Unlock()
-	now := confirmedHashesNow()
-	if confirmedHashes.set == nil || now.Sub(confirmedHashes.at) >= time.Second {
-		set := make(map[string]struct{})
-		playbackRegistry.Range(func(_, v any) bool {
-			if ps, ok := v.(*PlaybackState); ok && ps.Hash != "" && ps.GetStatus() {
-				set[ps.Hash] = struct{}{}
-			}
-			return true
-		})
-		confirmedHashes.set, confirmedHashes.at = set, now
-	}
-	_, ok := confirmedHashes.set[hash]
+	set, _, _ := confirmedSnapshot()
+	_, ok := set[hash]
 	return ok
 }
 

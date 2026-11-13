@@ -130,7 +130,7 @@ fails, the features are just inactive.
 | --- | --- | --- |
 | Played-file protection (see "Warmup cache eviction") | mark a file played, so eviction ranks it last | Built |
 | Reader budget refusal (see "Reader budget") | arm: refusal starts at the first matched play webhook after start, and a webhook confirms a play | Built, opt-in, off by default (`refuse_unconfirmed_reads`) |
-| Keep-alive of a confirmed play | hold a confirmed play's resources across pauses | Designed, not built |
+| Keep-alive of a confirmed play (see "Keep-alive") | confirm the play, so its torrent is not closed for idleness | Built, on by default (`playback_keepalive_minutes`) |
 
 - **Set it up.** Point the media server's webhook at
   `http://<host>:<metrics_port>/plex/webhook` (Plex) or `/webhook`
@@ -143,7 +143,10 @@ fails, the features are just inactive.
   play webhook arrived (`never` if none), whether played-file protection has
   a recorded play (`active`) or not (`inactive`), whether the reader budget
   refusal is `off` or `on` (it arms at the first matched play webhook after
-  that start, never from a stored time), and the warning window. At run time
+  that start, never from a stored time), the warning window, and the
+  keep-alive settings (`keep-alive: on (15 min ..., max 4 torrents)`, with
+  `inactive until a play webhook matches` while none has matched, or
+  `keep-alive: off`). At run time
   `flodni_playback_webhooks_received_total{matched}` counts the webhooks and
   `flodni_playback_webhook_last_timestamp_seconds{matched}` is the time of the
   last of each kind (0 = none seen). `matched="false"` moving while
@@ -181,6 +184,70 @@ fails, the features are just inactive.
   last unconfirmed session) are in the state database table `daemon_marks`
   (schema 15), written at most once an hour each. With the state database
   off they live since start and are gone at restart.
+
+## Keep-alive
+
+Built (Reliability step 8), on by default. The engine closes a torrent that
+has had no reader for its idle timeout (15 s unless the engine's settings say
+otherwise), which keeps idle titles cheap. A media server reads in bursts, and
+a direct play or a throttled transcoder can wait longer than that between
+reads; the torrent then closes and the next read reopens it with a new
+announce and a new search for peers. The keep-alive stops the close while a
+play is confirmed.
+
+- **What it holds.** A torrent is not closed for idleness while a file of it
+  has a webhook-confirmed playback that is not stopped. It needs the play
+  webhook: with none configured, reachable and matching, nothing is confirmed
+  and the keep-alive silently does nothing. See "Play webhook". A reader with
+  no confirmed playback, a library scan, warm on add and catch-up keep the
+  plain idle close. The hold is decided from the playback state each time the
+  engine would close the torrent, so a torrent that was closed and reopened
+  is held again and nothing is left to clear. It only suppresses a close: it
+  adds no tracker, DHT, PEX or wake, so a private torrent gets nothing it
+  would not have had.
+- **How it ends.** A stop webhook releases the torrent at once; the engine
+  then closes it after the stop's 30 s grace. Otherwise it ends
+  `playback_keepalive_minutes` after the last activity, which is the later of
+  the last read of the file and the last play or resume webhook. A pause
+  webhook does not extend it, so a pause longer than the ceiling costs one
+  reconnect on resume. A missed stop webhook is covered by the same ceiling.
+  A read of a confirmed file whose stop never arrived (a scanner touching it)
+  starts the ceiling again.
+- **The cap.** At most `playback_keepalive_max_torrents` torrents are held at
+  once. The most recently active win; a torrent over the cap falls back to the
+  plain idle close and is counted once in `flodni_keepalive_evicted_total`.
+  The ranking counts every confirmed playback, including torrents that still
+  have a reader and so need no hold, so the held gauge can sit below the cap.
+  Each held torrent keeps its engine cache, up to `CacheSize` (default
+  128 MB), and its peer connections. Size the cap so that cap x `CacheSize`
+  stays well under the container's memory limit: four held torrents at 512 MB
+  is about 2 GB. The read-ahead cache is one global budget and does not grow
+  with the number of plays. A held torrent keeps uploading what its cache
+  holds, under the configured limits, for the play plus the ceiling.
+- **The off switch.** `playback_keepalive_minutes` (default 15, read live) is
+  the one switch: 0 turns the keep-alive off and every torrent idle-closes, a
+  confirmed one included (priority no longer holds a torrent open). A negative
+  value or one over 1440 is logged and replaced by 15. A ceiling above 15
+  minutes is cut short when no handle is open, because the playback state is
+  dropped 15 minutes after the last activity.
+  `playback_keepalive_max_torrents` (default 4, read live) is the cap, never a
+  switch: its minimum is 1, and 0 or a negative value is logged and replaced
+  by 4.
+- **Metrics.** `flodni_keepalive_held_torrents` (gauge),
+  `flodni_keepalive_releases_total{reason="stop|ceiling"}` and
+  `flodni_keepalive_evicted_total`, all present from 0; and
+  `flodni_torrent_idle_closes_total{confirmed}` and
+  `flodni_torrent_reopens_total{confirmed}` to see whether confirmed plays
+  still close. The `[Webhook]` startup line states the effective settings.
+- **Limits.** The 15 s idle timeout still applies to a torrent with no
+  confirmed playback. The read-ahead pump's own 2 hour idle limit for a
+  confirmed session is unchanged, and an open stream still restarts its engine
+  reader every idle timeout; neither is part of the keep-alive. The state is
+  rebuilt at most once a second, so a read shows in the hold within a second;
+  a stop or a confirming webhook takes effect at once. Tested by unit tests
+  and by the end-to-end `keep-alive` variant (a confirmed torrent is held
+  through two idle windows and released by a stop webhook); the ceiling is
+  unit-tested only.
 
 ## Readability record
 
@@ -965,10 +1032,13 @@ scraper on the same host or Docker network.
 | `flodni_warm_catchup_scope` | gauge | `scope` | The `warm_catchup_scope` the last catch-up pass ran with: 1 for `all` or `retries`, 0 for the other; both 0 before the first pass. |
 | `flodni_warmup_files` | gauge | `window` | Media files with a warm window on disk now: `head` counts heads at or above the 1 MiB ready floor, `tail` counts tails fully covered. Only with the cache enabled. |
 | `flodni_playback_starts_total` | counter | none | Playbacks the media server webhook confirmed (not playing to playing). |
-| `flodni_torrent_idle_closes_total` | counter | `confirmed` | Torrents the engine closed because no reader had them for the idle timeout. `confirmed` is `true` when a file of the torrent had a webhook-confirmed playback; the label is refreshed once a second. Both values present from 0. Counts only; nothing is held open yet (Reliability step 8, phase a). |
+| `flodni_torrent_idle_closes_total` | counter | `confirmed` | Torrents the engine closed because no reader had them for the idle timeout. `confirmed` is `true` when a file of the torrent had a webhook-confirmed playback; the label is refreshed once a second. Both values present from 0. With the keep-alive on, a torrent it holds is not counted; see Keep-alive. |
 | `flodni_torrent_reopens_total` | counter | `confirmed` | Closed torrents a read on an open handle woke again; the wake at open is not counted. `confirmed` as above. |
 | `flodni_wake_refused_total` | counter | none | Wakes the engine refused because it keeps no record of the torrent: one per handle at a read, one per open. Not a failed read and not a dead swarm. 0 from start. See "A stub the engine does not store". |
 | `flodni_read_stalls_total` | counter | `confirmed` | Served reads that took over one second; failed reads are not counted. `confirmed` as above. Independent of sessions. |
+| `flodni_keepalive_releases_total` | counter | `reason` | Holds that ended: `stop` (a stop webhook, or the playback state dropped) or `ceiling` (`playback_keepalive_minutes` after the last activity). The torrent then closes at its next idle check. Both values present from 0. See Keep-alive. |
+| `flodni_keepalive_evicted_total` | counter | none | Confirmed torrents that lost their hold to `playback_keepalive_max_torrents`, once per episode. Present from 0. |
+| `flodni_keepalive_held_torrents` | gauge | none | Idle torrents the keep-alive is keeping open now (a torrent with a reader is not counted). |
 | `flodni_playback_webhooks_received_total` | counter | `matched` | Play and resume webhooks for a movie or an episode; `matched` is `true` when the webhook resolved to one file, else `false`. |
 | `flodni_playback_webhook_last_timestamp_seconds` | gauge | `matched` | Unix time of the last play or resume webhook for a movie or an episode, `matched` as above; 0 = none seen. Persisted hourly with the state database. See Play webhook. |
 | `flodni_unconfirmed_read_last_session_timestamp_seconds` | gauge | none | Unix time of the last session that crossed `unconfirmed_read_margin_mb` and closed unconfirmed; 0 = none seen. |
