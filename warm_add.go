@@ -112,33 +112,41 @@ func addWarmerDeps(x *fileStateIndex, stop <-chan struct{}) warmer.Deps {
 	}
 }
 
-// addWarmFillSamples is flodni_warm_fills_total{trigger="add"}: every outcome, 0 until
-// it happens. Emitted in the same family as the mount series.
+// addWarmFillSamples is flodni_warm_fills_total{trigger="add"} and {trigger="catchup"}:
+// every outcome of each, 0 until it happens. Emitted in the same family as the mount
+// series.
 func addWarmFillSamples(st warmer.Stats) []promtext.Sample {
-	out := make([]promtext.Sample, 0, len(warmer.Outcomes))
-	for _, o := range warmer.Outcomes {
-		out = append(out, promSample(st.Fills[o], lbl("trigger", warmer.Trigger), lbl("outcome", o)))
+	out := make([]promtext.Sample, 0, len(warmer.Triggers)*len(warmer.Outcomes))
+	for _, t := range warmer.Triggers {
+		for _, o := range warmer.Outcomes {
+			out = append(out, promSample(st.ByTrigger[t].Fills[o], lbl("trigger", t), lbl("outcome", o)))
+		}
 	}
 	return out
 }
 
 // collectAddWarmProm writes the warmer's other families.
 func collectAddWarmProm(w *promtext.Writer, st warmer.Stats) {
+	var bytes []promtext.Sample
+	for _, t := range warmer.Triggers {
+		bytes = append(bytes,
+			promSample(st.ByTrigger[t].HeadBytes, lbl("trigger", t), lbl("window", "head")),
+			promSample(st.ByTrigger[t].TailBytes, lbl("trigger", t), lbl("window", "tail")))
+	}
 	w.Counter("flodni_warm_fill_bytes_total",
-		"Bytes warm on add wrote to the head and tail windows, also by fills that did not finish.",
-		promSample(st.HeadBytes, lbl("trigger", warmer.Trigger), lbl("window", "head")),
-		promSample(st.TailBytes, lbl("trigger", warmer.Trigger), lbl("window", "tail")))
+		"Bytes warm on add and catch-up wrote to the head and tail windows, by trigger, also by fills that did not finish.",
+		bytes...)
 	cf := make([]promtext.Sample, 0, len(warmer.CacheFailureReasons))
 	for _, r := range warmer.CacheFailureReasons {
 		cf = append(cf, promSample(st.CacheFailures[r], lbl("reason", r)))
 	}
 	w.Counter("flodni_warm_cache_failures_total",
-		"Warm on add attempts that lost a window or could not write it, by reason: lost (windows gone with no quota eviction mark) and write_failed. Retried at 10 minutes, 1 hour and 6 hours.",
+		"Warm on add and catch-up attempts that lost a window or could not write it, by reason: lost (windows gone with no quota eviction mark) and write_failed. Retried at 10 minutes, 1 hour and 6 hours.",
 		cf...)
-	w.Gauge("flodni_warm_queue_files", "Files waiting for warm on add.", promSample(int64(st.QueueFiles)))
+	w.Gauge("flodni_warm_queue_files", "Files waiting for warm on add or catch-up.", promSample(int64(st.QueueFiles)))
 	paused := int64(0)
 	if st.Paused {
 		paused = 1
 	}
-	w.Gauge("flodni_warm_paused", "1 while warm on add is paused for a playback.", promSample(paused))
+	w.Gauge("flodni_warm_paused", "1 while warm on add and catch-up are paused for a playback.", promSample(paused))
 }

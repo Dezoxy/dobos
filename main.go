@@ -706,6 +706,8 @@ func main() {
 			MovieSection: gc().Plex.LibraryID,
 			TVSection:    gc().Plex.TVLibraryID,
 		})
+		// Catch-up (idle unless warm_on_add is on): warms the titles already filed.
+		startCatchup(libMgr)
 		libHandler := library.NewHandler(libMgr)
 		mux.HandleFunc("/api/library/add", libHandler.Add)
 		mux.HandleFunc("/api/library/remove", libHandler.Remove)

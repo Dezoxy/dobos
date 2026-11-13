@@ -6,6 +6,12 @@
 //
 // The queue is in memory: a restart forgets it, and the per-file record says which files
 // were never warmed. Two workers take one hash at a time. Playback pauses all of it.
+//
+// Catch-up (Readiness step 3) is a second trigger on the same queue: AddCatchup takes
+// files of the library that were never warmed, and the Feeder in catchup.go hands them in
+// one hash at a time, slowly, only while the warmer is idle. A catch-up file never
+// evicts, asks for room before it wakes anything, and leaves the pass when the cache is
+// full. Which files are candidates, and the passes, are the daemon's (warm_catchup.go).
 package warmer
 
 import (
@@ -292,7 +298,7 @@ func (w *Warmer) Add(hash string, files []File) {
 // AddCatchup queues files of the library that were never warmed (Readiness step 3) and
 // returns how many it took, queued already included. Unlike Add it never clears a
 // removal's tombstone: a removed hash is not a candidate. A file of the hash that warm
-// on add has queued stays an add file. Nothing calls it yet.
+// on add has queued stays an add file. The Feeder (catchup.go) is its only caller.
 func (w *Warmer) AddCatchup(hash string, files []File) int {
 	if w == nil || !w.d.Enabled() {
 		return 0

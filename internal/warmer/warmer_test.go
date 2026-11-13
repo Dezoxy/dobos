@@ -336,6 +336,8 @@ func TestResumedFillKeepsTheEarlierDeliveryTime(t *testing.T) {
 	if u.Readability != ReadWarmed || !u.DeliveredAt.Equal(t20) {
 		t.Fatalf("record = %+v, want warmed with the 20:00 delivery", u)
 	}
+	// The stamp follows the record by a moment.
+	e.until("the per-torrent stamp", func() bool { e.mu.Lock(); defer e.mu.Unlock(); return len(e.reads) > 0 })
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if len(e.reads) != 1 || !e.reads[0].at.Equal(t20) || e.reads[0].hash != "aa" {

@@ -201,7 +201,10 @@ finished.
    evicted is not warmed again; it is left to its next play. A failed warm
    is retried no sooner than most of a day later and a capped number of
    times; after that the record keeps the evidence and the warmer leaves the
-   file alone.
+   file alone. Built, not finished: the feeder, the pass loop (one pass one
+   pace interval after start, then every 6 hours), `warm_catchup_per_hour` and
+   the metrics exist and are tested against fakes; the end-to-end variant that
+   proves a pass against the real engine is not written.
 4. **A byte budget for readers that are not playback.** Phase a is built:
    Flodni counts the bytes a file serves, from the engine or the read-ahead
    cache, to a session with no confirmed playback, past its two windows, and
@@ -364,6 +367,22 @@ finished.
   sha256 and are served from `warmup_head` and `warmup_tail` only. Quota
   pressure, the pause and the wake of a closed torrent, and removal while
   queued stay on unit tests. Step 2 is finished.
+- 2026-11-13, readiness step 3, PR A: the seams of catch-up in the warmer, with
+  no caller: a room-only fill that asks the cache for room before anything is
+  fetched, a per-file trigger so a catch-up file never evicts, the feeder that
+  hands one title at a time to an idle warmer, and a refusal the feeder can tell
+  from a busy engine.
+- 2026-11-13, readiness step 3, PR B: catch-up is wired. With `warm_on_add`,
+  `warmup_dir` and the state database in place, a pass one pace interval after
+  start and every 6 hours lists the stubs and feeds the files that are not warm
+  on disk, not evicted and not failing, newest first, at `warm_catchup_per_hour`
+  (default 20, 0 off, read on each feed). It never evicts and ends the pass at
+  a full cache; a failed file waits 20 hours and is given up after 4 failed
+  attempts, computed from the record with no new state. New series:
+  `flodni_warm_fills_total{trigger="catchup"}`,
+  `flodni_warm_fill_bytes_total{trigger="catchup"}` and
+  `flodni_warm_catchup_files{state}`. Tested against fakes; the end-to-end
+  variant (PR C) is not written, so step 3 is not finished.
 - 2026-11-12, readiness step 4, phase a: Flodni counts bytes past the head and
   tail windows that the engine or the read-ahead cache serve to a session with
   no confirmed playback, logs each session once at the margin

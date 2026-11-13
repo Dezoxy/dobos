@@ -10,8 +10,8 @@ import (
 	"flodni/internal/warmup"
 )
 
-// Catch-up (Readiness step 3), PR A: the per-file trigger and the pre-flight. Nothing
-// calls AddCatchup yet; these tests drive it directly.
+// Catch-up (Readiness step 3), PR A: the per-file trigger and the pre-flight. These
+// tests drive AddCatchup directly, without the feeder.
 
 // catchupFill answers the RoomOnly pre-flight with pre and every other call with real.
 func (e *env) catchupFill(pre func() (warmup.FillResult, error), real func(warmup.FillRequest) (warmup.FillResult, error)) {

@@ -7,7 +7,7 @@ import "time"
 // cache has no room or its disk misbehaves. It only paces and stops: which files are
 // candidates is the caller's list, and every fill, wake and record is the warmer's, so
 // a catch-up file is woken only through Deps.WakeStored and never evicts (hard rule 3,
-// docs/roadmap.md). Nothing starts it yet.
+// docs/roadmap.md). The daemon runs it from warm_catchup.go.
 
 // States of the files a pass left, the keys of PassResult.Left.
 const (

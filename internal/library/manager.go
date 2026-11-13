@@ -235,6 +235,9 @@ type Item struct {
 	FileIndex int    `json:"file_index"`
 	Season    int    `json:"season,omitempty"`
 	Episode   int    `json:"episode,omitempty"`
+	// ModTime is the stub's mtime, which orders the catch-up feeder (newest first). It
+	// is not part of the API answer.
+	ModTime time.Time `json:"-"`
 }
 
 var (
@@ -1062,6 +1065,7 @@ func (m *Manager) List(kind string) ([]Item, error) {
 		items = append(items, Item{
 			Path: path, FusePath: m.fusePath(path), Size: st.Size, Hash: st.Hash,
 			IMDB: st.IMDB, FileIndex: st.FileIndex, Season: season, Episode: episode,
+			ModTime: info.ModTime(),
 		})
 		return nil
 	})

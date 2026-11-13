@@ -147,12 +147,12 @@ on. Three things write it. In index mode (`warmup_dir` set), a read through
 the mount that leaves a file's head and tail windows both complete records the
 file. In any cache mode, a quota eviction records `cache: evicted`, also for a
 file with no earlier record. With `warm_on_add` set, the warmer records every
-attempt (see "Warm on add"). A file nobody opened and the warmer never tried
-has no record. A file whose windows were already complete before this version
-may have none until a later read writes
-to them. A torrent with records and no failure row is
-listed with `consecutive_failures` 0 and nulls, unless `?failing` or
-`?min_failures` is set; those keep their per-torrent meaning.
+attempt, its catch-up included (see "Warm on add"). A file nobody opened and
+the warmer never tried has no record. A file whose windows were already
+complete before this version may have none until a later read writes to them.
+A torrent with records and no failure row is listed with
+`consecutive_failures` 0 and nulls, unless `?failing` or `?min_failures` is
+set; those keep their per-torrent meaning.
 
 | Field | Meaning |
 |---|---|
@@ -294,10 +294,10 @@ whole media files, head and tail together. Files never played go first, then
 played files; each class goes oldest written first. This is built and runs
 today. The cache also keeps an in-memory list of which files are warm; it is
 internal and not served, and only the aggregates below are exported
-(`flodni_warmup_files`). What is not built: catch-up at startup (designed in
-`docs/roadmap.md`), and evicting the least recently read file (an idea in
-`docs/ideas.md`, not planned). Warm on add, which fills windows on its own, is
-described in its own section below; it is off by default.
+(`flodni_warmup_files`). What is not built: evicting the least recently read
+file (an idea in `docs/ideas.md`, not planned). Warm on add and its catch-up,
+which fill windows on their own, are described in their own section below; both
+are off by default.
 
 - **Played** means a playback confirmed by the media server webhook (Plex or
   Jellyfin), never a scanner's read. A webhook marks at most one file: a
@@ -359,7 +359,11 @@ while queued are covered by unit tests only.
   tail per file, `warmup_head_size_mb` and `warmup_tail_size_mb`) from the
   swarm for every file of every title added, played or not. A private tracker
   may count that download against the account; that is why it is off by
-  default. A pack added episode by episode warms each episode.
+  default. A pack added episode by episode warms each episode. Catch-up (below)
+  does the same for the titles already in the library, until the cache is full
+  (about 190 files at the default 15 GB at a time; room freed by evictions is
+  filled again), so it can cost a private tracker one download per not-warm
+  title.
 - **Switch.** `warm_on_add` is read at each add, so a change saved in the
   control panel applies to the next add. Switching it off drops the queue and
   stops a running fill at its next check. It works only with `warmup_dir` set
@@ -370,7 +374,8 @@ while queued are covered by unit tests only.
   in-memory queue (4096 files; over that a file is dropped and counted as
   `dropped_queue_full`). Two workers take one title at a time and fill each
   file's windows in 4 MiB chunks, writing only verified bytes. A restart
-  forgets the queue; nothing re-queues files that were not warmed yet.
+  forgets the queue; catch-up (below) feeds the files that were not warmed yet
+  in a later pass.
 - **Pause.** While a read-ahead pump runs, or a playback the media server
   confirmed (or that the read pattern shows) still has an open file, the
   warmer stops. A running fill stops at its next check, up to one fetch (8 s)
@@ -395,20 +400,20 @@ while queued are covered by unit tests only.
   A read through the mount on a closed torrent has the same narrow window.
   It is not closed yet (`docs/ideas.md`).
 - **Outcomes.** One per file attempt, the `outcome` label of
-  `flodni_warm_fills_total{trigger="add"}`:
+  `flodni_warm_fills_total{trigger="add"}` and `{trigger="catchup"}`:
 
 | Outcome | `readability` | `cache` | Per-torrent record |
 |---|---|---|---|
 | `warmed`: windows complete and a swarm delivery time is known | `warmed` | `cached` | `last_swarm_read_at` set to the delivery time, failure count reset |
 | `present`: complete, no delivery time | `present` | `cached` | untouched |
 | `already_warm`: the windows were complete | unchanged (`warmed` if this file's own earlier attempt delivered) | `cached` | stamped only in that case |
-| `no_room` | unchanged | `dropped_quota` or `dropped_no_evidence` | untouched |
+| `no_room` | unchanged | `dropped_quota` or `dropped_no_evidence`; catch-up records nothing | untouched |
 | `failed`: a chunk did not verify in time | `failed`, `failed_attempts` +1 | unchanged | untouched |
 | `evicted`: quota eviction took the windows during the fill | unchanged | `evicted`, not retried | untouched |
 | `lost`: the windows vanished with no eviction mark | unchanged (`warmed` if a delivery was seen) | `lost` | stamped if `warmed` |
 | `write_failed`: another error, such as a failed write | as `lost` | `write_failed` | as `lost` |
 | `wake_error`, `dropped_queue_full` | nothing recorded | | |
-| `skipped`: a file left behind after a `wake_error`, or after a `failed` with no peers or no running torrent | nothing recorded | | |
+| `skipped`: a file left behind after a `wake_error`, after a `failed` with no peers or no running torrent, or (catch-up) after a `no_room` of the same title | nothing recorded | | |
 
 - **Delivery time.** The time kept is the latest swarm delivery seen across
   the attempts of a file, so a fill paused at 20:00 and finished at 23:00 from
@@ -417,24 +422,79 @@ while queued are covered by unit tests only.
   nothing.
 - **Retries.** `lost` and `write_failed` are retried from memory after 10
   minutes, 1 hour and 6 hours, then left alone
-  (`flodni_warm_cache_failures_total` makes a failing disk visible). After a
+  (`flodni_warm_cache_failures_total` makes a failing disk visible); catch-up
+  tries such a file again after 20 hours. After a
   timeout with no peers, or a torrent the engine did not have running, the rest
-  of that title's files are skipped without a record; they are not retried.
+  of that title's files are skipped without a record; warm on add does not
+  retry them, and catch-up (below) picks them up in a later pass.
 - **Log line.** Each attempt logs one line, `[Warm] ` followed by a JSON
-  object: `hash` (full), `file` (index), `trigger` (`add`), `outcome` (also
-  `stopped` and `cancelled` for fills that recorded nothing), `cache`,
-  `reason`, `head_bytes`, `tail_bytes`, `delivered_pieces`, `delivered_at`,
+  object: `hash` (full), `file` (index), `trigger` (`add` or `catchup`),
+  `outcome` (also `stopped` and `cancelled` for fills that recorded nothing),
+  `cache`, `reason`, `head_bytes`, `tail_bytes`, `delivered_pieces`, `delivered_at`,
   `evicted` (files evicted for room) and `duration_ms`. It carries no path.
-- **Metrics.** `flodni_warm_fills_total{trigger="add",outcome}` (every outcome
-  from 0), `flodni_warm_fill_bytes_total{trigger,window}`,
-  `flodni_warm_cache_failures_total{reason}`, `flodni_warm_queue_files` and
-  `flodni_warm_paused`.
+- **Catch-up.** Experimental, tested against fakes (the end-to-end variant is
+  not written yet). It warms the titles that are already in the library: the
+  ones filed before `warm_on_add` was on, and the ones whose warm failed or was
+  dropped. It runs only with `warm_on_add` on, `warmup_dir` set and the state
+  database attached (without the database an eviction mark would not survive a
+  restart). With `warm_on_add` off it does nothing; with it on and `warmup_dir`
+  or the database missing, Flodni logs one warning and does nothing. The first pass
+  starts one interval after the daemon starts (3 minutes at the default
+  pace), then a pass starts 6 hours after the previous one ended, from a fresh
+  walk of the stubs; two passes never run at once.
+  - **Pace.** `warm_catchup_per_hour` (default 20) is the files started per
+    hour, read on each feed, so a change in the control panel applies to a
+    running pass. `0` turns catch-up and its day-scale retries off; a negative
+    value is logged and replaced by 20. A pace raised from 0, or `warm_on_add`
+    switched on, takes effect at the next pass: up to 6 hours later, or at a
+    restart. A pass feeds one title at a time, newest stub first, only while
+    the warmer is idle, so it holds at most one of the two workers: an add is
+    never queued behind a backlog, and a playback pauses it like any fill.
+  - **Which files.** A file is skipped when both windows are complete on disk
+    (the disk decides, not the record; a record without `cache: cached` is
+    written, with no wake). It is never warmed when its `cache` is `evicted`,
+    or it carries an eviction mark or time, including a file evicted before
+    schema 14: eviction is left to its next play. A file that failed 4 times
+    is given up on; only a read through the mount that the swarm serves, or an
+    add again, makes it eligible. A file attempted under 20 hours ago waits,
+    and so does its whole title when any file of it failed under 20 hours ago
+    (a no-peers failure skips the rest of a pack without a record). A title the
+    engine refused to wake (`not_stored`, for example a stub the engine never
+    stored) waits for a play. Everything else is a candidate: no record,
+    `dropped_quota`, `dropped_no_evidence`, `lost`, `write_failed`, and a
+    record that says `cached` while the disk does not.
+  - **Never evicts.** It checks for room before it wakes anything. At a full
+    cache the pass ends: the file is counted `no_room`, nothing is recorded, and
+    `flodni_warm_catchup_files{state="left_no_room"}` holds what the pass left.
+    A pass also ends after three cache-side failures (`lost`, `write_failed`)
+    of its own files.
+  - **Retries.** There is no new state: the 20 hours and the 4 failed
+    attempts are computed from `last_attempt_at` and `failed_attempts`, so the
+    6-hour pass picks a failed file up once its 20 hours are over. The
+    in-memory retries of a cache-side loss (10 minutes, 1 hour, 6 hours) stay;
+    after them only the 20-hour wait applies, with no cap.
+  - **Closed torrents.** It wakes only through the same check as warm on add
+    (the engine must still store the torrent), never from the stub's magnet.
+  - **Log.** Its attempts log `[Warm]` lines with `"trigger":"catchup"`, and a
+    pass logs one `[WarmCatchup]` JSON line at its start and one at its end,
+    with counts only (no path).
+- **Metrics.** `flodni_warm_fills_total{trigger,outcome}` (`add` and
+  `catchup`, every outcome from 0),
+  `flodni_warm_fill_bytes_total{trigger,window}`,
+  `flodni_warm_cache_failures_total{reason}`, `flodni_warm_queue_files`,
+  `flodni_warm_paused` and `flodni_warm_catchup_files{state}`, the backlog as
+  of the last pass: `pending` (also what a pass left because it was stopped, the
+  pace was set to 0 or its disk failed), `retry_wait`, `gave_up`, `evicted`,
+  `not_stored` and `left_no_room`. Already warm files and files a pass found
+  no longer candidates are not counted.
 - **Limits.** The queue and the retries are in memory. The eviction time is
-  kept in whole seconds. Catch-up for files added before the switch was on is
-  not built. Without the state database it still fills, evicts nothing, and
-  its records stay in memory and are not served. A wake that fails for a
-  passing reason (the engine busy) also skips the title; nothing retries it
-  until catch-up exists.
+  kept in whole seconds. Without the state database the add warmer still fills,
+  evicts nothing, and its records stay in memory and are not served; catch-up
+  does not run. A wake that fails for a passing reason (the engine busy) also
+  skips the title; catch-up feeds it again in a later pass, once its 20 hours
+  are over if an attempt was recorded. A title removed and added again while
+  `warm_on_add` was off keeps its removal mark until a restart: catch-up lists
+  it as `pending` every pass and feeds nothing.
 
 ## Metrics
 
@@ -474,11 +534,12 @@ scraper on the same host or Docker network.
 | `flodni_warmup_cache_quota_bytes` | gauge | none | Its size limit; only with the cache enabled. |
 | `flodni_warmup_evictions_total` | counter | `window` | Files removed by quota eviction, `head` or `tail`. |
 | `flodni_warmup_evicted_bytes_total` | counter | `window` | Their apparent size in bytes. |
-| `flodni_warm_fills_total` | counter | `trigger`, `outcome` | Warm fills. `trigger="mount"`: per-file records the mount path wrote, `outcome` `warmed` (the engine holds a swarm delivery stamp) or `cached` (it does not); needs the state database and index mode. `trigger="add"`: warm on add attempts, `outcome` as in "Warm on add", every value present from 0. |
-| `flodni_warm_fill_bytes_total` | counter | `trigger`, `window` | Bytes warm on add wrote, `window` `head` or `tail`, also by fills that did not finish. |
-| `flodni_warm_cache_failures_total` | counter | `reason` | Warm on add attempts that lost a window or could not write it: `lost` or `write_failed`. |
-| `flodni_warm_queue_files` | gauge | none | Files waiting for warm on add. |
-| `flodni_warm_paused` | gauge | none | 1 while warm on add is paused for a playback. |
+| `flodni_warm_fills_total` | counter | `trigger`, `outcome` | Warm fills. `trigger="mount"`: per-file records the mount path wrote, `outcome` `warmed` (the engine holds a swarm delivery stamp) or `cached` (it does not); needs the state database and index mode. `trigger="add"` and `trigger="catchup"`: warm on add and catch-up attempts, `outcome` as in "Warm on add", every value present from 0. |
+| `flodni_warm_fill_bytes_total` | counter | `trigger`, `window` | Bytes warm on add and catch-up wrote, `window` `head` or `tail`, also by fills that did not finish. |
+| `flodni_warm_cache_failures_total` | counter | `reason` | Warm on add and catch-up attempts that lost a window or could not write it: `lost` or `write_failed`. |
+| `flodni_warm_queue_files` | gauge | none | Files waiting for warm on add or catch-up. |
+| `flodni_warm_paused` | gauge | none | 1 while warm on add and catch-up are paused for a playback. |
+| `flodni_warm_catchup_files` | gauge | `state` | Library files catch-up has not warmed, as of the last pass: `pending`, `retry_wait`, `gave_up`, `evicted`, `not_stored`, `left_no_room`; every state present from 0. See "Warm on add". |
 | `flodni_warmup_files` | gauge | `window` | Media files with a warm window on disk now: `head` counts heads at or above the 1 MiB ready floor, `tail` counts tails fully covered. Only with the cache enabled. |
 | `flodni_playback_starts_total` | counter | none | Playbacks the media server webhook confirmed (not playing to playing). |
 | `flodni_playback_webhooks_received_total` | counter | `matched` | Play and resume webhooks for a movie or an episode; `matched` is `true` when the webhook resolved to one file, else `false`. |
