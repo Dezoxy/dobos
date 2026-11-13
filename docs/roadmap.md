@@ -495,3 +495,10 @@ finished.
   close after a webhook that arrived while the torrent was closed
   (`idle_closes{confirmed="true"}` at least 1). Phase b flips that
   assertion to 0.
+- 2026-11-13, bug fix: a new open of a file no longer waits for a slow read
+  of that file. The mount returned open flags 0, so the kernel dropped the
+  file's cached pages at every open and waited for each page a read in flight
+  held (a 15 s budget hold, a 30 s slot wait, fetch retries). Open now returns
+  `FOPEN_KEEP_CACHE` when another handle of the path is live; the first open
+  still drops the cache. Unit tests pin the flag; the real-kernel check is the
+  budget-refusal variant's open probe, not yet in `main`.

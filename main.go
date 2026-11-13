@@ -827,7 +827,7 @@ func main() {
 			// MaxReadAhead:             1024 * 1024,
 			MaxReadAhead:             4 * 1024 * 1024, // Samba Turbo: 4MB read-ahead
 			RememberInodes:           true,            // ENABLED: safe with explicit cache control
-			ExplicitDataCacheControl: true,            // PREVENTS kernel freezes during invalidation
+			ExplicitDataCacheControl: true,            // attribute-driven invalidation only, not open-time
 			SyncRead:                 false,           // ENABLED ASYNC READS for 4K performance
 			// NFS Export: Stable filesystem identification
 			FsName: "flodni",
