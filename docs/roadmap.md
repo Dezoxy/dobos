@@ -118,6 +118,47 @@ Releases and deployment are scheduled separately.
    end-to-end test. Both causes were in the cache and are fixed (see the
    Done list); what the engine still leaves open is in
    [ideas.md](ideas.md).
+7. **Say when no play webhook arrives.** [FINISHED] Three features act only
+   on a playback the media server's webhook confirmed: played-file
+   protection, the reader budget's refusal and the keep-alive below.
+   Without a webhook configured and reachable they silently do nothing.
+   Flodni logs at start whether a play webhook has matched and which of the
+   built features are active, and warns when readers play through the mount
+   but no play webhook has matched for `playback_webhook_warn_days`: a log
+   line, `warnings` in `/api/health` (advisory, never a status change) and
+   `flodni_warning{name="no_play_webhook"}`. The README's "Play webhook"
+   section says plainly that these features need the webhook. The keep-alive
+   is not part of this step; it is step 8.
+8. **Keep a playing torrent connected.** [FINISHED] The engine closes a
+   torrent that has had no reader for its idle timeout
+   (`TorrentDisconnectTimeout`, 15 s by default), which keeps idle titles
+   cheap: they neither leech nor seed. A media server reads in bursts, and a
+   direct play or a throttled transcoder can wait longer than that between
+   reads. The torrent then closes and the next read reopens it, with a new
+   announce and a new search for peers; on a swarm of a few seeders each
+   reopening costs seconds. A play webhook used to mark the torrent as not to
+   expire, but the mark sat on the engine's torrent object: it was set only
+   if the torrent was loaded when the webhook arrived, and a reopened torrent
+   came back without it. Phase a counts the engine's idle closes, the
+   reopens of a closed torrent for a read, and the reads slower than one
+   second, each split by whether a file of the torrent had a
+   webhook-confirmed playback, and adds them to the session record. Phase b
+   is built (2026-11-13): while a file has a confirmed playback its torrent is
+   not closed for idleness. The hold is decided at the moment of expiry from
+   the playback state, so it survives a reopening, and it replaces the old
+   mark for the idle timeout. A stop webhook ends it at once; otherwise it
+   ends 15 minutes after the last read or play or resume webhook
+   (`playback_keepalive_minutes`, the one off switch: 0 is off), and a pause
+   does not extend it. At most 4 torrents are held at once
+   (`playback_keepalive_max_torrents`; the cap times the engine's
+   per-torrent cache must stay well under the memory limit), and a torrent
+   over the cap falls back to the plain idle close. Releases are counted by
+   reason and losses to the cap are counted. It is on by default, and the
+   effective settings are logged at start next to the webhook status of step
+   7. A reader with no confirmed playback, a scan, warm on add and catch-up
+   keep the plain idle close, and a held torrent gets no tracker or peer
+   source it would not have had. Tested by unit tests and the end-to-end
+   `keep-alive` variant; the 15 minute ceiling is unit-tested only.
 
 ## Readability evidence
 
@@ -179,41 +220,169 @@ finished.
    failed, never read) is built on the readability record. Evicting the
    least recently read file is not built: it waits for those counters (see
    ideas).
-2. **Warm on add.** After a library add returns, a background queue with a
-   small fixed worker pool fills the head and tail windows of each new file
-   through the verified path, straight from the engine and not through the
-   mount. At a full quota it may evict only files never played, oldest
-   first, and it checks for room before it fetches; with none left, or with
-   no evidence of plays (state database off, or no play ever recorded), it
-   drops the new file and counts it. It is off by default, pauses while a
-   playback session is open and records each outcome per file in the
-   readability record; only pieces the swarm delivered count as success. The
-   end-to-end test adds a fixture, waits, stops the seeder and reads both
-   windows back.
-3. **Catch-up and retries.** At startup the warmer queues the library files
-   it has never warmed, at a configurable pace, so a bulk import is worked
-   off across restarts without a persistent queue. Catch-up never evicts: at
+2. **Warm on add.** [FINISHED] After a library add returns, a background
+   queue with a small fixed worker pool fills the head and tail windows of
+   each new file through the verified path, straight from the engine and not
+   through the mount. At a full quota it may evict only files never played,
+   oldest first, and it checks for room before it fetches; with none left,
+   or with no evidence of plays (state database off, or no play ever
+   recorded), it drops the new file and counts it. It is off by default
+   (`warm_on_add`), pauses while a playback session is open and records each
+   outcome per file in the readability record; only pieces the swarm
+   delivered count as success. The end-to-end test (`warm-on-add`) adds a
+   fixture with the switch on and reads nothing through the mount, waits for
+   the fill, checks the metric, the `[Warm]` line, the per-file row and the
+   torrent record, stops the seeder and reads both windows back from the
+   SSD against the seeder's hashes. Pause, wake of a closed torrent and
+   removal while queued rest on unit tests (see ideas).
+3. **Catch-up and retries.** [FINISHED] A pass one pace interval after
+   start, then every 6 hours, feeds the library files the warmer has never
+   warmed to it, at a configurable pace, so a bulk import is worked off
+   across restarts without a persistent queue. Catch-up never evicts: at
    a full quota it stops and counts what it left. A file the cache has
    evicted is not warmed again; it is left to its next play. A failed warm
    is retried no sooner than most of a day later and a capped number of
    times; after that the record keeps the evidence and the warmer leaves the
-   file alone.
-4. **A byte budget for readers that are not playback.** Phase a is built:
-   Flodni counts the bytes a file serves, from the engine or the read-ahead
-   cache, to a session with no confirmed playback, past its two windows, and
-   logs each session once when it crosses a margin
+   file alone. The end-to-end test (`catch-up`) adds a fixture with the switch
+   off and sees no catch-up, turns it on and restarts the daemon, waits for the
+   pass to warm the title with no read through the mount, restarts again and
+   sees a pass with nothing to do, then stops the seeder and reads both windows
+   back from the SSD. The quota stop, the exclusion of evicted files, the
+   overwrite of a stale eviction mark and the 20-hour rule rest on unit tests.
+4. **A byte budget for readers that are not playback.** [FINISHED] Phase a is
+   built: Flodni counts the bytes a file serves, from the engine or the
+   read-ahead cache, to a session with no confirmed playback, past its two
+   windows, and logs each session once when it crosses a margin
    (`unconfirmed_read_margin_mb`); it measures only and refuses nothing.
-   Phase b is designed, not built: an opt-in switch that stops fetching from
-   the swarm for such a reader past the budget and serves only what is
-   cached. The budget lifts as soon as a session registers, applies only once
-   a matched playback webhook has been seen since start
+   Phase b is built, opt-in and off by default (`refuse_unconfirmed_reads`):
+   past the budget it stops fetching from the swarm for such a reader and
+   serves only what is cached; a refused read waits 15 s for a webhook, then
+   fails with EIO, and the pump is parked, not cancelled. It is tested against
+   a fake engine and end to end (`budget-refusal`, below); the pump park is
+   fake-engine only. The budget lifts as soon as a session registers, applies
+   only once a matched playback webhook has been seen since start
    (`flodni_playback_webhooks_received_total{matched="true"}`), and a refusal
    never counts as a failed read in the readability record. Entry condition
    for phase b: the end-to-end test sends a play webhook in the middle of an
    unconfirmed read that has crossed the margin, and shows the read
    completes, `flodni_unconfirmed_read_sessions_total{outcome="confirmed_late"}`
    counts it and `flodni_playback_webhooks_received_total{matched="true"}`
-   counts the webhook. Until then those counters rest on unit tests only.
+   counts the webhook. That condition is met: the end-to-end variant
+   `late-confirm` does exactly that. The end-to-end variant `budget-refusal`
+   runs the refusal against the real mount: a scan is cut with EIO at the
+   windows plus the margin (20 to 32 MiB of a 150 MiB file), with one
+   `refused` line and no failed read, the seeder is asked for nothing more,
+   a late play lifts the hold, and a stop gives the next reader a fresh
+   margin; while a reader is held, other opens and reads of the file answer
+   in under 1 s. The pump park rests on fake-engine tests only. The step is
+   finished; the switch stays off by default, and the owner turns it on after
+   reading `late_ms` and `matched="false"` on the host.
+
+## Before a deployment relies on it
+
+These came out of reviews of the removal path, the cache directory and the
+file mapping. Steps 1 to 4 should land before a deployment depends on
+Flodni; steps 5 to 7 can land at any time. Step 8 is owner-ordered ahead of
+the move to a deployment. The steps marked [FINISHED] are built, the others
+are designed, not built.
+
+1. **One wake path, and removals that stay removed.** [FINISHED] The mount's
+   open and its read-time rewake used to wake a closed torrent from a bare
+   magnet without checking that the engine still stores it; only warm on
+   add's `WakeStored` checked. A handle left open across a removal could then
+   re-add the hash on its next read, with no stored metainfo, so a private
+   torrent got DHT and PEX until its metainfo arrived (hard rule 3), and a
+   removed torrent could be stored again. Built (unit-tested; tests that need
+   the engine or the mount run on Linux only): unlinking one episode of a pack
+   through the mount follows the library's reference check (#138); a library add
+   is saved at once and the startup counts the stubs the engine does not store
+   (#136); every wake goes through one path, `torr.LoadStored`, that adds a
+   torrent from the engine's stored record alone and refuses a hash with no
+   record or no metainfo (a refusal answers `EIO`, is counted in
+   `flodni_wake_refused_total` and recorded as the reason `not_stored`, never as
+   a dead swarm); and a load, a save and a removal are serialised in the engine,
+   so a removal racing a wake leaves the torrent neither loaded nor stored.
+   Explicit adds (`add`, upload, `/stream?link=`) stay adds. The end-to-end
+   variant `removal` runs it against the real mount and engine: four movies are
+   filed, one is read in the background, a descriptor is open on a second, and
+   two are removed through the library API back to back and the third with `rm`
+   through the mount. The read title keeps its sha256, the engine answers 404
+   for the three at once and again after its idle timeout, the read on the open
+   descriptor at an uncached offset fails with `EIO` and is counted as a
+   refused wake (not a failed read, no dead-swarm verdict, reason `not_stored`),
+   and no index-cache file of the three remains.
+2. **A missing cache disk means no cache.** [FINISHED] With `warmup_dir` on
+   a separately mounted disk that is absent at start, Flodni used to create
+   the directory on the filesystem underneath and fill it to the quota, and
+   to re-create it at runtime if it vanished. Now it warns when `warmup_dir`
+   is set but the cache did not start, never re-creates the directory after
+   start, does not count a failed deletion as an eviction (and keeps the old
+   total when the quota walk cannot read the directory), serves reads from a
+   read-only directory without writing, has a fill check the directory before
+   it fetches (a distinct error, counted as write_failed), and warns when
+   `warmup_dir` shares a filesystem with its parent. A missing
+   `.dense-migrated` next to a populated cache no longer drops every head:
+   each head is checked for holes and only those go. The startup inode prune
+   has the same "the walk was whole" guard as the other prunes. The README
+   names the deployment side (the "Cache disk" section). A disk that is
+   absent at start still gets a cache on the filesystem underneath, with at
+   most a WARNING; keeping it off that filesystem is the deployment's job
+   (README, "Cache disk").
+3. **Never serve another file's bytes.** [FINISHED] An open trusted the
+   stub's file index when a warm head existed under it, and otherwise
+   resolved the file by size and name, so a stub whose index was stale could
+   be served from the wrong file. Flodni's own stubs resolve to themselves; a
+   stale index needs a stub from elsewhere or a rare tie in the file order.
+   `flodni_stub_index_mismatch_total` counts the paths whose resolved index
+   differs from the stub's, once each. The warmer (warm on add and catch-up)
+   refuses a file whose engine length differs from the stub's size
+   (outcome `index_mismatch`, not retried, no swarm evidence). With the
+   torrent in the engine, or its saved record (read without a wake) lists the
+   files, a warm head is used only when the file at the stub's index has the
+   stub's length; otherwise the open resolves by size and name against that
+   list, and fails with `EIO` when no file has the stub's length. With no
+   list, the head is trusted only if it is no longer than the stub's file.
+   File ids come from the engine's own list, and hashes are lower-cased. One
+   hole stays, in `docs/ideas.md`.
+4. **Align the tail window to a page.** [FINISHED] The kernel reads whole
+   4 KiB pages, so a read of exactly the last N MiB of a file whose size is
+   not page-aligned starts a page before an N MiB tail window, and that page
+   came from the engine instead of the cache. The end-to-end test measured
+   12 KiB so. The tail window's start is rounded down to a page boundary
+   (`warmup.TailStart`, used by the writers, the readers, the fills and the
+   reader budget), so the window grows by up to 4095 bytes. Covers written
+   before (exactly the configured size from the end) still load and serve
+   their own window as complete; they lack the leading page, which comes from
+   the engine as before.
+5. **End-to-end variants as parallel jobs.** [FINISHED] CI runs each variant
+   on its own runner, so wall time stays near the longest variant as variants
+   are added, and variants can no longer collide on container names.
+6. **Free cache space on request.** [FINISHED] The quota is read once at
+   start, and a lower quota evicts only when a new head is written.
+   `POST /api/warmup/evict` evicts down to a given size now, in the normal
+   order: never-played files first, oldest first, and played files only after
+   them.
+7. **Remove by the full hash.** [FINISHED] Removal by hash matched stub names
+   on eight hex digits; stubs from older tools carry the first or the last
+   eight, so some were missed, and a stub of another torrent could match. It
+   matches the full hash in the stub's own link instead, as do the
+   already-present check of an add and the reference check before a torrent is
+   dropped.
+8. **Catch-up scope: retries only.** [FINISHED] `warm_catchup_scope` is
+   `"all"` (the default: every library file not warm, evicted or failing) or
+   `"retries"`. With warm on add on and no backlog to walk, a file warm on add
+   timed out on, dropped for quota, failed to wake or lost to a restart was
+   never tried again. With `"retries"`, catch-up feeds only files warm on add
+   attempted and did not finish: a failed read (the same 20 hour wait and 4
+   failed attempts), `dropped_quota`, `dropped_no_evidence`, `lost`,
+   `write_failed`, and a file warm on add queued over an hour ago with no
+   outcome recorded (a restart mid-warm, a wake error, a full queue). The
+   queued time is `file_state.queued_at` (schema 16), written when warm on add
+   enqueues and cleared when any attempt records an outcome. Files never
+   attempted are left alone. The evidence rules do not change: a retried read
+   the swarm served, failed or not, counts as today; `dropped_quota`,
+   `write_failed`, `lost` and a refused wake never count as swarm evidence and
+   never touch the readability or the per-torrent streak.
 
 ## Done
 
@@ -331,6 +500,61 @@ finished.
   failed and that were never read, refreshed every 60 s. A head recreated at
   offset 0 over a stale size entry no longer leaves a hole. Warm on add and
   catch-up are not built.
+- 2026-11-12, readiness step 2, phase a: the per-file warm record. The engine
+  stamps each piece with the time it completed (RAM storage, so a stamp is a
+  swarm delivery), and a read through the mount that leaves a file's head
+  and tail windows complete records the file in the state database (schema
+  14) as `warmed` with the delivery time, or `cached` when no stamp exists.
+  `GET /api/torrents/health` serves the records as an experimental `files`
+  array, and `flodni_warm_fills_total{trigger="mount"}` counts them. Nothing
+  fills windows on its own yet: the warmer, its `warm_on_add` setting and its
+  outcomes are not built.
+- 2026-11-12, readiness step 2, PR 3b: the warmer. With `warm_on_add` (off by
+  default, needs `warmup_dir`) a library add that wrote stubs queues each new
+  file; two workers fill its head and tail windows in the background, pause
+  while a playback is open, wake a closed torrent only if the engine still
+  stores it, evict only never-played files and only with evidence of plays, and
+  record each outcome per file (`present`, `failed`, `dropped_quota`,
+  `dropped_no_evidence`, `evicted`, `lost`, `write_failed`; `warmed` also stamps
+  `last_swarm_read_at`). Cache-side failures retry in memory at 10 minutes, 1
+  hour and 6 hours. New series: `flodni_warm_fills_total{trigger="add"}`,
+  `flodni_warm_fill_bytes_total`, `flodni_warm_cache_failures_total`,
+  `flodni_warm_queue_files`, `flodni_warm_paused`. Tested against fakes; the
+  end-to-end test (PR 4) is not written, so step 2 is not finished.
+- 2026-11-13, readiness step 2, PR 4: the end-to-end variant `warm-on-add`
+  runs the warmer against the real engine and the real FUSE mount (a 16 MiB
+  head window and an 8 MiB tail window). Before any mount read the warm fill
+  is counted as `warmed` and `flodni_read_bytes_total` is 0; after the seeder
+  is killed an 8 MiB head read and a 4 MiB tail read match the seeder's
+  sha256 and are served from `warmup_head` and `warmup_tail` only. Quota
+  pressure, the pause and the wake of a closed torrent, and removal while
+  queued stay on unit tests. Step 2 is finished.
+- 2026-11-13, readiness step 3, PR A: the seams of catch-up in the warmer, with
+  no caller: a room-only fill that asks the cache for room before anything is
+  fetched, a per-file trigger so a catch-up file never evicts, the feeder that
+  hands one title at a time to an idle warmer, and a refusal the feeder can tell
+  from a busy engine.
+- 2026-11-13, readiness step 3, PR B: catch-up is wired. With `warm_on_add`,
+  `warmup_dir` and the state database in place, a pass one pace interval after
+  start and every 6 hours lists the stubs and feeds the files that are not warm
+  on disk, not evicted and not failing, newest first, at `warm_catchup_per_hour`
+  (default 20, 0 off, read on each feed). It never evicts and ends the pass at
+  a full cache; a failed file waits 20 hours and is given up after 4 failed
+  attempts, computed from the record with no new state. New series:
+  `flodni_warm_fills_total{trigger="catchup"}`,
+  `flodni_warm_fill_bytes_total{trigger="catchup"}` and
+  `flodni_warm_catchup_files{state}`. Tested against fakes; the end-to-end
+  variant (PR C) is not written, so step 3 is not finished.
+- 2026-11-13, readiness step 3, PR C: the end-to-end variant `catch-up` runs
+  catch-up against the real engine across daemon restarts. With `warm_on_add`
+  off nothing is logged and every series is 0. After `config.json` is
+  rewritten and the daemon restarted, the first pass warms the title: one
+  `trigger="catchup"` fill, every `trigger="add"` outcome 0, bytes above 0,
+  `flodni_read_bytes_total` 0, one `[Warm]` line and a `warmed`, `cached` row.
+  A second restart finds `pending` 0, feeds nothing and leaves the row alone;
+  with the seeder killed, the windows read back from the SSD match the
+  seeder's sha256. The quota stop, the eviction exclusion, the stale-mark
+  overwrite and the 20-hour rule stay on unit tests. Step 3 is finished.
 - 2026-11-12, readiness step 4, phase a: Flodni counts bytes past the head and
   tail windows that the engine or the read-ahead cache serve to a session with
   no confirmed playback, logs each session once at the margin
@@ -353,3 +577,123 @@ finished.
   announce, a minute later. `MarkComplete` now evicts down to capacity
   before the engine records the piece. 0 of 40 `default` runs stalled,
   against 4 of 24 before.
+- 2026-11-13, readiness step 4, entry condition for phase b: the end-to-end
+  variant `late-confirm` (`make e2e`) holds a full read of the fixture half
+  way once it has crossed an 8 MiB margin, posts a play webhook for the file
+  in the middle of the read, and lets the read finish. The sha256 matches,
+  `flodni_playback_webhooks_received_total{matched="true"}` counts the
+  webhook, and when the session closes
+  `flodni_unconfirmed_read_sessions_total{outcome="confirmed_late"}` counts
+  it, with the `confirmed_late` `[ReaderBudget]` line. Test only; phase b is
+  designed, not built.
+- 2026-11-13, reliability step 7: Flodni says when no play webhook arrives. The
+  state database (schema 15, `daemon_marks`) keeps the last matched webhook, the
+  last unmatched webhook and the last unconfirmed reader session, written at
+  most hourly. At start a `[Webhook]` line states the last matched webhook,
+  whether played-file protection has a recorded play and whether the reader
+  budget refusal is on. When a reader session closed unconfirmed within
+  `playback_webhook_warn_days` (default 7, 0 = off) and no play webhook matched
+  in that time, a `WARNING: [Webhook]` line (marked as possibly false when
+  every caller was a known hasher or analysis tool), `warnings` in
+  `/api/health` (never changes the status or the HTTP code) and
+  `flodni_warning{name="no_play_webhook"}` report it. The README has a "Play
+  webhook" section. The keep-alive remains designed, not built.
+- 2026-11-13, reliability step 8, phase a: `flodni_torrent_idle_closes_total`,
+  `flodni_torrent_reopens_total` and `flodni_read_stalls_total`, each split
+  by `confirmed`, and `reopens`, `stalls`, `max_stall_ms` and `confirmed` on
+  the session record. No behaviour change. Phase b (the hold) stays designed,
+  not built, so the step is not finished. Its entry condition is met: the new
+  keep-alive end-to-end variant asserts the known leak, a confirmed idle
+  close after a webhook that arrived while the torrent was closed
+  (`idle_closes{confirmed="true"}` at least 1). Phase b flips that
+  assertion to 0.
+- 2026-11-13, bug fix: a new open of a file no longer waits for a slow read
+  of that file. The mount returned open flags 0, so the kernel dropped the
+  file's cached pages at every open and waited for each page a read in flight
+  held (a 15 s budget hold, a 30 s slot wait, fetch retries). Open now returns
+  `FOPEN_KEEP_CACHE` when another handle of the path is live; the first open
+  still drops the cache. Unit tests pin the flag; the real-kernel check is the
+  `budget-refusal` variant (item 9: opens and reads under 1 s during a hold).
+- 2026-11-13, readiness step 4: the opt-in refusal is tested end to end. The
+  variant `budget-refusal` (`make e2e`) cuts a scan with EIO at the windows plus
+  the margin after a 15 s hold, with no failed read and no dead-swarm verdict,
+  asks the seeder for nothing more, lifts the hold with a late play, gives the
+  next reader a fresh margin after a stop, and keeps other opens and reads of
+  the file under 1 s while a reader is held. The test found that a held read
+  froze every new open of the file; #133 fixed it. The pump park rests on
+  fake-engine tests only.
+- 2026-11-13, readiness step 5: CI runs each end-to-end variant on its own
+  runner (a matrix after the image job, which hands over both images as an
+  artifact), and one job named `End-to-end` fails if any variant failed; it is
+  the check to require.
+- 2026-11-13, before a deployment relies on it, step 4: the tail window's start
+  is rounded down to a 4 KiB boundary, so a read of exactly the last N MiB of
+  a file that is not page-aligned stays inside the window. Existing tail covers
+  keep loading. The `warm-on-add` end-to-end variant is back to a 4 MiB tail
+  window with the same assertion: 0 bytes through `fetch_block` for the 4 MiB
+  tail read.
+- 2026-11-13, before a deployment relies on it, step 7: removal by hash
+  (`POST /api/library/remove`), the already-present check of an add and the
+  reference check before a torrent is dropped match the full 40-hex hash in each
+  stub's own link, not the eight digits in its name. Legacy stubs tagged with
+  the first or the last eight are found in either folder, and a stub of another
+  torrent that shares the digits is left alone. The walk reads every stub under
+  the folder (a few hundred bytes each); a stub with no readable hash is skipped
+  and logged once per walk.
+- 2026-11-13, before a deployment, step 8: `warm_catchup_scope` (`"all"` by
+  default, `"retries"`) limits catch-up to the files warm on add attempted and
+  did not finish, so a deployment with warm on add and no backlog walk retries
+  its own failures, drops and restarts at a low pace. New: the queued time
+  (`file_state.queued_at`, schema 16, additive), the state `out_of_scope` of
+  `flodni_warm_catchup_files`, `flodni_warm_catchup_scope{scope}`, and
+  `scope` on the `[WarmCatchup]` lines. Tested against fakes and the migration;
+  the end-to-end variant `catch-up` runs scope `"all"`.
+- 2026-11-13, before a deployment relies on it, step 2: a cache disk that
+  vanishes at runtime means no cache, and one absent at start gets a cache on
+  the filesystem underneath with at most a WARNING (the deployment keeps it
+  off that, see the README's "Cache disk"). The cache directory is created at
+  start only, a failed
+  unlink is not an eviction, an unreadable directory keeps the old total, a
+  read-only directory serves reads, and a start warns when the cache did not
+  initialise or `warmup_dir` is not a separate mount. A missing
+  `.dense-migrated` checks each head for holes (`SEEK_DATA`/`SEEK_HOLE`) and
+  drops only those; the startup inode prune needs a whole walk.
+- 2026-11-13, CI speed-up: the image job is split. `Image build` builds and
+  saves both images and the end-to-end matrix starts from it; the required
+  check `Image (build, smoke test, scan)` runs the smoke test and the scan
+  beside the matrix and fails if the build failed. The late-confirm and
+  budget-refusal variants shorten the session idle close and cleanup tick with
+  test-only environment variables.
+- 2026-11-13, before a deployment relies on it, step 6: `POST /api/warmup/evict`
+  with `{"target_gb": N}` (or `target_bytes`) evicts the cache down to that size
+  now, by the quota's own victim order and with its log lines (trigger
+  `request`), counters and eviction marks. Behind `api_token` like every route
+  but `/control` and `/api/health`. It deletes cache files and nothing else.
+  Tested in the cache and the handler; not run in the end-to-end test.
+- 2026-11-13, before a deployment relies on it, step 1: one wake path
+  (`torr.LoadStored`) that refuses a hash the engine does not store, unlink
+  through the mount following the library's reference check, and a load, a
+  save and a removal serialised in the engine. The end-to-end variant
+  `removal` removes three titles back to back while a fourth is read, and the
+  removed ones stay removed.
+- 2026-11-13, before a deployment relies on it, step 3: an open no longer
+  serves another file's head for a stale stub index when the torrent is in
+  the engine, and the warmer refuses a size mismatch. New:
+  `flodni_stub_index_mismatch_total` and the warm outcome `index_mismatch`.
+  Tested against fakes; a torrent with no saved file list and a stale stub that
+  collides with a sibling's warm head is still open (`docs/ideas.md`).
+- 2026-11-13, reliability step 8, phase b: the keep-alive. While a file has a
+  webhook-confirmed playback its torrent is not closed for idleness. The
+  engine's wrapper asks an injected predicate (`torr.HoldExpiry`) before it
+  closes an idle torrent; the answer derives from the playback state, so a
+  reopened torrent is held again. A stop webhook releases it at once; the
+  ceiling is `playback_keepalive_minutes` (default 15, 0 turns the keep-alive
+  off) after the last read or play or resume webhook, and a pause does not
+  extend it. `playback_keepalive_max_torrents` (default 4, minimum 1) caps the
+  held torrents. `flodni_keepalive_releases_total{reason}`,
+  `flodni_keepalive_evicted_total` and `flodni_keepalive_held_torrents`; the
+  `[Webhook]` startup line states the settings. The end-to-end `keep-alive`
+  variant flips the leak assertion: no idle close over two idle windows after
+  the webhook, then a stop webhook releases the torrent and it closes. The
+  engine's `IsPriority` mark no longer holds the idle timeout; it still
+  drives aggressive download mode. Step 8 is finished.

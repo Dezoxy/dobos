@@ -69,6 +69,11 @@ type Config struct {
 	TVSection    int
 	// RefreshDelay is how long refreshes are coalesced for; 0 means the default.
 	RefreshDelay time.Duration
+	// OnAdded, when set, is called once after an add that wrote stubs, not for a
+	// title that was already present and not for a failure. Each file carries the
+	// engine's file id. It runs under the hash locks, so it must only enqueue:
+	// memory only, never blocking.
+	OnAdded func(hash string, files []AddedFile)
 }
 
 // Manager adds and removes library entries on behalf of external clients: it does what
@@ -230,6 +235,9 @@ type Item struct {
 	FileIndex int    `json:"file_index"`
 	Season    int    `json:"season,omitempty"`
 	Episode   int    `json:"episode,omitempty"`
+	// ModTime is the stub's mtime, which orders the catch-up feeder (newest first). It
+	// is not part of the API answer.
+	ModTime time.Time `json:"-"`
 }
 
 var (
@@ -392,6 +400,9 @@ func (m *Manager) Add(ctx context.Context, req AddRequest) (*AddResponse, error)
 		return nil, err
 	}
 
+	if m.cfg.OnAdded != nil {
+		m.cfg.OnAdded(hash, files)
+	}
 	m.scheduleRefresh(m.section(kind))
 	m.cfg.Logger.Printf("[LibraryAPI] Added %s %q (%s): %d file(s)", kind, req.Title, hash[:8], len(files))
 	return &AddResponse{Hash: hash, Title: req.Title, Type: kind, Files: files}, nil
@@ -413,7 +424,11 @@ func (m *Manager) alreadyPresent(kind, hash string, req AddRequest) ([]AddedFile
 	if _, err := os.Stat(path); err != nil {
 		return nil, nil
 	}
+	// The name carries only eight digits of the hash: the stub's link says whose it is.
 	st := readStub(path)
+	if st.Hash != canonicalHashKey(hash) {
+		return nil, nil
+	}
 	return []AddedFile{{
 		Path: path, FusePath: m.fusePath(path), Size: st.Size, FileIndex: st.FileIndex,
 		Season: req.Season, Episode: req.Episode,
@@ -745,8 +760,8 @@ func (m *Manager) deleteStub(_ context.Context, path string) error {
 // removed; two concurrent Removes would both see the last stub gone and drop twice.
 // It reports whether the torrent was dropped.
 func (m *Manager) dropTorrentIfUnused(ctx context.Context, hash string) bool {
-	// A stub that carries no hash identifies no torrent: findByHash would match on a
-	// bare "_.mkv" suffix and the engine would be asked to remove the empty hash.
+	// A stub that carries no hash identifies no torrent: the engine would be asked to
+	// remove the empty hash.
 	if hash == "" {
 		return false
 	}
@@ -839,30 +854,45 @@ func (m *Manager) mediaDirs() []string {
 	return dirs
 }
 
-// findByHash returns the stubs already on disk for this info hash. Movie stubs carry the
-// last 8 hash chars, episode stubs the first 8: both conventions predate this API.
+// findByHash returns the stubs already on disk that link to this info hash. It matches
+// the full 40-hex hash in each stub's own link, never the file name: older tools tagged
+// movie stubs with the last 8 hash chars and episode stubs with the first 8, a
+// deployment holds both kinds in either folder, and another torrent's stub can share
+// the eight digits.
+//
+// Cost: one read of every .mkv stub under the folder, a few hundred bytes each, where
+// the name match read none. A stub that does not parse, or links to no hash, is
+// skipped and counted; the walk logs the count once.
 func (m *Manager) findByHash(kind, hash string) ([]AddedFile, error) {
 	dir := m.cfg.MoviesDir
-	suffix := HashSuffix(hash)
 	if kind == "tv" {
 		dir = m.cfg.TVDir
-		suffix = HashPrefix(hash)
 	}
-	// Legacy stubs carry the hash in the case the tracker used, so match case-insensitively:
-	// readStub lowercases the hash it returns, and a mismatch here would hide sibling stubs
-	// and drop a torrent still in use.
-	suffix = strings.ToLower(suffix)
+	// readStub lowercases the link's hash; compare it with the hex spelling, which is
+	// also what a base32 request means.
+	hash = canonicalHashKey(hash)
 	var out []AddedFile
+	skipped, firstSkipped := 0, ""
 	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			// A directory we cannot read would silently shrink the answer, and a
 			// missing stub here means a duplicate add.
 			return err
 		}
-		if info.IsDir() || !strings.HasSuffix(strings.ToLower(path), "_"+suffix+".mkv") {
+		if info.IsDir() || !strings.HasSuffix(strings.ToLower(path), ".mkv") {
 			return nil
 		}
 		st := readStub(path)
+		if st.Hash == "" {
+			if skipped == 0 {
+				firstSkipped = path
+			}
+			skipped++
+			return nil
+		}
+		if st.Hash != hash {
+			return nil
+		}
 		season, episode := ParseSeasonEpisode(filepath.Base(path))
 		out = append(out, AddedFile{
 			Path: path, FusePath: m.fusePath(path), Size: st.Size,
@@ -870,6 +900,10 @@ func (m *Manager) findByHash(kind, hash string) ([]AddedFile, error) {
 		})
 		return nil
 	})
+	if skipped > 0 {
+		m.cfg.Logger.Printf("[LibraryAPI] WARNING: skipped %d stub(s) under %s with no readable hash (first: %s)",
+			skipped, dir, firstSkipped)
+	}
 	if err != nil && !os.IsNotExist(err) {
 		return nil, errf(http.StatusInternalServerError, "cannot read %s: %v", dir, err)
 	}
@@ -1054,6 +1088,7 @@ func (m *Manager) List(kind string) ([]Item, error) {
 		items = append(items, Item{
 			Path: path, FusePath: m.fusePath(path), Size: st.Size, Hash: st.Hash,
 			IMDB: st.IMDB, FileIndex: st.FileIndex, Season: season, Episode: episode,
+			ModTime: info.ModTime(),
 		})
 		return nil
 	})

@@ -123,8 +123,11 @@ func collectProm(w *promtext.Writer) {
 	collectWarmupProm(w)
 	collectPlaybackProm(w)
 	collectReaderBudgetProm(w)
+	collectWebhookHealthProm(w)
 	collectReadabilityProm(w)
+	collectUnstoredProm(w)
 	collectReadAheadProm(w)
+	collectStubIndexProm(w)
 
 	w.Counter("flodni_fuse_short_reads_total",
 		"Reads served with fewer bytes than requested away from EOF.",
@@ -163,6 +166,15 @@ func collectWarmupProm(w *promtext.Writer) {
 	w.Counter("flodni_warmup_write_queue_drops_total",
 		"Head chunks dropped because the warmup write queue was full.",
 		promSample(st.WriteQueueDrops))
+	add := addWarmer.Stats()
+	w.Counter("flodni_warm_fills_total",
+		"Warm fills by trigger and outcome. trigger=mount: per-file records written when reads through the mount completed a file's windows (outcome=warmed when the engine holds a swarm delivery stamp, cached when it does not; needs the state database and index mode). trigger=add: attempts of warm on add (warm_on_add), one per file attempt; trigger=catchup: attempts of catch-up for files already in the library (warm_catchup_per_hour), which never evicts, so a full cache counts no_room; every outcome of both triggers is present from the start; a pause, a shutdown and a removal count nothing.",
+		append([]promtext.Sample{
+			promSample(warmFillsMountWarmed.Load(), lbl("trigger", "mount"), lbl("outcome", "warmed")),
+			promSample(warmFillsMountCached.Load(), lbl("trigger", "mount"), lbl("outcome", "cached")),
+		}, addWarmFillSamples(add)...)...)
+	collectAddWarmProm(w, add)
+	collectCatchupProm(w, catchupFiles)
 }
 
 // collectReadabilityProm writes the library by readability. The numbers come from the
@@ -180,10 +192,47 @@ func collectReadabilityProm(w *promtext.Writer) {
 		promSample(c.neverRead, lbl("state", "never_read")))
 }
 
+// collectUnstoredProm writes the startup count of library torrents without a stored
+// engine record that holds metainfo. No series until the startup walk has counted.
+func collectUnstoredProm(w *promtext.Writer) {
+	n := libraryUnstored.Load()
+	if n == nil {
+		return
+	}
+	w.Gauge("flodni_library_torrents_unstored",
+		"Library torrents with no stored engine record holding metainfo, counted once at startup (a library add or an engine add with save_to_db repairs one; not refreshed).",
+		promSample(int64(*n)))
+}
+
 func collectPlaybackProm(w *promtext.Writer) {
 	w.Counter("flodni_playback_starts_total",
 		"Playbacks the media server webhook confirmed (not playing to playing).",
 		promSample(playbackStarts.Load()))
+	w.Counter("flodni_torrent_idle_closes_total",
+		"Torrents the engine closed because no reader had them for the idle timeout. confirmed is true when a file of the torrent had a webhook-confirmed playback (the label is refreshed once a second).",
+		promSample(keepaliveCounters.idleCloses[1].Load(), lbl("confirmed", "true")),
+		promSample(keepaliveCounters.idleCloses[0].Load(), lbl("confirmed", "false")))
+	w.Counter("flodni_torrent_reopens_total",
+		"Closed torrents a read on an open handle woke again. confirmed as in flodni_torrent_idle_closes_total.",
+		promSample(keepaliveCounters.reopens[1].Load(), lbl("confirmed", "true")),
+		promSample(keepaliveCounters.reopens[0].Load(), lbl("confirmed", "false")))
+	w.Counter("flodni_wake_refused_total",
+		"Wakes the engine refused because it keeps no record of the torrent: one per handle at a read, one per open. Not a failed read and not a dead swarm; 0 from start.",
+		promSample(wakeRefusedCount.Load()))
+	w.Counter("flodni_read_stalls_total",
+		"Served reads that took longer than one second. Failed reads are not counted. confirmed as in flodni_torrent_idle_closes_total.",
+		promSample(keepaliveCounters.stalls[1].Load(), lbl("confirmed", "true")),
+		promSample(keepaliveCounters.stalls[0].Load(), lbl("confirmed", "false")))
+	w.Counter("flodni_keepalive_releases_total",
+		"Holds that ended, by reason: stop is a stop webhook (or the playback state dropped), ceiling is playback_keepalive_minutes after the last read or play webhook. The torrent then closes at its next idle check.",
+		promSample(keepaliveCounters.releases[0].Load(), lbl("reason", "stop")),
+		promSample(keepaliveCounters.releases[1].Load(), lbl("reason", "ceiling")))
+	w.Counter("flodni_keepalive_evicted_total",
+		"Confirmed torrents that lost their hold to playback_keepalive_max_torrents, counted once per episode; they idle-close as without the keep-alive.",
+		promSample(keepaliveCounters.evicted.Load()))
+	w.Gauge("flodni_keepalive_held_torrents",
+		"Idle torrents the keep-alive is keeping open right now.",
+		promSample(int64(keepaliveHeld())))
 	w.Counter("flodni_warmup_cold_reopen_total",
 		"Confirmed plays that opened with no ready head on a file quota eviction had removed, counted once per eviction. previously_played says whether the file had been played before.",
 		promSample(coldReopensPrevPlay.Load(), lbl("previously_played", "true")),
@@ -198,6 +247,16 @@ func collectReaderBudgetProm(w *promtext.Writer) {
 		"Sessions that crossed the unconfirmed-read margin, counted once at close: confirmed_late if a playback webhook confirmed the file afterwards.",
 		promSample(unconfirmedSessions[rbUnconfirmed].Load(), lbl("outcome", "unconfirmed")),
 		promSample(unconfirmedSessions[rbConfirmedLate].Load(), lbl("outcome", "confirmed_late")))
+	w.Counter("flodni_unconfirmed_read_refused_reads_total",
+		"Reads the reader budget refused with EIO (refuse_unconfirmed_reads on only).",
+		promSample(unconfirmedRefusedReads.Load()))
+	w.Counter("flodni_unconfirmed_read_holds_total",
+		"Holds of a refused handle, counted when they end: lifted by a confirmation, or refused when the time ran out.",
+		promSample(unconfirmedHolds[rbHoldLifted].Load(), lbl("result", "lifted")),
+		promSample(unconfirmedHolds[rbHoldRefused].Load(), lbl("result", "refused")))
+	w.Counter("flodni_unconfirmed_read_confirmed_after_refusal_total",
+		"Sessions that had a read refused and were then confirmed by a playback webhook, counted once each (plays the budget broke).",
+		promSample(unconfirmedConfirmedAfterRefusal.Load()))
 	w.Counter("flodni_playback_webhooks_received_total",
 		"Playback start and resume webhooks for a movie or an episode, matched to one file or not.",
 		promSample(playbackWebhooksMatched.Load(), lbl("matched", "true")),

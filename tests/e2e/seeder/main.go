@@ -6,7 +6,7 @@
 // the expected sha256 and the FUSE path in a shared directory for run.sh.
 //
 // With -mode replacement it files three single-file episode releases instead:
-// see replacement.go.
+// see replacement.go. With -mode removal it files four movies: see removal.go.
 package main
 
 import (
@@ -57,7 +57,7 @@ func main() {
 	flodni := flag.String("flodni", "flodni", "hostname of the Flodni container")
 	peerPort := flag.Int("peer-port", 51413, "TCP peer port")
 	trackerPort := flag.Int("tracker-port", 6969, "HTTP announce port")
-	mode := flag.String("mode", "stream", "stream (one movie) or replacement (three episode releases)")
+	mode := flag.String("mode", "stream", "stream (one movie), replacement (three episode releases) or removal (four movies)")
 	flag.BoolVar(&engineDefaultAlloc, "engine-default-alloc", false,
 		"keep the engine's 1 MiB per-peer request allowance (a slow real peer) instead of 64 MiB")
 	flag.Parse()
@@ -70,6 +70,8 @@ func main() {
 		err = run(*out, *flodni, *peerPort, *trackerPort)
 	case "replacement":
 		err = runReplacement(*out, *flodni, *peerPort, *trackerPort)
+	case "removal":
+		err = runRemoval(*out, *flodni, *peerPort, *trackerPort)
 	default:
 		err = fmt.Errorf("unknown mode %q", *mode)
 	}
@@ -162,6 +164,11 @@ func run(out, flodni string, peerPort, trackerPort int) error {
 		return err
 	}
 
+	// The warm-on-add variant reads the first 8 MiB and the last 4 MiB back and
+	// compares them to these, and names the torrent by hash.
+	if err := writeRangeHashes(out, hash.HexString(), filepath.Join(dataDir, releaseName, releaseName+".mkv")); err != nil {
+		return err
+	}
 	// fuse_path last: run.sh waits for both files, and this order means it never
 	// reads a half-written pair.
 	if err := writeAtomic(filepath.Join(out, "expected.sha256"), sum); err != nil {
@@ -197,6 +204,37 @@ func writeFixture(dir string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// writeRangeHashes leaves the info hash and the sha256 of the video's first 8 MiB
+// and last 4 MiB in out, for the warm-on-add variant.
+func writeRangeHashes(out, hash, video string) error {
+	f, err := os.Open(video)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }() // read-only
+	sum := func(off, n int64) (string, error) {
+		h := sha256.New()
+		if _, err := io.Copy(h, io.NewSectionReader(f, off, n)); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(h.Sum(nil)), nil
+	}
+	head, err := sum(0, 8<<20)
+	if err != nil {
+		return err
+	}
+	tail, err := sum(videoSize-4<<20, 4<<20)
+	if err != nil {
+		return err
+	}
+	for name, content := range map[string]string{"hash": hash, "head8m.sha256": head, "tail4m.sha256": tail} {
+		if err := writeAtomic(filepath.Join(out, name), content); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeRandom(path string, seed byte, size int64, tee io.Writer) error {

@@ -10,10 +10,9 @@ import (
 	torrenttypes "github.com/anacrolix/torrent/types"
 )
 
-// A piece that completed must lose the priority this cache gave it: with a storage cap the
-// engine spends the cap on pieces in priority order, complete or not, so a stale priority on a
-// complete piece keeps the pieces a reader waits for from being requested.
-func TestMarkCompleteDropsCachePriority(t *testing.T) {
+// newPriorityTestCache starts a client with a capped cache and an 8-piece torrent.
+func newPriorityTestCache(t *testing.T) (*torrent.Torrent, *Cache) {
+	t.Helper()
 	const pieceLen = 16 << 10
 	const pieces = 8
 	stor := NewStorage(int64(pieces) * pieceLen)
@@ -29,7 +28,7 @@ func TestMarkCompleteDropsCachePriority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cl.Close()
+	t.Cleanup(func() { cl.Close() })
 
 	info := metainfo.Info{PieceLength: pieceLen, Length: pieces * pieceLen, Name: "x", Pieces: make([]byte, 20*pieces)}
 	ib, err := bencode.Marshal(info)
@@ -51,6 +50,14 @@ func TestMarkCompleteDropsCachePriority(t *testing.T) {
 		t.Fatal("no cache")
 	}
 	cache.SetTorrent(tor)
+	return tor, cache
+}
+
+// A piece that completed must lose the priority this cache gave it: with a storage cap the
+// engine spends the cap on pieces in priority order, complete or not, so a stale priority on a
+// complete piece keeps the pieces a reader waits for from being requested.
+func TestMarkCompleteDropsCachePriority(t *testing.T) {
+	tor, cache := newPriorityTestCache(t)
 
 	// What setLoadPriority does for a piece under a reader.
 	const id = 3
@@ -74,6 +81,33 @@ func TestMarkCompleteDropsCachePriority(t *testing.T) {
 	cache.muPriority.Unlock()
 	if kept {
 		t.Error("localPriority entry kept after MarkComplete")
+	}
+}
+
+// RequestRange raises a piece to Normal through the engine's DownloadPieces, outside this
+// cache's localPriority. The completing piece must lose that priority too: the engine charges
+// every scanned piece against its storage cap, complete or not.
+func TestMarkCompleteDropsEnginePriorityOutsideLocal(t *testing.T) {
+	tor, cache := newPriorityTestCache(t)
+
+	const id = 3
+	tor.DownloadPieces(id, id+1)
+	if got := tor.PieceState(id).Priority; got != torrent.PiecePriorityNormal {
+		t.Fatalf("setup: priority %v, want Normal", got)
+	}
+	cache.muPriority.Lock()
+	_, local := cache.localPriority[id]
+	cache.muPriority.Unlock()
+	if local {
+		t.Fatal("setup: piece is in localPriority")
+	}
+
+	if err := cache.pieces[id].MarkComplete(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := tor.PieceState(id).Priority; got != torrent.PiecePriorityNone {
+		t.Errorf("engine priority after MarkComplete = %v, want None", got)
 	}
 }
 

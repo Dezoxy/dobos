@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -216,7 +218,7 @@ func TestTorrentsHealthHandler(t *testing.T) {
 			LastReason: "no_peers", LastSource: "mount", LastSwarmRead: 0},
 		{Hash: "bb", FailCount: 0, LastSwarmRead: 1_700_007_200},
 	}}
-	h := newTorrentsHealthHandler(store, quiet)
+	h := newTorrentsHealthHandler(store, nil, quiet)
 
 	rec := getHealth(h, http.MethodGet, "/api/torrents/health")
 	if rec.Code != 200 || rec.Header().Get("Cache-Control") != "no-store" {
@@ -232,7 +234,7 @@ func TestTorrentsHealthHandler(t *testing.T) {
 	if body.Total != 2 || len(body.Torrents) != 2 {
 		t.Fatalf("body = %s", rec.Body.String())
 	}
-	wantKeys := []string{"consecutive_failures", "first_failure_at", "hash", "last_failure_at",
+	wantKeys := []string{"consecutive_failures", "files", "first_failure_at", "hash", "last_failure_at",
 		"last_failure_reason", "last_failure_source", "last_swarm_read_at"}
 	for _, tor := range body.Torrents {
 		var keys []string
@@ -265,12 +267,99 @@ func TestTorrentsHealthHandler(t *testing.T) {
 	if rec := getHealth(h, http.MethodPost, "/api/torrents/health"); rec.Code != http.StatusMethodNotAllowed || rec.Header().Get("Allow") != "GET" {
 		t.Errorf("POST: status %d, allow %q", rec.Code, rec.Header().Get("Allow"))
 	}
-	if rec := getHealth(newTorrentsHealthHandler(nil, quiet), http.MethodGet, "/api/torrents/health"); rec.Code != http.StatusServiceUnavailable {
+	if rec := getHealth(newTorrentsHealthHandler(nil, nil, quiet), http.MethodGet, "/api/torrents/health"); rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("nil store: status %d, want 503", rec.Code)
 	}
-	failing := newTorrentsHealthHandler(&fakeLister{err: errors.New("disk on fire")}, quiet)
+	failing := newTorrentsHealthHandler(&fakeLister{err: errors.New("disk on fire")}, nil, quiet)
 	rec = getHealth(failing, http.MethodGet, "/api/torrents/health")
 	if rec.Code != http.StatusInternalServerError || rec.Body.String() != "cannot read the readability record\n" {
 		t.Errorf("store error: status %d, body %q", rec.Code, rec.Body.String())
+	}
+}
+
+func fileSnapshot(m map[string][]fileHealth) func() map[string][]fileHealth {
+	return func() map[string][]fileHealth { return m }
+}
+
+// files comes last in the object (the e2e grep depends on the order), is always an
+// array, times are RFC 3339 or null, and a torrent with file rows but no failure row
+// is listed with a zero count.
+func TestTorrentsHealthFilesArray(t *testing.T) {
+	quiet := log.New(io.Discard, "", 0)
+	store := &fakeLister{rows: []metadb.Readability{
+		{Hash: "aa", FailCount: 2, FirstFail: 1_700_000_000, LastFail: 1_700_003_600, LastReason: "no_peers", LastSource: "mount"},
+		{Hash: "bb", FailCount: 0, LastSwarmRead: 1_700_007_200},
+	}}
+	files := map[string][]fileHealth{
+		"aa": {{FileIndex: 1, Readability: "warmed", Cache: "cached", LastSwarmDeliveryAt: unixOrNil(1_700_000_000)}},
+		"cc": {{FileIndex: 0, Readability: "unknown", Cache: "evicted"}},
+	}
+	h := newTorrentsHealthHandler(store, fileSnapshot(files), quiet)
+	rec := getHealth(h, http.MethodGet, "/api/torrents/health")
+	if rec.Code != 200 {
+		t.Fatalf("status %d", rec.Code)
+	}
+	body := rec.Body.String()
+	// Key order: files is the last key of every torrent object.
+	for _, hash := range []string{"aa", "bb", "cc"} {
+		re := regexp.MustCompile(`"hash":"` + hash + `"[^}]*"last_swarm_read_at":(null|"[^"]*"),"files":\[`)
+		if !re.MatchString(body) {
+			t.Errorf("hash %s: files does not follow last_swarm_read_at in %s", hash, body)
+		}
+	}
+	var out struct {
+		Total    int `json:"total"`
+		Torrents []struct {
+			Hash                string `json:"hash"`
+			ConsecutiveFailures int64  `json:"consecutive_failures"`
+			FirstFailureAt      *string
+			Files               []map[string]json.RawMessage `json:"files"`
+		} `json:"torrents"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Total != 3 || out.Torrents[0].Hash != "aa" || out.Torrents[1].Hash != "bb" || out.Torrents[2].Hash != "cc" {
+		t.Fatalf("torrents = %s", body)
+	}
+	if out.Torrents[2].ConsecutiveFailures != 0 {
+		t.Fatalf("files-only torrent: %+v", out.Torrents[2])
+	}
+	if out.Torrents[1].Files == nil || len(out.Torrents[1].Files) != 0 {
+		t.Fatalf("bb files must be []: %s", body)
+	}
+	wantKeys := []string{"cache", "failed_attempts", "file_index", "first_failed_at", "last_attempt_at",
+		"last_swarm_delivery_at", "readability"}
+	var keys []string
+	for k := range out.Torrents[0].Files[0] {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if !reflect.DeepEqual(keys, wantKeys) {
+		t.Fatalf("file keys = %v, want %v", keys, wantKeys)
+	}
+	f := out.Torrents[0].Files[0]
+	if string(f["last_swarm_delivery_at"]) != `"2023-11-14T22:13:20Z"` || string(f["first_failed_at"]) != "null" ||
+		string(f["readability"]) != `"warmed"` || string(f["cache"]) != `"cached"` {
+		t.Fatalf("file = %v", f)
+	}
+}
+
+// A failure filter keeps its per-torrent meaning: files-only torrents are not listed.
+func TestTorrentsHealthFilterIgnoresFilesOnlyTorrents(t *testing.T) {
+	quiet := log.New(io.Discard, "", 0)
+	store := &fakeLister{rows: []metadb.Readability{{Hash: "aa", FailCount: 2}}}
+	files := map[string][]fileHealth{"cc": {{FileIndex: 0, Readability: "unknown", Cache: "cached"}}}
+	h := newTorrentsHealthHandler(store, fileSnapshot(files), quiet)
+	for _, q := range []string{"failing=1", "min_failures=1", "min_failures=2"} {
+		rec := getHealth(h, http.MethodGet, "/api/torrents/health?"+q)
+		if strings.Contains(rec.Body.String(), `"cc"`) {
+			t.Errorf("%s listed a files-only torrent: %s", q, rec.Body.String())
+		}
+	}
+	// A nil snapshot function is allowed and gives empty arrays.
+	rec := getHealth(newTorrentsHealthHandler(store, nil, quiet), http.MethodGet, "/api/torrents/health")
+	if !strings.Contains(rec.Body.String(), `"files":[]`) {
+		t.Errorf("nil snapshot: %s", rec.Body.String())
 	}
 }

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flodni/internal/gostorm/native"
 	"flodni/internal/gostorm/torr"
 	torrstor "flodni/internal/gostorm/torr/storage/torrstor"
 	"flodni/internal/gostorm/web"
@@ -74,6 +76,8 @@ type MkvHandle struct {
 	pumpOnce        sync.Once
 	isPrimaryHandle atomic.Bool  // pump creator, primary reconnects (refCount 0→1), proven readers
 	seqAdvances     atomic.Int32 // consecutive sequential streaming reads, feeds the promotion below
+	budgetHold      budgetHold   // reader budget: this handle's wait for a webhook (reader_budget.go)
+	wakeRefused     atomic.Bool  // the engine refused to wake this handle's torrent: every read answers EIO
 }
 
 // Compile-time interface checks for MkvHandle
@@ -97,6 +101,9 @@ var readInnerCall = (*MkvHandle).readInner
 // cache, so the read is retried instead of a hole being made permanent.
 func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
 	res, errno := readInnerCall(h, fuseCtx, dest, off)
+	if errno == errnoBudgetRefused || errno == errnoWakeRefused {
+		return nil, syscall.EIO // before the failure accounting below: not the swarm failing
+	}
 	if errno != 0 || res == nil {
 		return res, errno
 	}
@@ -119,6 +126,12 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 			break // a blocked FUSE read puts smbd in D-state; bail out rather than hang
 		}
 		sub, subErrno := readInnerCall(h, fuseCtx, dest[total:], off+int64(total))
+		if subErrno == errnoBudgetRefused || subErrno == errnoWakeRefused {
+			return nil, syscall.EIO // a refused sub-read is not an unfillable gap: no repair accounting
+		}
+		if subErrno == syscall.EINTR && fuseCtx.Err() != nil {
+			return nil, syscall.EINTR // the caller left (a hold lasts up to 15 s): not a failed read
+		}
 		if subErrno != 0 || sub == nil {
 			break
 		}
@@ -152,7 +165,7 @@ func writeWarmupFromFetch(h *MkvHandle, off int64, data []byte) {
 		warmup.DiskWarmup.WriteChunk(h.hash, h.fileID, data, off)
 		return
 	}
-	if h.size <= warmup.TailWarmupSize || off < h.size-warmup.TailWarmupSize {
+	if h.size <= warmup.TailWarmupSize || off < warmup.TailStart(h.size) {
 		return
 	}
 	if val, ok := playbackRegistry.Load(h.path); ok {
@@ -177,6 +190,12 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 
 	if off >= h.size {
 		return fuse.ReadResultData(nil), 0
+	}
+
+	// The engine refused to wake this torrent: it is not stored, and asking again
+	// would not change that. Read maps this to EIO; the handle must be reopened.
+	if h.wakeRefused.Load() {
+		return nil, errnoWakeRefused
 	}
 
 	h.mu.Lock()
@@ -255,7 +274,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 			// WarmLanding on new handle: pre-fetch chunk at resume position while pump catches
 			// up. Fires only for new handles (prevOff==-1) since V286b covers existing handles.
 			// A scanner's first read past the head is a probe, not a resume (Dezoxy fork).
-			if prevOff == -1 && h.hash != "" && !isScanRead(h) {
+			if prevOff == -1 && h.hash != "" && !isScanRead(h) && !budgetBlocksFetch(h.path, off, int64(len(dest)), h.size) {
 				warmChunk := raCache.ChunkSize(h.path)
 				warmStart := (off / warmChunk) * warmChunk
 				// Unified with predictive-prefetch key format to avoid double-fetching the same chunk.
@@ -334,7 +353,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 			// Warm landing zone: pre-fetch the first chunk at the seek target while the
 			// pump sleeps its 200ms retry. Starts anacrolix piece download ~200ms earlier,
 			// reducing FetchBlock blocking time in Read() and preventing smbd D-state.
-			if h.hash != "" {
+			if h.hash != "" && !budgetBlocksFetch(h.path, off, int64(len(dest)), h.size) {
 				warmChunk := raCache.ChunkSize(h.path)
 				warmStart := (off / warmChunk) * warmChunk
 				// Unified with predictive-prefetch key format to avoid double-fetching the same chunk.
@@ -453,7 +472,8 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 		chunkSize := raCache.ChunkSize(h.path)
 		nextChunkStart := (off/chunkSize + 1) * chunkSize
 
-		if !isScanRead(h) && (!h.hasSlot.Load() || (nextChunkStart-off < chunkSize/4)) && !raCache.Exists(h.path, nextChunkStart) {
+		if !isScanRead(h) && (!h.hasSlot.Load() || (nextChunkStart-off < chunkSize/4)) && !raCache.Exists(h.path, nextChunkStart) &&
+			!budgetBlocksFetch(h.path, nextChunkStart, chunkSize, h.size) {
 			prefetchKey := fmt.Sprintf("%s:%d", h.path, nextChunkStart)
 			if _, loaded := inFlightPrefetches.LoadOrStore(prefetchKey, true); !loaded {
 				goStart, goKey, goHash, goFileID := nextChunkStart, prefetchKey, h.hash, h.fileID
@@ -503,6 +523,13 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 
 		ttffRead(h.path, srcRACacheHit, time.Since(cacheStart), n, off)
 		return fuse.ReadResultData(dest[:n]), 0
+	}
+
+	// Reader budget: a miss past the margin of an unconfirmed file starts no fetch, pump, slot
+	// wait or wake. The gate holds the read for a late webhook first; Read maps the refusal to
+	// EIO. Cache hits, the SSD windows and reads wholly inside them never get here refused.
+	if errno := h.budgetGate(fuseCtx, off, len(dest)); errno != 0 {
+		return nil, errno
 	}
 
 	target := int(end - off + 1)
@@ -700,8 +727,24 @@ pumpSlotResolved:
 
 	if h.hash != "" {
 		if woke, err := rewake(fuseCtx, h.hash, h.magnet, h.fileID, torrentLive, h.wake); err != nil {
+			if errors.Is(err, native.ErrNotStored) {
+				// Not the swarm failing: no fetch follows, no failed read is marked and
+				// no dead-swarm verdict can come of it. Latched so a second read makes
+				// no engine call.
+				if h.wakeRefused.CompareAndSwap(false, true) {
+					noteWakeRefused(h.path, h.hash, "read")
+				}
+				return nil, errnoWakeRefused
+			}
 			logger.Printf("[VFS] Re-activation failed for %s: %v", filepath.Base(h.path), err)
+			if !torrentLive(h.hash) {
+				// The wake is stored-only now, so a failed one (engine busy, not
+				// connected) says nothing about the swarm: no fetches, no failed-read
+				// mark, no dead-swarm verdict.
+				return nil, syscall.EIO
+			}
 		} else if woke {
+			countReopen(h.path, h.hash)
 			logger.Printf("[VFS] Re-activated %s after the engine closed it as idle", filepath.Base(h.path))
 		}
 		// V753: the very first read of a session can miss raCache/warmup even when
@@ -793,7 +836,7 @@ DATA_READY:
 		maxCached := raCache.MaxCachedOffset(h.path)
 		isLagging := maxCached < nextChunkStart
 
-		if isStreaming && (!h.hasSlot.Load() || isLagging) {
+		if isStreaming && (!h.hasSlot.Load() || isLagging) && !budgetBlocksFetch(h.path, nextChunkStart, chunkSize, h.size) {
 			if distanceToNext < chunkSize/4 {
 				prefetchKey := fmt.Sprintf("%s:%d", h.path, nextChunkStart)
 				if _, loaded := inFlightPrefetches.LoadOrStore(prefetchKey, true); !loaded {

@@ -65,7 +65,7 @@ type TorrentStatus struct {
 	PiecesDirtiedBad    int64       `json:"pieces_dirtied_bad,omitempty"`
 	DurationSeconds     float64     `json:"duration_seconds,omitempty"`
 	BitRate             string      `json:"bit_rate,omitempty"`
-	IsPriority          bool        `json:"is_priority"` // V186: If true, timeout is disabled
+	IsPriority          bool        `json:"is_priority"` // aggressive mode; the idle timeout is held by the keep-alive, not by this
 
 	FileStats []*TorrentFileStat `json:"file_stats,omitempty"`
 }

@@ -5,11 +5,13 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"flodni/internal/cache"
 	"flodni/internal/metadb"
+	"flodni/internal/promtext"
 	"flodni/internal/vfs"
 )
 
@@ -190,5 +192,142 @@ func TestPruneFileStateNeedsTheStateDatabase(t *testing.T) {
 	b.pruneFileState(true) // must not panic
 	if !fileStates.EverPlayed(fk(orphHash, 1)) {
 		t.Fatal("memory changed with no database")
+	}
+}
+
+func unstoredEnv(t *testing.T, stored map[string]bool, hashes ...string) (*StartupCacheBuilder, *strings.Builder) {
+	t.Helper()
+	libraryUnstored.Store(nil)
+	t.Cleanup(func() { libraryUnstored.Store(nil) })
+	var out strings.Builder
+	b := NewStartupCacheBuilder(t.TempDir(), cache.NewLRUCache(1<<20, time.Hour), log.New(&out, "", 0))
+	for _, h := range hashes {
+		b.foundHashes[h] = true
+	}
+	b.hasMetainfo = func(h string) bool { return stored[h] }
+	return b, &out
+}
+
+func TestWarnUnstoredNamesTheFirstFewHashes(t *testing.T) {
+	var hashes []string
+	for i := 0; i < 8; i++ {
+		hashes = append(hashes, strings.Repeat(string(rune('a'+i)), 40))
+	}
+	// h = "hhh...", the last, is stored; the other seven are not.
+	b, out := unstoredEnv(t, map[string]bool{hashes[7]: true}, hashes...)
+	b.warnUnstored()
+
+	n := libraryUnstored.Load()
+	if n == nil || *n != 7 {
+		t.Fatalf("libraryUnstored = %v, want 7", n)
+	}
+	line := out.String()
+	if !strings.Contains(line, "WARNING: 7 of 8 library torrents have no stored engine record with metainfo") {
+		t.Errorf("line = %q", line)
+	}
+	for _, h := range hashes[:5] {
+		if !strings.Contains(line, h) {
+			t.Errorf("line lacks %s: %q", h, line)
+		}
+	}
+	for _, h := range hashes[5:] {
+		if strings.Contains(line, h) {
+			t.Errorf("line names %s beyond the first five: %q", h, line)
+		}
+	}
+	if strings.Contains(line, b.sourcePath) {
+		t.Errorf("line carries a path: %q", line)
+	}
+}
+
+func TestWarnUnstoredLogsAPlainZeroWhenEverythingIsStored(t *testing.T) {
+	b, out := unstoredEnv(t, map[string]bool{inLibHash: true, orphHash: true}, inLibHash, orphHash)
+	b.warnUnstored()
+	if n := libraryUnstored.Load(); n == nil || *n != 0 {
+		t.Fatalf("libraryUnstored = %v, want 0", n)
+	}
+	line := out.String()
+	if !strings.Contains(line, "no stored engine record with metainfo: 0 of 2") || strings.Contains(line, "WARNING") {
+		t.Errorf("line = %q, want a plain 0 of 2", line)
+	}
+}
+
+func TestWarnUnstoredLeavesAnEmptyWalkUncounted(t *testing.T) {
+	b, out := unstoredEnv(t, nil)
+	b.warnUnstored()
+	if libraryUnstored.Load() != nil || out.Len() != 0 {
+		t.Errorf("empty library: gauge %v, log %q", libraryUnstored.Load(), out.String())
+	}
+}
+
+func TestUnstoredGaugeIsAbsentUntilCountedThenExported(t *testing.T) {
+	b, _ := unstoredEnv(t, map[string]bool{inLibHash: true}, inLibHash, orphHash)
+	var w promtext.Writer
+	collectUnstoredProm(&w)
+	if strings.Contains(string(w.Bytes()), "flodni_library_torrents_unstored") {
+		t.Fatalf("series present before the count: %s", w.Bytes())
+	}
+	b.warnUnstored()
+	w = promtext.Writer{}
+	collectUnstoredProm(&w)
+	if !strings.Contains(string(w.Bytes()), "flodni_library_torrents_unstored 1\n") {
+		t.Fatalf("series missing or wrong: %s", w.Bytes())
+	}
+	if err := promtext.Lint(w.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pruneInodeEnv registers two files in the inode map; the builder's walk found one.
+func pruneInodeEnv(t *testing.T) (*StartupCacheBuilder, *vfs.InodeMap) {
+	t.Helper()
+	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), &vfsLogger{log.New(io.Discard, "", 0)})
+	prev := globalInodeMap
+	globalInodeMap = im
+	t.Cleanup(func() { globalInodeMap = prev })
+	im.AddFile("/lib/movies/a.mkv", inLibHash, 1)
+	im.AddFile("/lib/movies/b.mkv", orphHash, 1)
+	b := NewStartupCacheBuilder(t.TempDir(), cache.NewLRUCache(1<<20, time.Hour), log.New(io.Discard, "", 0))
+	b.foundFiles["/lib/movies/a.mkv"] = true
+	b.foundHashes[inLibHash] = true
+	return b, im
+}
+
+func inodeFiles(im *vfs.InodeMap) int {
+	files, _, _, _ := im.Stats()
+	return int(files)
+}
+
+func TestPruneInodesGuards(t *testing.T) {
+	tests := []struct {
+		name     string
+		complete bool
+		errors   int
+		empty    bool
+	}{
+		{"incomplete walk", false, 0, false},
+		{"walk errors", true, 2, false},
+		{"empty result", true, 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, im := pruneInodeEnv(t)
+			b.errors = tt.errors
+			if tt.empty {
+				b.foundFiles = map[string]bool{}
+			}
+			b.pruneInodes(tt.complete)
+			if got := inodeFiles(im); got != 2 {
+				t.Fatalf("files = %d, want 2: nothing may be pruned", got)
+			}
+		})
+	}
+}
+
+func TestPruneInodesDropsTheGhostAfterAWholeWalk(t *testing.T) {
+	b, im := pruneInodeEnv(t)
+	b.pruneInodes(true)
+	if got := inodeFiles(im); got != 1 {
+		t.Fatalf("files = %d, want only the found one", got)
 	}
 }

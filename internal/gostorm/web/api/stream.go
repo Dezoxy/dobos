@@ -88,6 +88,7 @@ func stream(c *gin.Context) {
 		data = tor.Data
 		category = tor.Category
 	}
+	// The explicit add: this link starts the torrent, a stored record or not.
 	if tor == nil || tor.Stat == state.TorrentInDB {
 		tor, err = torr.AddTorrent(spec, title, poster, data, category)
 		if err != nil {
@@ -197,23 +198,14 @@ func streamNoAuth(c *gin.Context) {
 		return
 	}
 
-	if title == "" {
-		title = tor.Title
-	}
-
-	if poster == "" {
-		poster = tor.Poster
-	}
-
-	if category == "" {
-		category = tor.Category
-	}
-
-	data := tor.Data
-
 	if tor.Stat == state.TorrentInDB {
-		tor, err = torr.AddTorrent(spec, title, poster, data, category)
+		// A wake of a stored torrent: from its record only, never from the link.
+		tor, err = torr.LoadStored(spec.InfoHash.HexString())
 		if err != nil {
+			if errors.Is(err, torr.ErrNotStored) {
+				c.AbortWithError(http.StatusNotFound, err)
+				return
+			}
 			c.AbortWithError(http.StatusInternalServerError, err)
 			return
 		}

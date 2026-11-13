@@ -17,7 +17,6 @@ type engineBridge interface {
 	NewStreamReader(hash string, fileID int, totalSize int64) streamReader
 	Wake(ctx context.Context, magnetUrl string, fileIdx int) error
 	ListTorrents() ([]native.TorrentStats, error)
-	RemoveTorrent(hash string) error
 	CleanupHashes() int
 }
 
