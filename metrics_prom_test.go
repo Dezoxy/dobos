@@ -77,6 +77,7 @@ func TestHandlePrometheus(t *testing.T) {
 		"flodni_unconfirmed_read_confirmed_after_refusal_total",
 		"flodni_playback_webhooks_received_total", "flodni_warm_fills_total",
 		"flodni_playback_webhook_last_timestamp_seconds", "flodni_unconfirmed_read_last_session_timestamp_seconds", "flodni_warning",
+		"flodni_torrent_idle_closes_total", "flodni_torrent_reopens_total", "flodni_read_stalls_total",
 		"flodni_warm_fill_bytes_total", "flodni_warm_cache_failures_total", "flodni_warm_queue_files", "flodni_warm_paused",
 	} {
 		if !strings.Contains(body, "# TYPE "+fam+" ") {
@@ -92,6 +93,12 @@ func TestHandlePrometheus(t *testing.T) {
 		`flodni_warmup_cold_reopen_total{previously_played="true"}`,
 		`flodni_warmup_cold_reopen_total{previously_played="false"}`,
 		`flodni_playback_starts_total`,
+		`flodni_torrent_idle_closes_total{confirmed="true"}`,
+		`flodni_torrent_idle_closes_total{confirmed="false"}`,
+		`flodni_torrent_reopens_total{confirmed="true"}`,
+		`flodni_torrent_reopens_total{confirmed="false"}`,
+		`flodni_read_stalls_total{confirmed="true"}`,
+		`flodni_read_stalls_total{confirmed="false"}`,
 		`flodni_unconfirmed_read_bytes_total`,
 		`flodni_unconfirmed_read_sessions_total{outcome="unconfirmed"}`,
 		`flodni_unconfirmed_read_sessions_total{outcome="confirmed_late"}`,

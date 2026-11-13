@@ -258,6 +258,10 @@ func main() {
 	// Before the engine starts serving streams (Dezoxy fork, see torrstor.BoundedReadahead).
 	torrstor.BoundedReadahead = !gc().PumpOnOpen
 	server.SetAPIToken(gc().APIToken)
+	// Keep-alive counters (Reliability step 8, phase a): count the engine's idle
+	// closes. Set before the engine and its ticker start. The hook only counts; it
+	// changes nothing about when a torrent closes.
+	torr.OnIdleClose = countIdleClose
 	go func() {
 		logger.Println("Starting Embedded GoStorm Engine...")
 		server.Start() // Starts Web Server on 8090 and Engine

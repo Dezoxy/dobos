@@ -290,6 +290,11 @@ func (t *Torrent) AddExpiredTime(duration time.Duration) {
 	t.muTorrent.Unlock()
 }
 
+// OnIdleClose, when set, is told the hash of every torrent the ticker closed for
+// idleness. It only counts: it must not call back into the engine. It runs after
+// muTorrent is released. Set it once at start, before the ticker runs.
+var OnIdleClose func(hash string)
+
 // UpdateStats is called periodically by the central BTServer ticker
 func (t *Torrent) UpdateStats() {
 	t.muTorrent.Lock()
@@ -302,7 +307,10 @@ func (t *Torrent) UpdateStats() {
 			// skipping discovery delay. Force=true: bypass debounce, this is the final save.
 			ForceSaveTorrentToDB(t)
 		}
-		t.bt.RemoveTorrent(t.Hash())
+		hash := t.Hash()
+		if t.bt.RemoveTorrent(hash) && OnIdleClose != nil {
+			OnIdleClose(hash.HexString())
+		}
 		return
 	}
 

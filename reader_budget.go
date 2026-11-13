@@ -329,6 +329,7 @@ func noteConfirmedLate(path string) {
 		return
 	}
 	s := v.(*TTFFSession)
+	s.confirmed.Store(true)
 	// Before the early returns: a refusal needs the fresh start whether or not the
 	// session ever crossed in phase a's sense.
 	s.budgetFloor.Store(s.unconfirmedSwarm.Load() + s.unconfirmedCache.Load())

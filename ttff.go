@@ -169,6 +169,12 @@ type TTFFSession struct {
 	stallCount      atomic.Int64
 	maxStallMS      atomic.Int64
 	tailOrDeep      atomic.Bool // read at off>=8MB or inside last 16MB (tail region)
+
+	reopens atomic.Int64 // read-path wakes of a closed torrent, for /api/sessions
+	// confirmed is sticky: a webhook confirmed the path while the session was open, or
+	// it was confirmed at register. The state at close would read false after a stop.
+	confirmed atomic.Bool
+
 	// readFailed records that a read gave up with EAGAIN or EIO, the two exits that
 	// mean the swarm did not deliver. EINTR (the caller left) and ETIMEDOUT (our own
 	// slot semaphore was full) are deliberately not recorded: neither says anything
@@ -456,6 +462,8 @@ func ttffRegister(path string, size int64, hash string, fileIndex int, headReady
 	}
 	nowN := time.Now().UnixNano()
 	ns := &TTFFSession{path: path, size: size, hash: hash, fileIndex: fileIndex}
+	confirmed := playbackConfirmed(path)
+	ns.confirmed.Store(confirmed)
 	ns.warmupHeadReady.Store(headReady)
 	ns.warmupTailReady.Store(tailReady)
 	ns.openedAt.Store(nowN)
@@ -474,6 +482,9 @@ func ttffRegister(path string, size int64, hash string, fileIndex int, headReady
 		s.lastReadAt.Store(nowN)
 		s.warmupHeadReady.Store(headReady)
 		s.warmupTailReady.Store(tailReady)
+		if confirmed {
+			s.confirmed.Store(true)
+		}
 	}
 }
 
@@ -492,6 +503,9 @@ func ttffRead(path string, src ttffSource, d time.Duration, n int, off int64) {
 		ttffStats.raCacheHit.Add(d)
 	case srcFetchBlock:
 		ttffStats.fetchBlock.Add(d)
+	}
+	if d > ttffStallDuration {
+		countStall(path)
 	}
 	if val, ok := sessions.Load(path); ok {
 		val.(*TTFFSession).recordRead(src, d, n, off)
