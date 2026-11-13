@@ -282,22 +282,28 @@ finished.
 
 These came out of reviews of the removal path, the cache directory and the
 file mapping. Steps 1 to 4 should land before a deployment depends on
-Flodni; steps 5 to 7 can land at any time. All are designed, not built.
+Flodni; steps 5 to 7 can land at any time. All are designed; step 1 is partly
+built (its text says what), the others are not built.
 
-1. **One wake path, and removals that stay removed.** The mount's open and
-   its read-time rewake wake a closed torrent from a bare magnet without
-   checking that the engine still stores it; only warm on add's
-   `WakeStored` checks. A handle left open across a removal therefore
-   re-adds the hash on its next read, with no stored metainfo, so a private
-   torrent gets DHT and PEX until its metainfo arrives (hard rule 3), and a
-   removed torrent can be stored again. All wakes go through one path that
-   refuses a hash the engine no longer stores, and a removal racing a wake
-   leaves the torrent neither loaded nor stored. Tests remove a batch of
-   torrents with fakes and injected ordering while wakes, reads and fills
-   run, and one end-to-end run removes several titles back to back while
-   another is read. Unlinking one episode of a pack through the mount
-   removes the whole torrent today; it should follow the same reference
-   check as a library removal.
+1. **One wake path, and removals that stay removed.** Partly built, see the end
+   of this item. The mount's open and its read-time rewake used to wake a closed
+   torrent from a bare magnet without checking that the engine still stores it;
+   only warm on add's `WakeStored` checked. A handle left open across a removal
+   could then re-add the hash on its next read, with no stored metainfo, so a
+   private torrent got DHT and PEX until its metainfo arrived (hard rule 3), and
+   a removed torrent could be stored again. Built (unit-tested; tests that need
+   the engine or the mount run on Linux only): unlinking one episode of a pack
+   through the mount follows the library's reference check (#138); a library add
+   is saved at once and the startup counts the stubs the engine does not store
+   (#136); every wake goes through one path, `torr.LoadStored`, that adds a
+   torrent from the engine's stored record alone and refuses a hash with no
+   record or no metainfo (a refusal answers `EIO`, is counted in
+   `flodni_wake_refused_total` and recorded as the reason `not_stored`, never as
+   a dead swarm); and a load, a save and a removal are serialised in the engine,
+   so a removal racing a wake leaves the torrent neither loaded nor stored.
+   Explicit adds (`add`, upload, `/stream?link=`) stay adds. Not built: the
+   end-to-end run that removes several titles back to back while another is
+   read, and the step is not finished until it passes.
 2. **A missing cache disk means no cache.** With `warmup_dir` on a
    separately mounted disk that is absent at start, Flodni creates the
    directory on the filesystem underneath and fills it to the quota, and it

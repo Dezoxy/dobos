@@ -5,7 +5,6 @@ import (
 
 	"flodni/internal/gostorm/settings"
 	"flodni/internal/gostorm/torr/state"
-	"flodni/internal/gostorm/torr/utils"
 
 	"github.com/anacrolix/torrent/metainfo"
 )
@@ -16,7 +15,9 @@ type tsFiles struct {
 	} `json:"GoStorm"`
 }
 
-func AddTorrentDB(torr *Torrent) {
+// AddTorrentDB writes the record. posterOK says the poster URL passed CheckImgUrl; the
+// caller checks it first, because that is a network call and must not run under lifeMu.
+func AddTorrentDB(torr *Torrent, posterOK bool) {
 	t := new(settings.TorrentDB)
 	t.TorrentSpec = torr.TorrentSpec
 	t.Title = torr.Title
@@ -32,7 +33,7 @@ func AddTorrentDB(torr *Torrent) {
 	} else {
 		t.Data = torr.Data
 	}
-	if utils.CheckImgUrl(torr.Poster) {
+	if posterOK {
 		t.Poster = torr.Poster
 	}
 	t.Size = torr.Size
