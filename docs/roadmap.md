@@ -317,6 +317,14 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
    size, and the warm shortcut checks the resolved file when the torrent is
    loaded. File ids come from the engine's own file list, and hashes are
    lower-cased.
+4. **Align the tail window to a page.** The kernel reads whole 4 KiB pages,
+   so a read of exactly the last N MiB of a file whose size is not
+   page-aligned starts a page before an N MiB tail window, and that page
+   comes from the engine instead of the cache. The end-to-end test measured
+   12 KiB so. The tail window's start is rounded down to a page boundary.
+5. **End-to-end variants as parallel jobs.** [FINISHED] CI runs each variant
+   on its own runner, so wall time stays near the longest variant as variants
+   are added, and variants can no longer collide on container names.
 4. **Align the tail window to a page.** [FINISHED] The kernel reads whole
    4 KiB pages, so a read of exactly the last N MiB of a file whose size is
    not page-aligned starts a page before an N MiB tail window, and that page
@@ -577,6 +585,10 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
   the file under 1 s while a reader is held. The test found that a held read
   froze every new open of the file; #133 fixed it. The pump park rests on
   fake-engine tests only.
+- 2026-11-13, readiness step 5: CI runs each end-to-end variant on its own
+  runner (a matrix after the image job, which hands over both images as an
+  artifact), and one job named `End-to-end` fails if any variant failed; it is
+  the check to require.
 - 2026-11-13, before a deployment relies on it, step 4: the tail window's start
   is rounded down to a 4 KiB boundary, so a read of exactly the last N MiB of
   a file that is not page-aligned stays inside the window. Existing tail covers

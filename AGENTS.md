@@ -172,12 +172,19 @@ agent's frontmatter. This section overrides the model advice in
   only for a one-line fix.
 - **Advisor: Fable 5.2**, pinned as `claude-fable-5-2` in `advisorModel`
   and in the `advisor` agent, because the `fable` alias resolves to an
-  older version. Bump both together. Consulted before committing to an approach, when an
-  error recurs, and before declaring a task done. Use the built-in advisor
-  (`advisorModel`) when the session offers it; it re-reads the whole
-  transcript, so `/compact` before long stretches. Otherwise brief the
-  `advisor` agent: it sees only the brief, so include the goal, the
-  options, the evidence and the constraints.
+  older version. Bump both together. It is expensive in tokens, so use it
+  only where it matters: a plan or a diff review of a change near private
+  torrents (hard rule 3), the vendored engine or its locks, concurrency,
+  or data that can be lost (the cache, the state database, removals), and
+  a diagnosis still stuck after one round. Skip it for docs and roadmap
+  changes, test-only changes, small fixes with a clear cause and a failing
+  test, and follow-up rounds after fixes, which the orchestrator verifies
+  itself. Prefer one review of the finished diff to a plan plus a review.
+  Use the built-in advisor (`advisorModel`) when the session offers it; it
+  re-reads the whole transcript, so `/compact` before long stretches.
+  Otherwise brief the `advisor` agent narrowly: it sees only the brief, so
+  name the files and the exact questions, the evidence and the
+  constraints.
 - **Builder: Sonnet at high effort.** All code and test writing goes to
   `implementer` against a written contract, and so do mechanical edits that
   span more than a couple of files. Reviews go to the reviewers, build
