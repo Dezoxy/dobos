@@ -126,8 +126,7 @@ func (d *DiskWarmupCache) FillWindows(req FillRequest) (FillResult, error) {
 	hash, id := req.Key.Hash, req.Key.FileIdx
 	hpath, tpath := d.filePath(hash, id), d.tailPath(hash, id)
 	headTarget := min(FileSize, req.FileSize)
-	tailStart := max(0, req.FileSize-TailWarmupSize)
-	tailLen := req.FileSize - tailStart
+	tailStart, tailLen := d.tailWindow(tpath, req.FileSize)
 
 	headHave := d.headSize(hpath)
 	if headHave >= headTarget && d.TailReady(hash, id) {
