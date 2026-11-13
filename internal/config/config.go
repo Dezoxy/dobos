@@ -139,6 +139,20 @@ type Config struct {
 	// off; a negative or absurd value is replaced by the default (7). Read live.
 	PlaybackWebhookWarnDays int `json:"playback_webhook_warn_days"`
 
+	// PlaybackKeepaliveMinutes is the keep-alive's idle ceiling (keepalive.go): a torrent
+	// with a webhook-confirmed playback is not closed for idleness until this many
+	// minutes after the last read or play/resume webhook, or until the stop webhook. It
+	// is the keep-alive's one off switch: 0 turns it off and every torrent idle-closes,
+	// a confirmed one included (priority no longer holds it). A negative or absurd (over
+	// a day) value is replaced by the default (15). Read live.
+	PlaybackKeepaliveMinutes int `json:"playback_keepalive_minutes"`
+	// PlaybackKeepaliveMaxTorrents caps how many torrents the keep-alive holds at once,
+	// the most recently active first. The rest fall back to the plain idle close. Minimum
+	// 1: 0 or a negative value is replaced by the default (4), so 0 never means off or
+	// unlimited here. Size it so cap x CacheSize stays well under the memory limit. Read
+	// live.
+	PlaybackKeepaliveMaxTorrents int `json:"playback_keepalive_max_torrents"`
+
 	// --- External Services (V1.4.6) ---
 	Plex struct {
 		URL         string `json:"url"`
@@ -223,6 +237,9 @@ func LoadConfig() Config {
 		WarmCatchupPerHour:      20,
 		WarmCatchupScope:        "all",
 		PlaybackWebhookWarnDays: 7,
+
+		PlaybackKeepaliveMinutes:     15,
+		PlaybackKeepaliveMaxTorrents: 4,
 
 		GoStormBaseURL: "http://127.0.0.1:8090",
 		MetricsPort:    9080,
@@ -431,6 +448,16 @@ func (c *Config) finalize() {
 	if c.PlaybackWebhookWarnDays < 0 || c.PlaybackWebhookWarnDays > 36500 {
 		log.Printf("[Config] WARNING: playback_webhook_warn_days %d is out of range; using 7", c.PlaybackWebhookWarnDays)
 		c.PlaybackWebhookWarnDays = 7
+	}
+
+	// 0 stays 0: keep-alive off. Above a day the ceiling is a typo, not a choice.
+	if c.PlaybackKeepaliveMinutes < 0 || c.PlaybackKeepaliveMinutes > 1440 {
+		log.Printf("[Config] WARNING: playback_keepalive_minutes %d is out of range; using 15", c.PlaybackKeepaliveMinutes)
+		c.PlaybackKeepaliveMinutes = 15
+	}
+	if c.PlaybackKeepaliveMaxTorrents < 1 {
+		log.Printf("[Config] WARNING: playback_keepalive_max_torrents %d is below 1; using 4", c.PlaybackKeepaliveMaxTorrents)
+		c.PlaybackKeepaliveMaxTorrents = 4
 	}
 
 	// Calculate MetadataCacheSize in bytes

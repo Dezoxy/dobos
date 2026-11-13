@@ -26,11 +26,11 @@
 # middle of the read, finishes the read and waits for the session to close.
 # The keep-alive variant (pump off, auth off, the engine's 15 s idle timeout) reads
 # one range and waits for the engine's idle close, posts a play webhook while the
-# torrent is closed (the engine's priority mark is then skipped), reads on the same
-# open handle (a reopen) and waits past the timeout again. It asserts that the
-# phase a series exist, that the unconfirmed idle close was counted, that the read
-# reopened the torrent, and the known leak: idle_closes{confirmed="true"} at least 1
-# (phase b flips it to 0).
+# torrent is closed, and reads on the same open handle (a reopen). The keep-alive
+# (playback_keepalive_minutes, default 15) now holds it: over two idle windows with no
+# reader no idle close may be counted, and flodni_keepalive_held_torrents is 1. A
+# media.stop webhook then releases it (releases{reason="stop"} 1) and the torrent
+# idle-closes within the stop's 30 s grace. The ceiling is unit-tested only.
 # The budget-refusal variant (margin 16 MiB, refuse_unconfirmed_reads on, auth off) runs
 # the opt-in refusal against the real mount: not armed, a scan refused with EIO after
 # the 15 s hold, no failed read, the windows served, the hold lifted by a late play, a
@@ -1258,16 +1258,14 @@ prom_value() {
   awk -v s="$2" 'index($0, s " ") == 1 { printf "%d", $2; f = 1 } END { if (!f) printf "absent" }' <<<"$1"
 }
 
-# run_keepalive: reliability step 8, phase a, and the entry condition for phase b. One
-# open handle reads 1 MiB at 60 MiB (outside the 4 MiB windows, so the engine serves
-# it). With no reader the engine closes the torrent after its 15 s idle timeout: the
-# unconfirmed flodni_torrent_idle_closes_total must reach 1. A play webhook is then
-# posted while the torrent is closed, so the engine's mark is skipped (the leak the
-# roadmap suspects); the same handle reads on (a reopen) and the variant waits past
-# the timeout again. Asserted: the six series exist, the unconfirmed idle close was
-# counted, the second read reopened the torrent, and idle_closes{confirmed="true"} is
-# at least 1: it pins today's leak (the mark is skipped on a closed torrent) and is the
-# entry condition for phase b, which flips it to 0.
+# run_keepalive: reliability step 8, phase a counters and the phase b hold. One open
+# handle reads 1 MiB at 60 MiB (outside the 4 MiB windows, so the engine serves it).
+# With no reader and no confirmed playback the engine closes the torrent after its 15 s
+# idle timeout: the unconfirmed flodni_torrent_idle_closes_total must reach 1. A play
+# webhook is then posted while the torrent is closed (the old per-object mark would be
+# skipped here, the leak phase a measured); the same handle reads on (a reopen). The
+# hold derives from the playback state, so the reopened torrent must not idle-close
+# over two idle windows. A media.stop webhook then releases it and the torrent closes.
 run_keepalive() {
   local dir t0=$SECONDS v=keep-alive
   start_stack "$v"
@@ -1328,30 +1326,8 @@ run_keepalive() {
     return 1
   fi
 
-  # Past the idle timeout again (15 s plus the 1 s ticker): poll up to 45 s for one more
-  # idle close than before the second read.
-  local total=$total0
-  deadline=$((SECONDS + 45))
-  while [ "$SECONDS" -lt "$deadline" ]; do
-    body=$(prom_body)
-    total=$(( $(prom_value "$body" 'flodni_torrent_idle_closes_total{confirmed="false"}') + $(prom_value "$body" 'flodni_torrent_idle_closes_total{confirmed="true"}') ))
-    [ "$total" -gt "$total0" ] && break
-    sleep 1
-  done
-  local s c missing=""
-  for s in flodni_torrent_idle_closes_total flodni_torrent_reopens_total flodni_read_stalls_total; do
-    for c in true false; do
-      [ "$(prom_value "$body" "$s{confirmed=\"$c\"}")" = absent ] && missing="$missing $s{$c}"
-    done
-  done
-  if [ -n "$missing" ]; then
-    echo "FAIL ($v): series missing:$missing" >&2
-    dump_diagnostics
-    return 1
-  fi
-  echo "MEASURE ($v): $(grep -E '^flodni_(torrent_idle_closes|torrent_reopens|read_stalls)_total\{' <<<"$body" | tr '\n' ' ')" >&2
-  echo "MEASURE ($v): idle_closes{confirmed=\"true\"}=$(prom_value "$body" 'flodni_torrent_idle_closes_total{confirmed="true"}') reopens{confirmed=\"true\"}=$(prom_value "$body" 'flodni_torrent_reopens_total{confirmed="true"}') (entry condition for phase b: idle_closes above 0)" >&2
   # The torrent was closed when the webhook arrived: the second read must have woken it.
+  body=$(prom_body)
   local ro
   ro=$(( $(prom_value "$body" 'flodni_torrent_reopens_total{confirmed="true"}') + $(prom_value "$body" 'flodni_torrent_reopens_total{confirmed="false"}') ))
   if [ "$ro" -lt 1 ]; then
@@ -1359,19 +1335,76 @@ run_keepalive() {
     dump_diagnostics
     return 1
   fi
-  # Pins today's known leak: the webhook found the torrent closed, the engine's mark was
-  # skipped, the reopened torrent idled out although a playback is confirmed. Phase b
-  # (the hold) flips this to 0; it is the entry condition for phase b.
-  local ict
-  ict=$(prom_value "$body" 'flodni_torrent_idle_closes_total{confirmed="true"}')
-  if [ "$ict" -lt 1 ]; then
-    echo "FAIL ($v): idle_closes{confirmed=\"true\"} is $ict, expected at least 1 (the known leak); if the hold landed, flip this assertion" >&2
+
+  # Two idle windows (2 x (15 s timeout + 1 s ticker) + 2 s) with no reader: the hold
+  # must keep the reopened torrent open, so no idle close of either label may appear.
+  local total=$total0 ict deadline=$((SECONDS + 34))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    body=$(prom_body)
+    ict=$(prom_value "$body" 'flodni_torrent_idle_closes_total{confirmed="true"}')
+    total=$(( $(prom_value "$body" 'flodni_torrent_idle_closes_total{confirmed="false"}') + ${ict/absent/0} ))
+    if [ "$total" -gt "$total0" ]; then
+      echo "FAIL ($v): a confirmed torrent idle-closed under the keep-alive: idle_closes{confirmed=\"true\"}=$ict, total $total (was $total0)" >&2
+      dump_diagnostics
+      return 1
+    fi
+    sleep 1
+  done
+  if [ "$ict" != 0 ]; then
+    echo "FAIL ($v): idle_closes{confirmed=\"true\"} is $ict, must stay 0 under the keep-alive" >&2
     dump_diagnostics
     return 1
   fi
+  local held
+  held=$(prom_value "$body" 'flodni_keepalive_held_torrents')
+  if [ "$held" != 1 ]; then
+    echo "FAIL ($v): flodni_keepalive_held_torrents is $held after two idle windows, expected 1" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): held through two idle windows: idle_closes{confirmed=\"true\"}=$ict, held_torrents=$held, $((SECONDS - t0))s since start" >&2
+
+  # The stop webhook releases the hold at once; the torrent then idle-closes within the
+  # stop's 30 s grace (plus the ticker).
+  resp=$(post_webhook "${payload/media.play/media.stop}")
+  if ! head -n 1 <<<"$resp" | grep -q ' 200 '; then
+    echo "FAIL ($v): stop webhook post: $(head -n 1 <<<"$resp")" >&2
+    dump_diagnostics
+    return 1
+  fi
+  deadline=$((SECONDS + 60))
+  local rel
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    body=$(prom_body)
+    total=$(( $(prom_value "$body" 'flodni_torrent_idle_closes_total{confirmed="false"}') + $(prom_value "$body" 'flodni_torrent_idle_closes_total{confirmed="true"}') ))
+    [ "$total" -gt "$total0" ] && break
+    sleep 1
+  done
+  rel=$(prom_value "$body" 'flodni_keepalive_releases_total{reason="stop"}')
+  if [ "$total" -le "$total0" ] || [ "$rel" != 1 ]; then
+    echo "FAIL ($v): after media.stop: idle closes $total (was $total0), releases{reason=\"stop\"}=$rel, expected one close and 1 release" >&2
+    dump_diagnostics
+    return 1
+  fi
+  local s c missing=""
+  for s in flodni_torrent_idle_closes_total flodni_torrent_reopens_total flodni_read_stalls_total; do
+    for c in true false; do
+      [ "$(prom_value "$body" "$s{confirmed=\"$c\"}")" = absent ] && missing="$missing $s{$c}"
+    done
+  done
+  for s in 'flodni_keepalive_releases_total{reason="stop"}' 'flodni_keepalive_releases_total{reason="ceiling"}' flodni_keepalive_evicted_total flodni_keepalive_held_torrents; do
+    [ "$(prom_value "$body" "$s")" = absent ] && missing="$missing $s"
+  done
+  if [ -n "$missing" ]; then
+    echo "FAIL ($v): series missing:$missing" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "MEASURE ($v): $(grep -E '^flodni_(torrent_idle_closes_total|torrent_reopens_total|read_stalls_total|keepalive_[a-z_]+)[{ ]' <<<"$body" | tr '\n' ' ')" >&2
+  echo "ok ($v): media.stop released the hold, releases{reason=\"stop\"}=$rel, the torrent idle-closed, $((SECONDS - t0))s since start" >&2
   docker logs "$flodni" 2>&1 | grep -E 'Playback confirmed by webhook|High Priority|Re-activated|Torrent close by timeout' | sed 's/^/  log: /' >&2 || true
   check_no_warning "$v" matched || return 1
-  echo "PASS ($v): phase a series present, the unconfirmed idle close counted, the known leak (confirmed idle close) asserted, $((SECONDS - t0))s" >&2
+  echo "PASS ($v): the unconfirmed idle close counted, the confirmed torrent held through two idle windows, released by stop, $((SECONDS - t0))s" >&2
   stop_stack
 }
 # prom_num body series: the integer value of one exposition series, 0 if absent.

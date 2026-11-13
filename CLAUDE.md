@@ -73,11 +73,12 @@ A change that violates one is wrong even if it works.
   a title that was never warmed, sends a play webhook in the middle of a
   read past the reader-budget margin and checks it counts as confirmed late,
   measures the engine's idle closes with a webhook while the torrent is
-  closed, runs the opt-in refusal against the mount (a scan cut at the margin
-  with EIO and no failed read, a late play lifting the hold), then replaces a
-  TV episode with a second release and refuses a third that never delivers,
-  and removes three titles back to back while a fourth is read (needs Docker
-  and `/dev/fuse`). The module
+  closed, holds a torrent with a confirmed playback through two idle windows
+  and releases it on a stop webhook, runs the opt-in refusal against the mount
+  (a scan cut at the margin with EIO and no failed read, a late play lifting
+  the hold), then replaces a TV episode with a second release and refuses a
+  third that never delivers, and removes three titles back to back while a
+  fourth is read (needs Docker and `/dev/fuse`). The module
   and the binary are `flodni`; the `FLODNI_*` environment variables win over
   the older `TIRAMISU_*` names, and persisted file names (`tiramisu.db`,
   `tiramisu.log`) stay as they were.

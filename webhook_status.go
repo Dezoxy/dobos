@@ -280,9 +280,9 @@ var hasherComms = map[string]bool{
 func isHasherOrAnalysisTool(comm string) bool { return hasherComms[comm] }
 
 // webhookStartupLine is the one line that says what the webhook-keyed features need and
-// whether a webhook ever matched. The keep-alive (designed, not built) appends its own
-// field here when it lands.
-func webhookStartupLine(now time.Time, matchedAt int64, playRecorded, refuseOn bool, warnDays int) string {
+// whether a webhook ever matched. keepalive is the keep-alive's field (keepaliveStartupField),
+// so "never matched" reads next to "keep-alive configured but inactive".
+func webhookStartupLine(now time.Time, matchedAt int64, playRecorded, refuseOn bool, warnDays int, keepalive string) string {
 	last := "never"
 	if matchedAt > 0 {
 		t := time.Unix(min(matchedAt, now.Unix()), 0).UTC()
@@ -300,8 +300,8 @@ func webhookStartupLine(now time.Time, matchedAt int64, playRecorded, refuseOn b
 	if warnDays > 0 {
 		warn = fmt.Sprintf("warn after %d days", warnDays)
 	}
-	return fmt.Sprintf("[Webhook] last matched play webhook: %s; played-file protection: %s; reader budget refusal: %s; %s",
-		last, prot, refuse, warn)
+	return fmt.Sprintf("[Webhook] last matched play webhook: %s; played-file protection: %s; reader budget refusal: %s; %s; %s",
+		last, prot, refuse, warn, keepalive)
 }
 
 // startWebhookStatus logs the startup line, evaluates once and then every hour until stop
@@ -312,7 +312,9 @@ func startWebhookStatus(m *webhookMarks, stop <-chan struct{}) {
 		refuse = c.RefuseUnconfirmedReads
 	}
 	days := webhookWarnDays()
-	m.logf("%s", webhookStartupLine(m.now(), m.matched.at.Load(), fileStates.PlayRecorded(), refuse, days))
+	minutes, maxTorrents := keepaliveSettings()
+	m.logf("%s", webhookStartupLine(m.now(), m.matched.at.Load(), fileStates.PlayRecorded(), refuse, days,
+		keepaliveStartupField(minutes, maxTorrents, m.matched.at.Load() > 0)))
 	m.evaluate(days)
 	go func() {
 		t := time.NewTicker(webhookEvaluateInterval)

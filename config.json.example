@@ -26,6 +26,8 @@
   "unconfirmed_read_margin_mb": 64,
   "refuse_unconfirmed_reads": false,
   "playback_webhook_warn_days": 7,
+  "playback_keepalive_minutes": 15,
+  "playback_keepalive_max_torrents": 4,
   "plex": {
     "url": "http://127.0.0.1:32400",
     "token": "",
