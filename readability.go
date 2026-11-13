@@ -88,6 +88,7 @@ type readabilityStore interface {
 	RecordMetadataFailure(hash, reason, source string, at time.Time) error
 	RecordSwarmRead(hash string, at time.Time) error
 	ResetMetadataFailures(hash string) error
+	RecordNotStored(hash, source string, at time.Time) error
 }
 
 // newReachabilityRecorder returns the native.ReachabilityOutcome hook that writes the
@@ -101,6 +102,10 @@ func newReachabilityRecorder(store readabilityStore, logger *log.Logger) func(na
 			err = store.RecordSwarmRead(o.Hash, time.Now())
 		case native.OutcomeMetainfo:
 			err = store.ResetMetadataFailures(o.Hash)
+		case native.OutcomeNotStored:
+			// Deliberately not countDeadSwarmVerdict and not RecordMetadataFailure: the
+			// swarm was never asked.
+			err = store.RecordNotStored(o.Hash, o.Source, time.Now())
 		case native.OutcomeFailed:
 			short := o.Hash
 			if len(short) > 8 {

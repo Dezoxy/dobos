@@ -73,7 +73,15 @@ func TestHandlePrometheus(t *testing.T) {
 		"flodni_readahead_cache_bytes", "flodni_readahead_cache_active_bytes", "flodni_readahead_cache_entries",
 		"flodni_fuse_short_reads_total", "flodni_fuse_short_read_results_total", "flodni_fetch_dedup_total",
 		"flodni_unconfirmed_read_bytes_total", "flodni_unconfirmed_read_sessions_total",
-		"flodni_playback_webhooks_received_total",
+		"flodni_unconfirmed_read_refused_reads_total", "flodni_unconfirmed_read_holds_total",
+		"flodni_unconfirmed_read_confirmed_after_refusal_total",
+		"flodni_playback_webhooks_received_total", "flodni_warm_fills_total",
+		"flodni_playback_webhook_last_timestamp_seconds", "flodni_unconfirmed_read_last_session_timestamp_seconds", "flodni_warning",
+		"flodni_torrent_idle_closes_total", "flodni_torrent_reopens_total", "flodni_read_stalls_total",
+		"flodni_keepalive_releases_total", "flodni_keepalive_evicted_total", "flodni_keepalive_held_torrents",
+		"flodni_wake_refused_total",
+		"flodni_warm_fill_bytes_total", "flodni_warm_cache_failures_total", "flodni_warm_queue_files", "flodni_warm_paused",
+		"flodni_stub_index_mismatch_total",
 	} {
 		if !strings.Contains(body, "# TYPE "+fam+" ") {
 			t.Errorf("family %s missing", fam)
@@ -88,11 +96,32 @@ func TestHandlePrometheus(t *testing.T) {
 		`flodni_warmup_cold_reopen_total{previously_played="true"}`,
 		`flodni_warmup_cold_reopen_total{previously_played="false"}`,
 		`flodni_playback_starts_total`,
+		`flodni_stub_index_mismatch_total`,
+		`flodni_torrent_idle_closes_total{confirmed="true"}`,
+		`flodni_torrent_idle_closes_total{confirmed="false"}`,
+		`flodni_torrent_reopens_total{confirmed="true"}`,
+		`flodni_torrent_reopens_total{confirmed="false"}`,
+		`flodni_read_stalls_total{confirmed="true"}`,
+		`flodni_keepalive_releases_total{reason="stop"}`,
+		`flodni_keepalive_releases_total{reason="ceiling"}`,
+		`flodni_keepalive_evicted_total`,
+		`flodni_keepalive_held_torrents`,
+		`flodni_read_stalls_total{confirmed="false"}`,
 		`flodni_unconfirmed_read_bytes_total`,
 		`flodni_unconfirmed_read_sessions_total{outcome="unconfirmed"}`,
 		`flodni_unconfirmed_read_sessions_total{outcome="confirmed_late"}`,
+		`flodni_unconfirmed_read_refused_reads_total`,
+		`flodni_unconfirmed_read_holds_total{result="lifted"}`,
+		`flodni_unconfirmed_read_holds_total{result="refused"}`,
+		`flodni_unconfirmed_read_confirmed_after_refusal_total`,
 		`flodni_playback_webhooks_received_total{matched="true"}`,
 		`flodni_playback_webhooks_received_total{matched="false"}`,
+		`flodni_playback_webhook_last_timestamp_seconds{matched="true"}`,
+		`flodni_playback_webhook_last_timestamp_seconds{matched="false"}`,
+		`flodni_unconfirmed_read_last_session_timestamp_seconds`,
+		`flodni_warning{name="no_play_webhook"}`,
+		`flodni_warm_fills_total{trigger="mount",outcome="warmed"}`,
+		`flodni_warm_fills_total{trigger="mount",outcome="cached"}`,
 	} {
 		if !strings.Contains(body, want+" ") {
 			t.Errorf("series %s missing", want)
@@ -159,8 +188,9 @@ type failingStore struct{}
 func (failingStore) RecordMetadataFailure(string, string, string, time.Time) error {
 	return errors.New("disk full")
 }
-func (failingStore) RecordSwarmRead(string, time.Time) error { return nil }
-func (failingStore) ResetMetadataFailures(string) error      { return nil }
+func (failingStore) RecordSwarmRead(string, time.Time) error         { return nil }
+func (failingStore) ResetMetadataFailures(string) error              { return nil }
+func (failingStore) RecordNotStored(string, string, time.Time) error { return nil }
 
 func TestVerdictCountedWhenTheStoreFails(t *testing.T) {
 	rec := newReachabilityRecorder(failingStore{}, log.New(io.Discard, "", 0))

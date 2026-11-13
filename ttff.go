@@ -4,6 +4,7 @@ import (
 	"flodni/internal/gostorm/native"
 	"flodni/internal/warmup"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -169,6 +170,12 @@ type TTFFSession struct {
 	stallCount      atomic.Int64
 	maxStallMS      atomic.Int64
 	tailOrDeep      atomic.Bool // read at off>=8MB or inside last 16MB (tail region)
+
+	reopens atomic.Int64 // read-path wakes of a closed torrent, for /api/sessions
+	// confirmed is sticky: a webhook confirmed the path while the session was open, or
+	// it was confirmed at register. The state at close would read false after a stop.
+	confirmed atomic.Bool
+
 	// readFailed records that a read gave up with EAGAIN or EIO, the two exits that
 	// mean the swarm did not deliver. EINTR (the caller left) and ETIMEDOUT (our own
 	// slot semaphore was full) are deliberately not recorded: neither says anything
@@ -194,9 +201,18 @@ type TTFFSession struct {
 	unconfirmedCache atomic.Int64
 	overMarginAt     atomic.Int64
 	confirmedLateAt  atomic.Int64
-	budgetResolved   atomic.Bool   // sessions_total counted (CAS-once)
-	callerPid        atomic.Uint32 // the latest Open's caller, from the FUSE context
+	budgetResolved   atomic.Bool            // sessions_total counted (CAS-once)
+	callerPid        atomic.Uint32          // the latest Open's caller, from the FUSE context
+	overMarginComm   atomic.Pointer[string] // the caller's process name when the session crossed the margin
 	callerUID        atomic.Uint32
+
+	// budgetFloor is the tally when a webhook last confirmed the file: refusal counts
+	// from there, so a stopped play does not leave the next reader pre-spent.
+	// refusedReads is how many reads the gate refused; confirmedAfterRefusal makes the
+	// confirmed-after-refusal counter once per session.
+	budgetFloor           atomic.Int64
+	refusedReads          atomic.Int64
+	confirmedAfterRefusal atomic.Bool
 
 	closeOnce sync.Once
 	closed    atomic.Bool
@@ -234,7 +250,7 @@ func (s *TTFFSession) recordRead(src ttffSource, d time.Duration, n int, off int
 		if src == srcFetchBlock && !s.servedByNet.Load() && sessionActivePeers(s.hash) > 0 {
 			s.servedByNet.Store(true)
 		}
-		if off >= ttffDeepReadOff || (s.size > 0 && off >= s.size-warmup.TailWarmupSize) {
+		if off >= ttffDeepReadOff || (s.size > 0 && off >= warmup.TailStart(s.size)) {
 			s.tailOrDeep.Store(true)
 			s.firstDeepReadAt.CompareAndSwap(0, nowN)
 		}
@@ -447,6 +463,8 @@ func ttffRegister(path string, size int64, hash string, fileIndex int, headReady
 	}
 	nowN := time.Now().UnixNano()
 	ns := &TTFFSession{path: path, size: size, hash: hash, fileIndex: fileIndex}
+	confirmed := playbackConfirmed(path)
+	ns.confirmed.Store(confirmed)
 	ns.warmupHeadReady.Store(headReady)
 	ns.warmupTailReady.Store(tailReady)
 	ns.openedAt.Store(nowN)
@@ -465,6 +483,9 @@ func ttffRegister(path string, size int64, hash string, fileIndex int, headReady
 		s.lastReadAt.Store(nowN)
 		s.warmupHeadReady.Store(headReady)
 		s.warmupTailReady.Store(tailReady)
+		if confirmed {
+			s.confirmed.Store(true)
+		}
 	}
 }
 
@@ -483,6 +504,9 @@ func ttffRead(path string, src ttffSource, d time.Duration, n int, off int64) {
 		ttffStats.raCacheHit.Add(d)
 	case srcFetchBlock:
 		ttffStats.fetchBlock.Add(d)
+	}
+	if d > ttffStallDuration {
+		countStall(path)
 	}
 	if val, ok := sessions.Load(path); ok {
 		val.(*TTFFSession).recordRead(src, d, n, off)
@@ -521,18 +545,57 @@ func ttffReleaseClose(path string) {
 	}
 }
 
-// ttffCleanupLoop closes sessions idle for ttffIdleClose, or idle beyond 30s
-// once older than ttffMaxLife (zombie handles with periodic probe reads);
-// active playbacks are never closed by age.
+// Test-only overrides of the session idle close and the cleanup tick, read once at
+// start. They exist so the end-to-end variants that wait for a session to close do not
+// wait minutes; they are not configuration.
+const (
+	envTestSessionIdleClose = "FLODNI_TEST_SESSION_IDLE_CLOSE"
+	envTestSessionTick      = "FLODNI_TEST_SESSION_TICK"
+	ttffTestMin             = time.Second
+	ttffTestMax             = 10 * time.Minute
+	ttffDefaultTick         = 60 * time.Second
+)
+
+// ttffTiming returns the idle close and the cleanup tick: the defaults, or the
+// test-only environment values when they parse as Go durations within 1s..10m. A value
+// outside that is ignored. notes says what was applied or ignored, for one log line each.
+func ttffTiming(getenv func(string) string) (idle, tick time.Duration, notes []string) {
+	idle, tick = ttffIdleClose, ttffDefaultTick
+	for _, o := range []struct {
+		name string
+		dst  *time.Duration
+	}{{envTestSessionIdleClose, &idle}, {envTestSessionTick, &tick}} {
+		raw := getenv(o.name)
+		if raw == "" {
+			continue
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < ttffTestMin || d > ttffTestMax {
+			notes = append(notes, fmt.Sprintf("%s=%q ignored: want a duration from %s to %s", o.name, raw, ttffTestMin, ttffTestMax))
+			continue
+		}
+		*o.dst = d
+		notes = append(notes, fmt.Sprintf("%s=%s (test only)", o.name, d))
+	}
+	return idle, tick, notes
+}
+
+// ttffCleanupLoop closes sessions idle for the idle close (ttffIdleClose unless a test
+// overrides it), or idle beyond 30s once older than ttffMaxLife (zombie handles with
+// periodic probe reads); active playbacks are never closed by age.
 func ttffCleanupLoop() {
-	ticker := time.NewTicker(60 * time.Second)
+	idleClose, tickEvery, notes := ttffTiming(os.Getenv)
+	for _, n := range notes {
+		logger.Printf("[Sessions] %s", n)
+	}
+	ticker := time.NewTicker(tickEvery)
 	defer ticker.Stop()
 	for range ticker.C {
 		nowN := time.Now().UnixNano()
 		sessions.Range(func(key, val interface{}) bool {
 			s := val.(*TTFFSession)
 			idle := nowN - s.lastReadAt.Load()
-			if idle > int64(ttffIdleClose) ||
+			if idle > int64(idleClose) ||
 				(idle > int64(30*time.Second) && nowN-s.openedAt.Load() > int64(ttffMaxLife)) {
 				s.closeSession()
 			}

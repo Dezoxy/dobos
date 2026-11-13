@@ -94,6 +94,25 @@ type Config struct {
 	// WarmupDir; upstream keeps 64 MB and 16 MB.
 	WarmupHeadSizeMB int64 `json:"warmup_head_size_mb"`
 	WarmupTailSizeMB int64 `json:"warmup_tail_size_mb"`
+	// WarmOnAdd completes the head and tail windows of every file the library API files
+	// (Dezoxy fork, Readiness step 2): the swarm is read once, at add time, instead of
+	// at the first play. Off by default: it downloads those windows for every title
+	// added, which costs download volume on a private tracker. Read at each add, and
+	// effective only with WarmupDir set.
+	WarmOnAdd bool `json:"warm_on_add"`
+	// WarmCatchupPerHour is the pace of catch-up (Readiness step 3): the library files
+	// whose windows were never warmed are fed to the warmer at this many files per hour,
+	// newest first, never evicting. It runs only with WarmOnAdd on and WarmupDir set,
+	// and needs the state database. 0 turns catch-up off, with its day-scale retries;
+	// a negative value is refused at load and replaced by the default (20). Read on
+	// each feed.
+	WarmCatchupPerHour int `json:"warm_catchup_per_hour"`
+	// WarmCatchupScope says which files catch-up feeds (roadmap, step 8): "all" (the
+	// default) is every library file not warm on disk, not evicted and not failing;
+	// "retries" is only the files warm on add attempted and did not finish (a failed
+	// read, dropped_quota, lost, write_failed, or queued for over an hour with no
+	// outcome), never the cold backlog. An unknown value is replaced by "all" at load.
+	WarmCatchupScope string `json:"warm_catchup_scope"`
 	// PlayedProtectionDays is how long a play confirmed by the media server keeps a
 	// file out of the first rounds of quota eviction, counted from its last play.
 	// After that the file ranks as never played. 0 means a play protects forever;
@@ -102,9 +121,37 @@ type Config struct {
 
 	// UnconfirmedReadMarginMB is how many bytes a reader with no confirmed playback may
 	// take, past the head and tail windows, before the session is logged and counted
-	// (reader_budget.go). It only measures: nothing is refused. 0 logs a session at its
+	// (reader_budget.go). On its own it only measures; with RefuseUnconfirmedReads on it is also where refusal starts. 0 logs a session at its
 	// first byte past the windows; a negative or absurd value is replaced by the default.
 	UnconfirmedReadMarginMB int64 `json:"unconfirmed_read_margin_mb"`
+
+	// RefuseUnconfirmedReads is the opt-in switch for refusing reads: once a session of a
+	// file with no confirmed playback has taken the margin past the windows, further
+	// fetches are held for a webhook and then refused with EIO (reader_budget.go). Off
+	// unless the owner turns it on; read at every read. It enforces only after a play
+	// webhook matched a file since start. With it off no read is
+	// refused or slowed.
+	RefuseUnconfirmedReads bool `json:"refuse_unconfirmed_reads"`
+
+	// PlaybackWebhookWarnDays is the window of the "no play webhook" warning
+	// (webhook_status.go): it is raised when a reader session closed unconfirmed in the
+	// last N days and no play webhook matched a file in that time. 0 turns the warning
+	// off; a negative or absurd value is replaced by the default (7). Read live.
+	PlaybackWebhookWarnDays int `json:"playback_webhook_warn_days"`
+
+	// PlaybackKeepaliveMinutes is the keep-alive's idle ceiling (keepalive.go): a torrent
+	// with a webhook-confirmed playback is not closed for idleness until this many
+	// minutes after the last read or play/resume webhook, or until the stop webhook. It
+	// is the keep-alive's one off switch: 0 turns it off and every torrent idle-closes,
+	// a confirmed one included (priority no longer holds it). A negative or absurd (over
+	// a day) value is replaced by the default (15). Read live.
+	PlaybackKeepaliveMinutes int `json:"playback_keepalive_minutes"`
+	// PlaybackKeepaliveMaxTorrents caps how many torrents the keep-alive holds at once,
+	// the most recently active first. The rest fall back to the plain idle close. Minimum
+	// 1: 0 or a negative value is replaced by the default (4), so 0 never means off or
+	// unlimited here. Size it so cap x CacheSize stays well under the memory limit. Read
+	// live.
+	PlaybackKeepaliveMaxTorrents int `json:"playback_keepalive_max_torrents"`
 
 	// --- External Services (V1.4.6) ---
 	Plex struct {
@@ -187,6 +234,12 @@ func LoadConfig() Config {
 
 		PlayedProtectionDays:    90,
 		UnconfirmedReadMarginMB: 64,
+		WarmCatchupPerHour:      20,
+		WarmCatchupScope:        "all",
+		PlaybackWebhookWarnDays: 7,
+
+		PlaybackKeepaliveMinutes:     15,
+		PlaybackKeepaliveMaxTorrents: 4,
 
 		GoStormBaseURL: "http://127.0.0.1:8090",
 		MetricsPort:    9080,
@@ -364,6 +417,18 @@ func (c *Config) finalize() {
 		c.PlayedProtectionDays = 90
 	}
 
+	if c.WarmCatchupPerHour < 0 {
+		log.Printf("[Config] WARNING: warm_catchup_per_hour %d is negative; using 20", c.WarmCatchupPerHour)
+		c.WarmCatchupPerHour = 20
+	}
+
+	if c.WarmCatchupScope != "all" && c.WarmCatchupScope != "retries" {
+		if c.WarmCatchupScope != "" {
+			log.Printf("[Config] WARNING: warm_catchup_scope %q is not \"all\" or \"retries\"; using \"all\"", c.WarmCatchupScope)
+		}
+		c.WarmCatchupScope = "all"
+	}
+
 	// Above ~100,000 days the protection time overflows a duration and would turn
 	// protection off by accident.
 	if c.PlayedProtectionDays > 36500 {
@@ -378,6 +443,22 @@ func (c *Config) finalize() {
 		c.UnconfirmedReadMarginMB = 64
 	}
 	c.UnconfirmedReadMargin = c.UnconfirmedReadMarginMB * 1024 * 1024
+
+	// Above 100 years the window is a typo, not a choice. 0 stays 0: warning off.
+	if c.PlaybackWebhookWarnDays < 0 || c.PlaybackWebhookWarnDays > 36500 {
+		log.Printf("[Config] WARNING: playback_webhook_warn_days %d is out of range; using 7", c.PlaybackWebhookWarnDays)
+		c.PlaybackWebhookWarnDays = 7
+	}
+
+	// 0 stays 0: keep-alive off. Above a day the ceiling is a typo, not a choice.
+	if c.PlaybackKeepaliveMinutes < 0 || c.PlaybackKeepaliveMinutes > 1440 {
+		log.Printf("[Config] WARNING: playback_keepalive_minutes %d is out of range; using 15", c.PlaybackKeepaliveMinutes)
+		c.PlaybackKeepaliveMinutes = 15
+	}
+	if c.PlaybackKeepaliveMaxTorrents < 1 {
+		log.Printf("[Config] WARNING: playback_keepalive_max_torrents %d is below 1; using 4", c.PlaybackKeepaliveMaxTorrents)
+		c.PlaybackKeepaliveMaxTorrents = 4
+	}
 
 	// Calculate MetadataCacheSize in bytes
 	c.MetadataCacheSize = c.MetadataCacheSizeMB * 1024 * 1024

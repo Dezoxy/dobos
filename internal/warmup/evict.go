@@ -20,9 +20,10 @@ type FileKey struct {
 }
 
 // EvictPolicy says which files one quota check may evict. EvictAny is the zero value
-// and what every caller uses today. The other two are the seam for background warming
-// (see docs/roadmap.md, Readiness steps 2 and 3); nothing outside the tests asks for
-// them yet.
+// and what every head creation uses. The other two are for background warming (see
+// docs/roadmap.md, Readiness steps 2 and 3): FillWindows (fill.go) passes them, and
+// the warmer (internal/warmer) is its only caller: warm on add with EvictNeverPlayed,
+// catch-up with EvictNone (its RoomOnly pre-flight evicts nothing).
 type EvictPolicy int
 
 const (
@@ -37,6 +38,9 @@ const (
 
 // TriggerHeadCreate is the trigger of an eviction made to make room for a new head file.
 const TriggerHeadCreate = "head_create"
+
+// TriggerRequest is the trigger of an eviction made on request (EvictTo).
+const TriggerRequest = "request"
 
 // IsPlayed, if set, reports whether a playback confirmed by the media server protects
 // the file now (a play inside the configured protection time). It runs under the
@@ -61,8 +65,13 @@ type Eviction struct {
 // evictOpts is what one quota check needs to know about its caller.
 type evictOpts struct {
 	policy  EvictPolicy
-	exclude FileKey // the file being created; never a victim
+	exclude FileKey            // the file being created; never a victim
+	protect func(FileKey) bool // files that are never victims, such as those a fill has in flight
 	trigger string
+	// A request (EvictTo) evicts down to its own size instead of the configured quota,
+	// and walks the disk even when the running total looks low.
+	request bool
+	limit   int64
 }
 
 // evictLog writes one JSON line per evicted file. The prefix is stable so a log
@@ -132,15 +141,29 @@ func splitCacheName(stem string) FileKey {
 // then played files, each class oldest first by the newer of its two windows. The file
 // in opts.exclude is never a victim. The verdict follows the disk walk, which also
 // resyncs totalSize.
+// maxEvictFailures is how many units one quota check may fail to remove before it gives
+// up: a read-only or broken directory fails them all, and a failed removal no longer
+// lowers the total that ends the loop.
+const maxEvictFailures = 8
+
 func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evicted []Eviction, room bool) {
 	quota := quotaBytes()
+	if opts.request {
+		quota = opts.limit
+	}
 
 	totalSize := atomic.LoadInt64(&d.totalSize)
-	if totalSize+needed <= quota {
+	if !opts.request && totalSize+needed <= quota {
 		return nil, true
 	}
 
-	entries, _ := os.ReadDir(d.dir)
+	entries, err := os.ReadDir(d.dir)
+	if err != nil {
+		// A vanished or unreadable directory proves nothing about the total: keep the
+		// old one rather than store 0, which would undercount until the next restart.
+		logf.Printf("[DiskWarmup] quota walk of %s failed: %v: total kept, nothing evicted", d.dir, err)
+		return nil, false
+	}
 	units := map[string]*evictUnit{}
 	var diskTotal int64
 	for _, e := range entries {
@@ -182,7 +205,7 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 	var victims []*evictUnit
 	var neverPlayedBytes int64
 	for _, u := range units {
-		if u.key == opts.exclude {
+		if u.key == opts.exclude || (opts.protect != nil && u.key.FileIdx >= 0 && opts.protect(u.key)) {
 			continue
 		}
 		u.played = IsPlayed != nil && u.key.FileIdx >= 0 && IsPlayed(u.key)
@@ -213,32 +236,78 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 	d.tailMu.Lock()
 	defer d.tailMu.Unlock()
 	d.removals.Add(1)
+	failed := 0
 	for _, u := range victims {
 		if diskTotal+needed <= quota {
 			break
 		}
-		for _, p := range []string{u.headPath, u.tailPath} {
+		// A failed unlink is not an eviction: its bytes stay counted, and nothing is
+		// reported, so the state database does not mark a file that is still there.
+		allGone := true
+		var headGone, tailGone int64
+		for i, p := range []string{u.headPath, u.tailPath} {
 			if p == "" {
 				continue
 			}
 			d.closeHandle(p)
+			if !removed(p) {
+				allGone = false
+				continue
+			}
+			removeFile(p + coverSuffix)
 			d.sizeCache.Delete(p)
 			d.tailCoverage.Delete(p)
-			removeFile(p)
-			removeFile(p + coverSuffix)
+			if i == 0 {
+				headGone = u.headBytes
+				evictedHeads.Add(1)
+				evictedHeadBytes.Add(u.headBytes)
+			} else {
+				tailGone = u.tailBytes
+				evictedTails.Add(1)
+				evictedTailBytes.Add(u.tailBytes)
+			}
 		}
-		diskTotal -= u.size()
-		if u.tailPath != "" {
-			evictedTails.Add(1)
-			evictedTailBytes.Add(u.tailBytes)
+		diskTotal -= headGone + tailGone
+		if headGone+tailGone > 0 {
+			// Reported with the bytes actually removed: a head gone with its tail stuck
+			// is still an eviction of that head.
+			evicted = append(evicted, Eviction{Key: u.key, HeadBytes: headGone, TailBytes: tailGone,
+				Age: now.Sub(u.newest), Played: u.played, Trigger: opts.trigger})
 		}
-		if u.headPath != "" {
-			evictedHeads.Add(1)
-			evictedHeadBytes.Add(u.headBytes)
+		if !allGone {
+			if failed++; failed >= maxEvictFailures {
+				logf.Printf("[DiskWarmup] eviction stopped: %d units could not be removed", failed)
+				break
+			}
 		}
-		evicted = append(evicted, Eviction{Key: u.key, HeadBytes: u.headBytes, TailBytes: u.tailBytes,
-			Age: now.Sub(u.newest), Played: u.played, Trigger: opts.trigger})
 	}
 	atomic.StoreInt64(&d.totalSize, diskTotal)
 	return evicted, diskTotal+needed <= quota
+}
+
+// EvictResult is what one EvictTo call removed.
+type EvictResult struct {
+	Files      int
+	Bytes      int64
+	TotalAfter int64
+}
+
+// EvictTo evicts down to target bytes now, by the same victim selection as the quota
+// check (never-played files first, then played ones, each oldest first), and reports
+// each eviction as a quota eviction with the trigger TriggerRequest. It deletes cache
+// files only, inside the cache directory. A target at or above the current total
+// evicts nothing. Safe on a nil receiver, where it does nothing.
+func (d *DiskWarmupCache) EvictTo(target int64) EvictResult {
+	if d == nil {
+		return EvictResult{}
+	}
+	d.mu.Lock()
+	evicted, _ := d.enforceQuotaLocked(0, evictOpts{trigger: TriggerRequest, request: true, limit: target})
+	d.mu.Unlock()
+	reportEvictions(evicted) // after the locks: it may write to a database
+	res := EvictResult{Files: len(evicted), TotalAfter: d.TrackedBytes()}
+	for _, e := range evicted {
+		res.Bytes += e.HeadBytes + e.TailBytes
+	}
+	return res
 }

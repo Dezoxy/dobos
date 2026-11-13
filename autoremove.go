@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -14,101 +13,17 @@ import (
 	"time"
 
 	"flodni/internal/atomicfile"
-	"flodni/internal/vfs"
 )
 
-// TorrentRemover handles automatic torrent removal from GoStorm
-// Extracts hash directly from .mkv file content and handles blacklisting
-// TorrentRemover handles automatic torrent removal from GoStorm
-// Extracts hash directly from .mkv file content and handles blacklisting
+// TorrentRemover writes the blacklist and names a title from its path. It no
+// longer removes torrents: unlink goes through the library's reference check.
 type TorrentRemover struct {
-	nativeBridge engineBridge // V160: Native Bridge
-	logger       *log.Logger
-	hashPattern  *regexp.Regexp // Still useful for fallback
+	logger *log.Logger
 }
 
 // NewTorrentRemover creates a new torrent remover
-func NewTorrentRemover(nativeBridge engineBridge, logger *log.Logger) *TorrentRemover {
-	return &TorrentRemover{
-		nativeBridge: nativeBridge,
-		logger:       logger,
-		hashPattern:  regexp.MustCompile(`(?i)([a-f0-9]{40})`),
-	}
-}
-
-// RemoveTorrentFromFile extracts hash from file, blacklists it and removes the torrent.
-// blacklisted reports whether the release really reached the blacklist.
-func (tr *TorrentRemover) RemoveTorrentFromFile(fullPath string) (removed, blacklisted bool, err error) {
-	filename := filepath.Base(fullPath)
-	title := tr.deriveTitleFromPath(fullPath)
-
-	// V271: Extract hash from filename suffix FIRST (zero I/O, no FUSE access).
-	// Previously read the file content first, which could deadlock if the file
-	// was being streamed via FUSE (smbd holds read lock → Unlink blocks).
-	var fullHash string
-	suffixPattern := regexp.MustCompile(`(?i)_([a-f0-9]{8})\.mkv$`)
-	if matches := suffixPattern.FindStringSubmatch(filename); len(matches) > 1 {
-		fullHash, _, _ = tr.findFullHashBySuffix(matches[1])
-	}
-
-	// Fallback: read hash from file content (only if suffix lookup failed)
-	if fullHash == "" {
-		fullHash = tr.extractHashFromFile(fullPath)
-	}
-
-	// CRITICAL FIX: Ensure hash is valid and 40 chars before proceeding
-	fullHash = strings.ToLower(fullHash)
-	if len(fullHash) != 40 {
-		return false, false, fmt.Errorf("invalid or missing hash (%s) for: %s", fullHash, filename)
-	}
-
-	tr.logger.Printf("AutoRemove: identified hash %s for %s", fullHash[:8], title)
-
-	// 2. ALWAYS add to blacklist (FASE 5.1)
-	blacklisted = true
-	if err := tr.addToBlacklist(fullHash, title); err != nil {
-		blacklisted = false
-		tr.logger.Printf("AutoRemove: WARNING: %s not blacklisted, the sync may add it back: %v", fullHash[:8], err)
-	}
-
-	// 3. Attempt to remove from GoStorm
-	removed, err = tr.removeTorrent(fullHash)
-	if err != nil {
-		tr.logger.Printf("AutoRemove: removal from GoStorm failed for %s: %v", fullHash[:8], err)
-		return false, blacklisted, nil
-	}
-
-	return removed, blacklisted, nil
-}
-
-// extractHashFromFile reads the virtual mkv to get the hash.
-// Supports both JSON (new) and line-based (legacy) formats.
-func (tr *TorrentRemover) extractHashFromFile(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	content := string(data)
-	trimmed := strings.TrimSpace(content)
-
-	// Detect JSON format
-	if strings.HasPrefix(trimmed, "{") {
-		var j vfs.MkvJSON
-		if err := json.Unmarshal([]byte(content), &j); err != nil {
-			return ""
-		}
-		match := tr.hashPattern.FindString(j.URL)
-		return strings.ToLower(match)
-	}
-
-	// Legacy line-based: read first line and extract hash
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	if scanner.Scan() {
-		line := scanner.Text()
-		match := tr.hashPattern.FindString(line)
-		return strings.ToLower(match)
-	}
-	return ""
+func NewTorrentRemover(logger *log.Logger) *TorrentRemover {
+	return &TorrentRemover{logger: logger}
 }
 
 // deriveTitleFromPath gets the show or movie name from the directory structure
@@ -224,30 +139,4 @@ func (tr *TorrentRemover) addToBlacklistAt(blacklistPath, hash, title string) er
 	}
 	tr.logger.Printf("BLACKLISTED: %s (%s)", hash[:8], title)
 	return nil
-}
-
-// findFullHashBySuffix (Fallback logic)
-func (tr *TorrentRemover) findFullHashBySuffix(suffix string) (string, string, error) {
-	// Use Native Bridge to list torrents (O(N) operation but in-memory so fast)
-	torrents, err := tr.nativeBridge.ListTorrents()
-	if err != nil {
-		return "", "", err
-	}
-
-	for _, t := range torrents {
-		if strings.HasSuffix(strings.ToLower(t.Hash), strings.ToLower(suffix)) {
-			return t.Hash, t.Title, nil
-		}
-	}
-	return "", "", nil
-}
-
-// removeTorrent calls GoStorm API to remove a torrent
-func (tr *TorrentRemover) removeTorrent(hash string) (bool, error) {
-	// Use Native Bridge to remove torrent
-	if err := tr.nativeBridge.RemoveTorrent(hash); err != nil {
-		return false, err
-	}
-
-	return true, nil
 }

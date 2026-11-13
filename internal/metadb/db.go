@@ -274,5 +274,45 @@ CREATE TABLE IF NOT EXISTS metadata_failures (
 	}
 	_, _ = d.db.Exec(`INSERT OR IGNORE INTO schema_version (version, description) VALUES (13, 'add file_state table')`)
 
+	// Schema 14, additive: the per-file warm record, beside the marks of schema 13.
+	// readability and cache_state are empty until a record exists (served as unknown);
+	// the times are Unix seconds, 0 when unset. warm_updated_at is internal: the prune
+	// guard reads it so a row recorded while the caller built its set survives.
+	for _, col := range []struct{ name, ddl string }{
+		{"readability", `ALTER TABLE file_state ADD COLUMN readability TEXT NOT NULL DEFAULT ''`},
+		{"cache_state", `ALTER TABLE file_state ADD COLUMN cache_state TEXT NOT NULL DEFAULT ''`},
+		{"failed_attempts", `ALTER TABLE file_state ADD COLUMN failed_attempts INTEGER NOT NULL DEFAULT 0`},
+		{"first_failed_at", `ALTER TABLE file_state ADD COLUMN first_failed_at INTEGER NOT NULL DEFAULT 0`},
+		{"last_attempt_at", `ALTER TABLE file_state ADD COLUMN last_attempt_at INTEGER NOT NULL DEFAULT 0`},
+		{"last_swarm_delivery_at", `ALTER TABLE file_state ADD COLUMN last_swarm_delivery_at INTEGER NOT NULL DEFAULT 0`},
+		{"warm_updated_at", `ALTER TABLE file_state ADD COLUMN warm_updated_at INTEGER NOT NULL DEFAULT 0`},
+	} {
+		if err := d.addColumn("file_state", col.name, col.ddl); err != nil {
+			return err
+		}
+	}
+	_, _ = d.db.Exec(`INSERT OR IGNORE INTO schema_version (version, description) VALUES (14, 'add file_state warm columns')`)
+
+	// Schema 15, additive: daemon-level times, one row per name, Unix seconds. Today:
+	// the last play webhook that matched a file, the last that did not, and the last
+	// unconfirmed reader session (webhook_status.go).
+	if _, err := d.db.Exec(`
+		CREATE TABLE IF NOT EXISTS daemon_marks (
+		    name TEXT PRIMARY KEY,
+		    at   INTEGER NOT NULL
+		)`); err != nil {
+		return err
+	}
+	_, _ = d.db.Exec(`INSERT OR IGNORE INTO schema_version (version, description) VALUES (15, 'add daemon_marks table')`)
+
+	// Schema 16, additive: the time warm on add queued the file, Unix seconds, 0 when
+	// the file is not waiting for an attempt. Cleared when an attempt records an outcome;
+	// a row older than an hour is a file warm on add never finished (warm_catchup_scope).
+	if err := d.addColumn("file_state", "queued_at",
+		`ALTER TABLE file_state ADD COLUMN queued_at INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
+	_, _ = d.db.Exec(`INSERT OR IGNORE INTO schema_version (version, description) VALUES (16, 'add file_state.queued_at')`)
+
 	return nil
 }

@@ -19,7 +19,8 @@ anything that could leak a secret. Issues in the vendored
 Authentication on the control server (`metrics_port`, default 9080) is
 opt-in. Set `api_token` in `config.json` or `FLODNI_API_TOKEN` and every
 route except the static panel page (`GET /control`) and `GET /api/health`
-(status words only, no paths or values) needs
+(status words only, no paths or values; its `warnings` array tells an
+unauthenticated caller whether play webhooks are arriving) needs
 `Authorization: Bearer <token>`; the two webhook routes also accept
 `?token=<token>`, because Plex and Jellyfin cannot send headers. Unset, the
 API is open: bind it to loopback or a private network, never to an address

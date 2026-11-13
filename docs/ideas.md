@@ -12,9 +12,28 @@ then nothing here is a commitment. Line numbers are as of 2026-11-10.
   vendored `anacrolix/torrent`.
 
 - **Reader budget follow-ups (not planned).** Attribute pump and prefetch
-  fills to the reader that caused them, after Reliability step 6. For phase
-  b, reset or ignore the tally on `media.stop`: it survives a stop, so a
-  crossed session would be refused again until the next webhook lands.
+  fills to the reader that caused them, after Reliability step 6. Reads
+  after a session closes are not budgeted (counted or refused). The
+  read-ahead step past a window edge: a miss inside a window is never refused,
+  and its read-ahead can extend past the window edge into the middle the
+  budget is meant to protect; measure the overshoot, then decide whether to
+  clamp it.
+
+- **Warm on add: pause, wake and removal in the end-to-end test (not
+  planned).** The `warm-on-add` variant files one title. A canary public
+  tracker for the wake of a closed private torrent, and a removal while a
+  title is queued or paused, need a second title held open; the seeder has
+  no such mode.
+
+- **Close the stale-stub hole for a torrent with no saved file list (not
+  planned).** An open of a stub whose index is stale, on a torrent the engine
+  has closed and whose record has no file list (saved before the metadata),
+  still takes the warm head under that index when it is no longer than the
+  stub's file; a sibling's head of a plausible length passes. The audit that
+  closes it walks every stub's `link=` and `index=` against the file list in
+  the engine's record and reports each stub whose index names a file of
+  another length than the stub's size, for a library remove and add to
+  repair; records with no list need one wake to be read.
 
 ## Must fix
 
@@ -22,6 +41,11 @@ Bugs and data-loss risks. None open.
 
 ## Should improve
 
+- **The periodic inode prune checks the walk too.** `cleanup.go` prunes ghost
+  inodes after its own walk without the "the walk was whole" guard the start-up
+  prune now has; the walk adds the root path itself, so an empty or unmounted
+  library still leaves a non-empty set. Low stakes, since inodes derive from
+  hash and index.
 - **An `App` struct instead of package-level state.** The FUSE handle, the
   pump, the webhook and the cleanup manager share seven package-level maps
   (`activeHandles`, `activePumps`, `playbackRegistry`, `pumpTimers`,
@@ -44,8 +68,6 @@ Bugs and data-loss risks. None open.
     letters starts with `_`.
   - `EpisodeKey` drops non-ASCII letters (`Élite` → `lite_s01e01`), so two
     shows can share a key.
-  - Episode stubs are matched by the first 8 hash characters; two releases
-    with the same prefix are treated as one.
 
 - **Stalls after a tail probe: fixed, two gaps left.** Both stalls of
   Reliability step 6 are fixed in the cache (see the Done lines of
@@ -88,6 +110,11 @@ Bugs and data-loss risks. None open.
 - **Warm again after eviction.** The catch-up leaves evicted files to their
   next play; warming them again needs a quota that fits the library, or a
   rule for which files deserve it.
+- **Dead packs probed file by file.** After the head file of a pack gives up
+  (4 failed attempts), the next file becomes the head and gets its own four
+  attempts, so a dead pack costs one wake a day for days per file. Bounded, and
+  it announces only to the stored trackers; a pack-level give-up would end it.
+  Not planned.
 - **Quota accounting by allocated blocks.** The warmup quota counts apparent
   file sizes; sparse files make it count more than the disk holds. Safe, but
   it wastes part of the quota.

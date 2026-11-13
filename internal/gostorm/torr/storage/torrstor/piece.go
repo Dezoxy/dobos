@@ -63,6 +63,12 @@ type Piece struct {
 	Complete atomic.Bool `json:"-"`
 	Accessed int64       `json:"accessed"`
 
+	// completedAt is the Unix time MarkComplete last ran for this piece (Dezoxy fork),
+	// 0 if never. Storage is RAM only and MarkComplete runs once the hash passed, so a
+	// stamp is proof the swarm delivered the piece then. Release and MarkNotComplete
+	// leave it: the delivery happened even if the bytes are gone.
+	completedAt atomic.Int64 `json:"-"`
+
 	mPiece *MemPiece `json:"-"`
 
 	cache *Cache `json:"-"`
@@ -95,6 +101,7 @@ func (p *Piece) MarkComplete() error {
 	// tracker announce, a minute away. Eviction runs before Complete is set so the piece that is
 	// completing is not a candidate: an incomplete piece is never evictable.
 	runRecovered("evictNow", p.cache.evictNow)
+	p.completedAt.Store(time.Now().Unix())
 	p.Complete.Store(true)
 	p.cache.dropPriority(p.Id)
 	return nil
