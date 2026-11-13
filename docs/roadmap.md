@@ -605,3 +605,9 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
   torrent that shares the digits is left alone. The walk reads every stub under
   the folder (a few hundred bytes each); a stub with no readable hash is skipped
   and logged once per walk.
+- 2026-11-13, CI speed-up: the image job is split. `Image build` builds and
+  saves both images and the end-to-end matrix starts from it; the required
+  check `Image (build, smoke test, scan)` runs the smoke test and the scan
+  beside the matrix and fails if the build failed. The late-confirm and
+  budget-refusal variants shorten the session idle close and cleanup tick with
+  test-only environment variables.
