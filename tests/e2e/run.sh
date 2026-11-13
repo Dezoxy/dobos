@@ -15,11 +15,13 @@
 # fail); E2E_PROM_DUMP=<file> saves the /metrics/prometheus body of each
 # non-replacement variant (the last one wins; a scrape sample for the docs);
 # E2E_ONLY=<variant> runs just that variant (default, slow-seeder,
-# index-cache, replacement). slow-seeder is default with a seeder that keeps the
-# engine's 1 MiB per-peer request allowance. The index-cache variant runs
+# index-cache, warm-on-add, replacement). slow-seeder is default with a seeder that
+# keeps the engine's 1 MiB per-peer request allowance. The index-cache variant runs
 # with a random FLODNI_API_TOKEN: the seeder must see 401 without the bearer
 # header before its authorised add, and the same for GoStorm's 8090 (401 on
 # POST /torrents, 200 on /echo); the other variants run with auth off.
+# E2E_WARM_NEGATIVE=1 runs the warm-on-add variant with the switch off: it must
+# fail at step 2 (no fill). It is not part of make e2e.
 set -euo pipefail
 
 FLODNI_IMAGE=${1:-flodni:ci}
@@ -355,6 +357,24 @@ JSON
  "warmup_head_size_mb": 4, "warmup_tail_size_mb": 4, "disk_warmup_quota_gb": 1}
 JSON
       ;;
+    warm-on-add)
+      # The index-cache config with the warmer on and windows larger than what the
+      # variant reads (16 MiB head for 8 MiB, 8 MiB tail for 4 MiB). The kernel
+      # reads whole pages and reads ahead: the head read runs up to 4 MiB past its
+      # end, and the tail read of the last 4 MiB starts on the page before the
+      # file's size minus 4 MiB (the size is not page aligned), which a 4 MiB tail
+      # window does not cover (measured: 12 KiB went through fetch_block).
+      # E2E_WARM_NEGATIVE=1 switches the warmer off, so step 2 must fail.
+      local warm=true
+      if [ "${E2E_WARM_NEGATIVE:-}" = "1" ]; then warm=false; fi
+      cat >"$file" <<JSON
+{"telemetry": false, "telemetry_url": "", "scheduler": {"enabled": false},
+ "physical_source_path": "$SOURCE_PATH", "fuse_mount_path": "$MOUNT_PATH",
+ "pump_on_open": false, "warmup_dir": "/cache/index",
+ "warmup_head_size_mb": 16, "warmup_tail_size_mb": 8, "disk_warmup_quota_gb": 1,
+ "warm_on_add": $warm}
+JSON
+      ;;
     slow-seeder) write_config default "$file" ;;
     *) echo "unknown variant $variant" >&2; return 1 ;;
   esac
@@ -603,10 +623,169 @@ run_replacement() {
   stop_stack
 }
 
+# prom_body: the /metrics/prometheus body without the HTTP headers.
+prom_body() {
+  local raw
+  raw=$(prom_raw)
+  printf '%s\n' "${raw#*$'\r\n\r\n'}"
+}
+
+# read_source body source: flodni_read_bytes_total of one serving path, 0 if absent.
+read_source() {
+  awk -v s="source=\"$2\"" 'index($0, "flodni_read_bytes_total{") == 1 && index($0, s) { printf "%d", $2; f = 1 } END { if (!f) printf "0" }' <<<"$1"
+}
+
+# run_warm_on_add: the warmer against the real engine. Add the fixture with warm_on_add
+# on and read nothing through the mount; wait for the fill; check the evidence (metric,
+# [Warm] line, per-file row, torrent record); kill the seeder; read the head and the
+# tail back through the mount and compare them with the seeder's hashes, and show that
+# the bytes came from the SSD windows. Pause/wake and removal while queued are not here
+# (docs/ideas.md); the replacement variant runs with the switch off.
+run_warm_on_add() {
+  local dir t0=$SECONDS
+  start_stack warm-on-add
+  local out="$dir/out" v=warm-on-add
+  wait_for_file "$out/expected.sha256" "$WAIT_SECONDS" "$v"
+  wait_for_file "$out/fuse_path" "$WAIT_SECONDS" "$v"
+  local hash head_want tail_want path size
+  hash=$(cat "$out/hash") head_want=$(cat "$out/head8m.sha256") tail_want=$(cat "$out/tail4m.sha256")
+  path="$MOUNT_PATH/$(cat "$out/fuse_path")"
+  echo "step add: $((SECONDS - t0))s since start" >&2
+
+  # Step 2: wait for the warmer, with no read through the mount.
+  local body="" warmed=0 deadline=$((SECONDS + 120)) w0=$SECONDS
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    body=$(prom_body)
+    warmed=$(awk '/^flodni_warm_fills_total\{trigger="add",outcome="warmed"\} / { printf "%d", $2 }' <<<"$body")
+    [ "${warmed:-0}" -ge 1 ] && break
+    sleep 1
+  done
+  if [ "${warmed:-0}" -lt 1 ]; then
+    echo "FAIL ($v): no warm-on-add fill reached outcome warmed in 120 s: $(grep -E '^flodni_warm_fills_total\{trigger="add"' <<<"$body" | tr '\n' ' ')" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "step warm: $((SECONDS - w0))s from the add to a warmed fill" >&2
+  echo "ok ($v): $(grep -E '^flodni_warm_fills_total\{trigger="add",outcome="warmed"\}' <<<"$body")" >&2
+  local src before_total=0 n
+  for src in fetch_block racache_hit warmup_head warmup_tail; do
+    n=$(read_source "$body" "$src")
+    before_total=$((before_total + n))
+  done
+  if [ "$before_total" -ne 0 ]; then
+    echo "FAIL ($v): flodni_read_bytes_total sums to $before_total before any mount read, want 0: $(grep -E '^flodni_read_bytes_total\{' <<<"$body" | tr '\n' ' ')" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): flodni_read_bytes_total is 0 before any mount read; the warmer filled the windows" >&2
+  echo "PROM ($v): $(grep -E '^flodni_warm_(fill_bytes_total|queue_files|paused|cache_failures_total)[{ ]' <<<"$body" | tr '\n' ' ')" >&2
+
+  # The [Warm] line: full windows, swarm-delivered pieces, no file name.
+  local logs line json pieces hb tb idx
+  logs=$(docker logs "$flodni" 2>&1 || true)
+  line=$(grep -F '[Warm] ' <<<"$logs" | grep -F "\"hash\":\"$hash\"" | grep -F '"outcome":"warmed"' | head -n 1 || true)
+  if [ -z "$line" ]; then
+    echo "FAIL ($v): no [Warm] line with outcome warmed for $hash" >&2
+    dump_diagnostics
+    return 1
+  fi
+  json=${line#*\[Warm\] }
+  pieces=$(grep -o '"delivered_pieces":[0-9]*' <<<"$json" | cut -d: -f2)
+  hb=$(grep -o '"head_bytes":[0-9]*' <<<"$json" | cut -d: -f2)
+  tb=$(grep -o '"tail_bytes":[0-9]*' <<<"$json" | cut -d: -f2)
+  idx=$(grep -o '"file":[0-9]*' <<<"$json" | cut -d: -f2)
+  if [ "${pieces:-0}" -le 0 ] || [ "${hb:-0}" -ne $((16 * 1048576)) ] || [ "${tb:-0}" -ne $((8 * 1048576)) ]; then
+    echo "FAIL ($v): [Warm] line wants delivered_pieces > 0, head_bytes 16 MiB, tail_bytes 8 MiB: $json" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if grep -qE 'Flodni\.E2E|\.mkv|/mnt/' <<<"$json"; then
+    echo "FAIL ($v): the [Warm] line carries a path or file name: $json" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): [Warm] $json" >&2
+
+  # The per-file row and the torrent record.
+  local row="" trow="" deadline2=$((SECONDS + 30))
+  while [ "$SECONDS" -lt "$deadline2" ]; do
+    body=$(health_body)
+    row=$(grep -o "{\"file_index\":$idx,[^}]*}" <<<"$body" || true)
+    trow=$(grep -o "{\"hash\":\"$hash\"[^}]*" <<<"$body" || true)
+    [ -n "$row" ] && break
+    sleep 1
+  done
+  if [[ "$row" != *'"readability":"warmed"'* || "$row" != *'"cache":"cached"'* ||
+    "$row" != *'"last_swarm_delivery_at":"'* || "$row" != *'"last_attempt_at":"'* ]]; then
+    echo "FAIL ($v): files row of file $idx wants readability warmed, cache cached, last_swarm_delivery_at and last_attempt_at set: ${row:-none}" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if [[ "$trow" != *'"last_swarm_read_at":"'* ]]; then
+    echo "FAIL ($v): the torrent record has no last_swarm_read_at: ${trow:-none}" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): files row $row" >&2
+  echo "ok ($v): torrent record ${trow}" >&2
+
+  # Step 3: the seeder dies, the windows are read back from the SSD.
+  echo "killing $seeder" >&2
+  docker kill "$seeder" >/dev/null
+  local first got ms
+  size=$(docker exec "$flodni" stat -c %s "$path")
+  # Measurement only: the first read of the head after the kill, then the whole head.
+  first=$(docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sh -c "s=\$(date +%s%N); dd if='$path' of=/dev/null bs=4096 count=1 status=none && e=\$(date +%s%N) && echo \$(( (e - s) / 1000000 ))") || first=failed
+  echo "LATENCY ($v): first 4 KiB of the head after the kill: ${first} ms" >&2
+  if ! got=$(docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sh -c "s=\$(date +%s%N); h=\$(head -c 8388608 '$path' | sha256sum) && e=\$(date +%s%N) && echo \"\${h%% *} \$(( (e - s) / 1000000 ))\""); then
+    echo "FAIL ($v): head read of 8 MiB failed or timed out after the seeder was killed" >&2
+    dump_diagnostics
+    return 1
+  fi
+  ms=${got#* } got=${got%% *}
+  echo "LATENCY ($v): head 8 MiB read and hash: ${ms} ms" >&2
+  if [ "$got" != "$head_want" ]; then
+    echo "FAIL ($v): head sha256 mismatch: got $got, want $head_want" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if ! got=$(docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sh -c "s=\$(date +%s%N); h=\$(tail -c 4194304 '$path' | sha256sum) && e=\$(date +%s%N) && echo \"\${h%% *} \$(( (e - s) / 1000000 ))\""); then
+    echo "FAIL ($v): tail read of 4 MiB failed or timed out after the seeder was killed" >&2
+    dump_diagnostics
+    return 1
+  fi
+  ms=${got#* } got=${got%% *}
+  echo "LATENCY ($v): tail 4 MiB read and hash: ${ms} ms (file size $size)" >&2
+  if [ "$got" != "$tail_want" ]; then
+    echo "FAIL ($v): tail sha256 mismatch: got $got, want $tail_want" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): head 8 MiB and tail 4 MiB match the seeder's sha256 with the seeder dead" >&2
+
+  # Reads by source: every byte from the SSD windows (the counters were 0 before).
+  body=$(prom_body)
+  local fb rc wh wt
+  fb=$(read_source "$body" fetch_block) rc=$(read_source "$body" racache_hit)
+  wh=$(read_source "$body" warmup_head) wt=$(read_source "$body" warmup_tail)
+  echo "READS ($v): fetch_block=$fb racache_hit=$rc warmup_head=$wh warmup_tail=$wt" >&2
+  if [ "$wh" -lt $((8 * 1048576)) ] || [ "$wt" -lt $((4 * 1048576)) ] || [ "$fb" -ne 0 ] || [ "$rc" -ne 0 ]; then
+    echo "FAIL ($v): the reads did not come from the SSD windows: want warmup_head >= 8 MiB, warmup_tail >= 4 MiB, fetch_block 0, racache_hit 0" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): reads served from warmup_head and warmup_tail only" >&2
+  echo "NOTE ($v): pause/wake and removal while queued are not exercised here; the replacement variant runs with warm_on_add off" >&2
+  echo "PASS ($v): windows filled by the warmer, read back with the seeder dead, $((SECONDS - t0))s" >&2
+
+  stop_stack
+}
+
 want_variant() { [ -z "${E2E_ONLY:-}" ] || [ "$E2E_ONLY" = "$1" ]; }
 
 if want_variant default; then run_variant default; fi
 if want_variant slow-seeder; then run_variant slow-seeder; fi
 if want_variant index-cache; then run_variant index-cache; fi
+if want_variant warm-on-add; then run_warm_on_add; fi
 if want_variant replacement; then run_replacement; fi
 echo "e2e: all variants passed" >&2

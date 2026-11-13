@@ -162,6 +162,11 @@ func run(out, flodni string, peerPort, trackerPort int) error {
 		return err
 	}
 
+	// The warm-on-add variant reads the first 8 MiB and the last 4 MiB back and
+	// compares them to these, and names the torrent by hash.
+	if err := writeRangeHashes(out, hash.HexString(), filepath.Join(dataDir, releaseName, releaseName+".mkv")); err != nil {
+		return err
+	}
 	// fuse_path last: run.sh waits for both files, and this order means it never
 	// reads a half-written pair.
 	if err := writeAtomic(filepath.Join(out, "expected.sha256"), sum); err != nil {
@@ -197,6 +202,37 @@ func writeFixture(dir string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// writeRangeHashes leaves the info hash and the sha256 of the video's first 8 MiB
+// and last 4 MiB in out, for the warm-on-add variant.
+func writeRangeHashes(out, hash, video string) error {
+	f, err := os.Open(video)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }() // read-only
+	sum := func(off, n int64) (string, error) {
+		h := sha256.New()
+		if _, err := io.Copy(h, io.NewSectionReader(f, off, n)); err != nil {
+			return "", err
+		}
+		return hex.EncodeToString(h.Sum(nil)), nil
+	}
+	head, err := sum(0, 8<<20)
+	if err != nil {
+		return err
+	}
+	tail, err := sum(videoSize-4<<20, 4<<20)
+	if err != nil {
+		return err
+	}
+	for name, content := range map[string]string{"hash": hash, "head8m.sha256": head, "tail4m.sha256": tail} {
+		if err := writeAtomic(filepath.Join(out, name), content); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeRandom(path string, seed byte, size int64, tee io.Writer) error {

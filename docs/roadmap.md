@@ -179,19 +179,21 @@ finished.
    failed, never read) is built on the readability record. Evicting the
    least recently read file is not built: it waits for those counters (see
    ideas).
-2. **Warm on add.** After a library add returns, a background queue with a
-   small fixed worker pool fills the head and tail windows of each new file
-   through the verified path, straight from the engine and not through the
-   mount. At a full quota it may evict only files never played, oldest
-   first, and it checks for room before it fetches; with none left, or with
-   no evidence of plays (state database off, or no play ever recorded), it
-   drops the new file and counts it. It is off by default, pauses while a
-   playback session is open and records each outcome per file in the
-   readability record; only pieces the swarm delivered count as success. The
-   end-to-end test adds a fixture, waits, stops the seeder and reads both
-   windows back. Built (PR 3b) and tested against fakes: `warm_on_add`, the
-   queue, the pause, the per-file outcomes and their metrics. The end-to-end
-   test is not written, so the step is not finished.
+2. **Warm on add.** [FINISHED] After a library add returns, a background
+   queue with a small fixed worker pool fills the head and tail windows of
+   each new file through the verified path, straight from the engine and not
+   through the mount. At a full quota it may evict only files never played,
+   oldest first, and it checks for room before it fetches; with none left,
+   or with no evidence of plays (state database off, or no play ever
+   recorded), it drops the new file and counts it. It is off by default
+   (`warm_on_add`), pauses while a playback session is open and records each
+   outcome per file in the readability record; only pieces the swarm
+   delivered count as success. The end-to-end test (`warm-on-add`) adds a
+   fixture with the switch on and reads nothing through the mount, waits for
+   the fill, checks the metric, the `[Warm]` line, the per-file row and the
+   torrent record, stops the seeder and reads both windows back from the
+   SSD against the seeder's hashes. Pause, wake of a closed torrent and
+   removal while queued rest on unit tests (see ideas).
 3. **Catch-up and retries.** At startup the warmer queues the library files
    it has never warmed, at a configurable pace, so a bulk import is worked
    off across restarts without a persistent queue. Catch-up never evicts: at
@@ -354,6 +356,14 @@ finished.
   `flodni_warm_fill_bytes_total`, `flodni_warm_cache_failures_total`,
   `flodni_warm_queue_files`, `flodni_warm_paused`. Tested against fakes; the
   end-to-end test (PR 4) is not written, so step 2 is not finished.
+- 2026-11-13, readiness step 2, PR 4: the end-to-end variant `warm-on-add`
+  runs the warmer against the real engine and the real FUSE mount (a 16 MiB
+  head window and an 8 MiB tail window). Before any mount read the warm fill
+  is counted as `warmed` and `flodni_read_bytes_total` is 0; after the seeder
+  is killed an 8 MiB head read and a 4 MiB tail read match the seeder's
+  sha256 and are served from `warmup_head` and `warmup_tail` only. Quota
+  pressure, the pause and the wake of a closed torrent, and removal while
+  queued stay on unit tests. Step 2 is finished.
 - 2026-11-12, readiness step 4, phase a: Flodni counts bytes past the head and
   tail windows that the engine or the read-ahead cache serve to a session with
   no confirmed playback, logs each session once at the margin
