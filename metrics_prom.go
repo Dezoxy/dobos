@@ -125,6 +125,7 @@ func collectProm(w *promtext.Writer) {
 	collectReaderBudgetProm(w)
 	collectWebhookHealthProm(w)
 	collectReadabilityProm(w)
+	collectUnstoredProm(w)
 	collectReadAheadProm(w)
 
 	w.Counter("flodni_fuse_short_reads_total",
@@ -188,6 +189,18 @@ func collectReadabilityProm(w *promtext.Writer) {
 		promSample(c.ok, lbl("state", "ok")),
 		promSample(c.failed, lbl("state", "failed")),
 		promSample(c.neverRead, lbl("state", "never_read")))
+}
+
+// collectUnstoredProm writes the startup count of library torrents without a stored
+// engine record that holds metainfo. No series until the startup walk has counted.
+func collectUnstoredProm(w *promtext.Writer) {
+	n := libraryUnstored.Load()
+	if n == nil {
+		return
+	}
+	w.Gauge("flodni_library_torrents_unstored",
+		"Library torrents with no stored engine record holding metainfo, counted once at startup (a library add or an engine add with save_to_db repairs one; not refreshed).",
+		promSample(int64(*n)))
 }
 
 func collectPlaybackProm(w *promtext.Writer) {
