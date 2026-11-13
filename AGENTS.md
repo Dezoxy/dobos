@@ -42,8 +42,9 @@ A change that violates one is wrong even if it works.
    gets a `NOTICE` entry.
 3. **A private torrent stays private.** No DHT, PEX or public-tracker
    fallback for a torrent flagged private (BEP 27). Tests pin it in
-   `internal/library/privacy_test.go`, `internal/gostorm/torr/retrack_test.go`
-   and `internal/anacrolix-torrent/private_guard_test.go`; a change near peer
+   `internal/library/privacy_test.go`, `internal/gostorm/torr/retrack_test.go`,
+   `internal/gostorm/native/wakestored_test.go` and
+   `internal/anacrolix-torrent/private_guard_test.go`; a change near peer
    discovery or tracker handling extends them.
 4. **The vendored engine is not ours to tidy.**
    `internal/anacrolix-torrent/` takes fixes only: no reformatting, no
@@ -72,8 +73,10 @@ A change that violates one is wrong even if it works.
   a title that was never warmed, sends a play webhook in the middle of a
   read past the reader-budget margin and checks it counts as confirmed late,
   measures the engine's idle closes with a webhook while the torrent is
-  closed, then replaces a TV episode with a second release and refuses a third that
-  never delivers (needs Docker and `/dev/fuse`). The module
+  closed, runs the opt-in refusal against the mount (a scan cut at the margin
+  with EIO and no failed read, a late play lifting the hold), then replaces a
+  TV episode with a second release and refuses a third that never delivers
+  (needs Docker and `/dev/fuse`). The module
   and the binary are `flodni`; the `FLODNI_*` environment variables win over
   the older `TIRAMISU_*` names, and persisted file names (`tiramisu.db`,
   `tiramisu.log`) stay as they were.

@@ -15,7 +15,7 @@
 # fail); E2E_PROM_DUMP=<file> saves the /metrics/prometheus body of each
 # non-replacement variant (the last one wins; a scrape sample for the docs);
 # E2E_ONLY=<variant> runs just that variant (default, slow-seeder,
-# index-cache, warm-on-add, catch-up, late-confirm, keep-alive, replacement). slow-seeder is default with a seeder that
+# index-cache, warm-on-add, catch-up, late-confirm, keep-alive, budget-refusal, replacement). slow-seeder is default with a seeder that
 # keeps the engine's 1 MiB per-peer request allowance. The index-cache variant runs
 # with a random FLODNI_API_TOKEN: the seeder must see 401 without the bearer
 # header before its authorised add, and the same for GoStorm's 8090 (401 on
@@ -30,6 +30,11 @@
 # phase a series exist, that the unconfirmed idle close was counted, that the read
 # reopened the torrent, and the known leak: idle_closes{confirmed="true"} at least 1
 # (phase b flips it to 0).
+# The budget-refusal variant (margin 16 MiB, refuse_unconfirmed_reads on, auth off) runs
+# the opt-in refusal against the real mount: not armed, a scan refused with EIO after
+# the 15 s hold, no failed read, the windows served, the hold lifted by a late play, a
+# fresh margin after a stop, a killed and a concurrent reader, and the seeder's upload
+# bounded. It waits for the session close once, at the end.
 # E2E_WARM_NEGATIVE=1 runs the warm-on-add variant with the switch off: it must
 # fail at step 2 (no fill). It is not part of make e2e.
 set -euo pipefail
@@ -444,6 +449,17 @@ JSON
  "physical_source_path": "$SOURCE_PATH", "fuse_mount_path": "$MOUNT_PATH",
  "pump_on_open": false, "warmup_dir": "/cache/index",
  "warmup_head_size_mb": 4, "warmup_tail_size_mb": 4, "disk_warmup_quota_gb": 1}
+JSON
+      ;;
+    budget-refusal)
+      # The late-confirm windows with a 16 MiB margin and the opt-in refusal on: a
+      # scan is refused after 4 MiB of head and 16 MiB counted.
+      cat >"$file" <<JSON
+{"telemetry": false, "telemetry_url": "", "scheduler": {"enabled": false},
+ "physical_source_path": "$SOURCE_PATH", "fuse_mount_path": "$MOUNT_PATH",
+ "pump_on_open": false, "warmup_dir": "/cache/index",
+ "warmup_head_size_mb": 4, "warmup_tail_size_mb": 4, "disk_warmup_quota_gb": 1,
+ "unconfirmed_read_margin_mb": 16, "refuse_unconfirmed_reads": true}
 JSON
       ;;
     catch-up)
@@ -1339,6 +1355,413 @@ run_keepalive() {
   echo "PASS ($v): phase a series present, the unconfirmed idle close counted, the known leak (confirmed idle close) asserted, $((SECONDS - t0))s" >&2
   stop_stack
 }
+# prom_num body series: the integer value of one exposition series, 0 if absent.
+prom_num() {
+  awk -v k="$2" 'index($0, k " ") == 1 { printf "%d", $2; f = 1 } END { if (!f) printf "0" }' <<<"$1"
+}
+
+# net_rx: bytes received on Flodni's non-loopback interfaces. The only peer on the
+# internal network is the seeder, so growth is the swarm bytes pulled (piece data
+# plus a little protocol overhead).
+net_rx() {
+  docker exec "$flodni" cat /proc/net/dev | sed 's/:/ /' | awk 'NR > 2 && $1 != "lo" { n += $2 } END { printf "%d", n }'
+}
+
+# sessions_body: Flodni's /api/sessions, headers included (auth off in this variant).
+sessions_body() {
+  docker exec "$flodni" bash -c 'exec 3<>/dev/tcp/127.0.0.1/9080 && printf "GET /api/sessions HTTP/1.0\r\nHost: x\r\n\r\n" >&3 && cat <&3' 2>/dev/null || true
+}
+
+rb_lines() { docker logs "$flodni" 2>&1 | grep -F '[ReaderBudget] ' || true; }
+
+# scan_dd path [skip_bytes]: a dd of the file (from skip_bytes, default the start) in 1 MiB
+# blocks inside the container, which a refusal stops with EIO. Sets sd_rc, sd_bytes (what
+# dd got, exact), sd_secs and sd_out.
+scan_dd() {
+  local t=$SECONDS
+  sd_out=$(docker exec "$flodni" timeout -k 10 90 sh -c 'dd if="$1" of=/dev/null bs=1048576 iflag=skip_bytes skip="$2" 2>&1; echo "rc=$?"' _ "$1" "${2:-0}" || true)
+  sd_secs=$((SECONDS - t))
+  sd_rc=$(sed -n 's/^rc=//p' <<<"$sd_out" | tail -n 1)
+  sd_bytes=$(sed -n 's/^\([0-9][0-9]*\) bytes.*/\1/p' <<<"$sd_out" | tail -n 1)
+}
+
+# window_read path skip_pages pages seconds: a page-aligned dd of `pages` 4 KiB pages
+# starting at page skip_pages; prints the bytes read, fails after `seconds`.
+window_read() {
+  docker exec "$flodni" timeout -k 5 "$4" sh -c 'dd if="$1" of=/dev/null bs=4096 skip="$2" count="$3" 2>&1 | sed -n "s/^\([0-9]*\) bytes.*/\1/p"' _ "$1" "$2" "$3"
+}
+
+# timed_read path skip_bytes iflags: dd of 16 pages at skip_bytes (iflags like ",direct"),
+# timed in the container. Prints "bytes ms"; "-" for bytes when dd printed none.
+timed_read() {
+  docker exec "$flodni" bash -c 's=$(date +%s%N); o=$(timeout -k 5 20 dd if="$1" of=/dev/null bs=4096 count=16 iflag=skip_bytes"$3" skip="$2" 2>&1); n=$(sed -n "s/^\([0-9][0-9]*\) bytes.*/\1/p" <<<"$o"); echo "${n:--} $(( ($(date +%s%N) - s) / 1000000 ))"' _ "$1" "$2" "$3"
+}
+
+# budget_not_failure v hash fail0: the refusal is not a failed read: no session counts
+# one, the short-read "failed" result has not moved, the fixture has no failure record
+# in the readability endpoint.
+budget_not_failure() {
+  local v=$1 hash=$2 fail0=$3 b bad n health
+  b=$(sessions_body)
+  bad=$(grep -o '"failed_reads":[0-9]*' <<<"$b" | grep -v ':0$' || true)
+  if ! grep -q '"failed_reads":0' <<<"$b" || [ -n "$bad" ]; then
+    echo "FAIL ($v): /api/sessions has a failed_reads other than 0 (or no session): ${bad:-none seen}: $b" >&2
+    dump_diagnostics
+    return 1
+  fi
+  n=$(prom_num "$(prom_body)" 'flodni_fuse_short_read_results_total{result="failed"}')
+  if [ "$n" != "$fail0" ]; then
+    echo "FAIL ($v): flodni_fuse_short_read_results_total{result=\"failed\"} moved from $fail0 to $n" >&2
+    dump_diagnostics
+    return 1
+  fi
+  health=$(health_body)
+  if grep -Eq "\"hash\":\"$hash\"[^}]*\"consecutive_failures\":[1-9]" <<<"$health" || grep -q '"failed_attempts":[1-9]' <<<"$health"; then
+    echo "FAIL ($v): a failure in /api/torrents/health for the fixture: $health" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): not a failure: every failed_reads 0, short-read failed $n (was $fail0), health clean" >&2
+}
+
+# run_budget_refusal: the opt-in refusal (refuse_unconfirmed_reads, margin 16 MiB,
+# windows 4 MiB head and 4 MiB tail) against the real mount and engine. See the header.
+run_budget_refusal() {
+  local dir t0=$SECONDS v=budget-refusal
+  start_stack "$v"
+  local out="$dir/out"
+  wait_for_file "$out/expected.sha256" "$WAIT_SECONDS" "$v"
+  wait_for_file "$out/fuse_path" "$WAIT_SECONDS" "$v"
+  local expected hash path name size
+  expected=$(cat "$out/expected.sha256") hash=$(cat "$out/hash")
+  path="$MOUNT_PATH/$(cat "$out/fuse_path")"
+  name=$(basename "$path")
+  size=$(docker exec "$flodni" stat -c %s "$path")
+  local mib=1048576 head=$((4 * 1048576)) margin=$((16 * 1048576))
+  local want_min=$((head + margin)) want_max=$((100 * 1048576))
+  echo "step add: $((SECONDS - t0))s since start, file $size bytes, a scan is refused after at least $want_min" >&2
+
+  local play_payload stop_payload payload ev resp body actual n
+  play_payload='{"event":"media.play","Metadata":{"title":"E2E Fixture","year":2026,"librarySectionType":"movie","Media":[{"Part":[{"file":"/data/movies/'"$name"'"}]}]}}'
+  stop_payload=${play_payload/media.play/media.stop}
+
+  # 1. Not armed: no matched webhook yet, so a read far past the margin succeeds. It is 40
+  # MiB from the middle of the file, not the whole file: a full read would push the head
+  # out of the engine's 128 MiB cache, and re-fetching evicted pieces stalls the engine
+  # (the stall the other variants report), which would turn the scan below into a timeout
+  # instead of a refusal. The whole file is read, and hashed, in step 6.
+  body=$(prom_body)
+  if [ "$(prom_num "$body" 'flodni_playback_webhooks_received_total{matched="true"}')" != 0 ]; then
+    echo "FAIL ($v): a matched webhook was counted before the first read" >&2
+    return 1
+  fi
+  local s1=$SECONDS
+  actual=$(docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sh -c 'dd if="$1" of=/dev/null bs=1048576 skip=100 count=40 iflag=fullblock 2>&1' _ "$path" | sed -n 's/^\([0-9][0-9]*\) bytes.*/\1/p') || actual=""
+  if [ "$actual" != $((40 * mib)) ]; then
+    echo "FAIL ($v): the 40 MiB read before any webhook returned '${actual:-nothing}' bytes (not armed, it must succeed)" >&2
+    dump_diagnostics
+    return 1
+  fi
+  body=$(prom_body)
+  if [ "$(prom_num "$body" flodni_unconfirmed_read_refused_reads_total)" != 0 ] || grep -qF '"event":"refused"' <<<"$(rb_lines)"; then
+    echo "FAIL ($v): a read was refused before any webhook matched" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): 1 not armed: switch on, no matched webhook, 40 MiB past the margin read in $((SECONDS - s1)) s, refused_reads 0, $(grep -F '"event":"over_margin"' <<<"$(rb_lines)" | grep -o '"enforced":[a-z]*')" >&2
+
+  # Arm: a matched play, then a stop. The stop makes the file unconfirmed again; the
+  # play started the session's tally afresh, so the next reader gets a fresh margin.
+  for ev in play stop; do
+    payload=$play_payload
+    [ "$ev" = stop ] && payload=$stop_payload
+    resp=$(post_webhook "$payload")
+    if ! head -n 1 <<<"$resp" | grep -q ' 200 '; then
+      echo "FAIL ($v): $ev webhook post: $(head -n 1 <<<"$resp")" >&2
+      dump_diagnostics
+      return 1
+    fi
+  done
+  for _ in $(seq 1 20); do
+    docker logs "$flodni" 2>&1 | grep -qF '[PLEX] STOP applied' && break
+    sleep 0.5
+  done
+  if ! docker logs "$flodni" 2>&1 | grep -qF '[PLEX] STOP applied'; then
+    echo "FAIL ($v): the stop webhook was not applied" >&2
+    dump_diagnostics
+    return 1
+  fi
+  body=$(prom_body)
+  echo "ok ($v): armed: $(grep -E '^flodni_playback_webhooks_received_total\{' <<<"$body" | tr '\n' ' ')play then stop applied" >&2
+  sleep 3 # the stop pulls the rest of the tail window; let it finish before measuring
+  local fail0
+  fail0=$(prom_num "$(prom_body)" 'flodni_fuse_short_read_results_total{result="failed"}')
+
+  # 2 and 3. A scan: dd of the whole file.
+  local rx0 rx1 rx2
+  scan_dd "$path"
+  rx0=$(net_rx)
+  echo "SCAN ($v): dd rc=$sd_rc bytes=$sd_bytes ($((sd_bytes / mib)) MiB of $((size / mib))) in ${sd_secs}s: $(grep -i 'error' <<<"$sd_out" | head -n 1)" >&2
+  if [ "$sd_rc" = 0 ] || [ -z "$sd_rc" ] || ! grep -q 'Input/output error' <<<"$sd_out"; then
+    echo "FAIL ($v): the scan must fail with EIO, got rc=${sd_rc:-none}: $sd_out" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if [ -z "$sd_bytes" ] || [ "$sd_bytes" -lt "$want_min" ] || [ "$sd_bytes" -gt "$want_max" ]; then
+    echo "FAIL ($v): the scan read ${sd_bytes:-no} bytes, want between $want_min (windows plus margin) and $want_max" >&2
+    dump_diagnostics
+    return 1
+  fi
+  local lines refused held off
+  for _ in $(seq 1 10); do
+    lines=$(rb_lines)
+    grep -qF '"event":"refused"' <<<"$lines" && break
+    sleep 0.5
+  done
+  refused=$(grep -F '"event":"refused"' <<<"$lines" || true)
+  if [ "$(grep -c . <<<"$refused")" != 1 ] || ! grep -q '"enforced":true' <<<"$refused" || grep -qF "$name" <<<"$lines"; then
+    echo "FAIL ($v): want one refused line with enforced true and no file name, got: ${lines:-none}" >&2
+    dump_diagnostics
+    return 1
+  fi
+  held=$(json_num "$refused" held_ms) off=$(json_num "$refused" offset)
+  if [ -z "$held" ] || [ "$held" -lt 10000 ] || [ "$held" -gt 17000 ]; then
+    echo "FAIL ($v): held_ms ${held:-absent}, want near the 15 s hold: $refused" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): 2 scan refused with EIO after $sd_bytes bytes, one refused line held_ms=$held offset=$off: $refused" >&2
+  echo "ITEM3 ($v): dd got $sd_bytes bytes; windows plus margin $want_min; first refused read at offset $off; dd got $((sd_bytes - off)) bytes past it (negative: it stopped short)" >&2
+  echo "ok ($v): 3 cached bytes up to the cut: dd got $sd_bytes >= $want_min (windows plus margin)" >&2
+  body=$(prom_body)
+  echo "PROM ($v): $(grep -E '^flodni_unconfirmed_read_(refused_reads_total|holds_total|confirmed_after_refusal_total)[{ ]' <<<"$body" | tr '\n' ' ')" >&2
+  if [ "$(prom_num "$body" flodni_unconfirmed_read_refused_reads_total)" -lt 1 ] ||
+    [ "$(prom_num "$body" 'flodni_unconfirmed_read_holds_total{result="refused"}')" != 1 ]; then
+    echo "FAIL ($v): want refused_reads_total >= 1 and holds_total{result=\"refused\"} 1" >&2
+    dump_diagnostics
+    return 1
+  fi
+  # 4. Not a failure (the dead-swarm verdict is a close-time check, at the end).
+  budget_not_failure "$v" "$hash" "$fail0" || return 1
+
+  # 7. The seeder's upload stops growing: the engine's in-flight work settles in a few
+  # seconds, then nothing is fetched while the file stays refused.
+  sleep 4
+  rx1=$(net_rx)
+  sleep 16
+  rx2=$(net_rx)
+  echo "UPLOAD ($v): swarm bytes received after the scan: $((rx1 - rx0)) in the 4 s after it, then $((rx2 - rx1)) in the next 16 s (file $size)" >&2
+  if [ $((rx2 - rx1)) -gt $((1 * mib)) ]; then
+    echo "FAIL ($v): $((rx2 - rx1)) bytes pulled from the seeder in 16 s while the file was refused, want under 1 MiB" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): 7 seeder upload stopped: $((rx2 - rx1)) bytes in 16 s, bound 1 MiB" >&2
+
+  # 3b. A request that straddles the cut: a new reader starts 512 KiB before the cut, so its
+  # first 1 MiB request holds 512 KiB the read-ahead cache may still have and 512 KiB it
+  # does not. The gate answers such a request with EIO as a whole; the kernel must then retry
+  # page by page and hand dd the cached half. Measured only (a new open, held 15 s): what the
+  # read-ahead cache holds at that offset varies from run to run, so the cache hits say
+  # whether the straddle happened. A request that does not straddle gets 0 bytes.
+  local rc0 rc1
+  rc0=$(read_source "$(prom_body)" racache_hit)
+  scan_dd "$path" $((want_min - 512 * 1024))
+  rc1=$(read_source "$(prom_body)" racache_hit)
+  echo "ITEM3b ($v): dd from 512 KiB before the cut got $sd_bytes bytes (rc=$sd_rc, ${sd_secs}s), read-ahead cache hits grew by $((rc1 - rc0)) bytes; 524288 would be the cached half served" >&2
+
+  # 5. The windows still work: page-aligned reads strictly inside the head and the
+  # tail, each a new open (allow 15 s).
+  local got tailpage
+  got=$(window_read "$path" 16 256 20) || got=""
+  if [ "$got" != "$mib" ]; then
+    echo "FAIL ($v): head window read (1 MiB at 64 KiB) after the refusal returned '${got:-nothing}' bytes" >&2
+    dump_diagnostics
+    return 1
+  fi
+  tailpage=$(((size - head) / 4096 + 17))
+  got=$(window_read "$path" "$tailpage" 256 20) || got=""
+  if [ "$got" != "$mib" ]; then
+    echo "FAIL ($v): tail window read (1 MiB inside the tail) after the refusal returned '${got:-nothing}' bytes" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): 5 windows after the refusal: 1 MiB inside the head and 1 MiB inside the tail read" >&2
+
+  # 9. The mount while a reader is held (a new open, a new 15 s hold). Nothing may wait for
+  # the hold: stat, the reads of a reader that opened the file before the hold, and fresh
+  # opens reading a head and a tail window, buffered and O_DIRECT. A fresh open used to
+  # wait for the hold: without FOPEN_KEEP_CACHE the kernel invalidated the file's pages on
+  # open and blocked on the ones the held reader's requests had locked.
+  docker exec "$flodni" rm -f /tmp/fd9.go /tmp/fd9.ready /tmp/fd9.out /tmp/scan2.pid
+  docker exec "$flodni" bash -c 'exec 9<"$1"; touch /tmp/fd9.ready
+    while [ ! -e /tmp/fd9.go ]; do sleep 0.05; done
+    t() { s=$(date +%s%N); n=$(dd bs=65536 skip="$2" count=1 <&9 2>&1 | sed -n "s/^\([0-9][0-9]*\) bytes.*/\1/p"); echo "$1 ${n:--} $(( ($(date +%s%N) - s) / 1000000 ))"; }
+    { t pre-opened-head 1; t pre-opened-tail "$(( ($2 - 2097152) / 65536 ))"; } >/tmp/fd9.out' _ "$path" "$size" &
+  local fd9=$!
+  for _ in $(seq 1 50); do
+    docker exec "$flodni" test -e /tmp/fd9.ready && break
+    sleep 0.2
+  done
+  docker exec "$flodni" sh -c 'echo $$ >/tmp/scan2.pid; exec dd if="$1" of=/dev/null bs=1048576 2>/tmp/scan2.err' _ "$path" &
+  local scan2=$! pid2="" t st pl got lat
+  sleep 5
+  pid2=$(docker exec "$flodni" cat /tmp/scan2.pid 2>/dev/null || true)
+  if [ -z "$pid2" ] || ! docker exec "$flodni" sh -c 'kill -0 "$1"' _ "$pid2" 2>/dev/null; then
+    echo "FAIL ($v): the second scanner is not held 5 s after its start (pid '${pid2:-none}'): $(docker exec "$flodni" cat /tmp/scan2.err 2>&1)" >&2
+    dump_diagnostics
+    return 1
+  fi
+  st=$(docker exec "$flodni" sh -c 's=$(date +%s%N); timeout -k 2 5 stat -c %s "$1" >/dev/null && echo $(( ($(date +%s%N) - s) / 1000 / 1000 ))' _ "$path") || st=""
+  docker exec "$flodni" touch /tmp/fd9.go
+  local report="stat ${st:-none} ms"
+  for pl in "fresh-head:65536:" "fresh-head-direct:65536:,direct" \
+    "fresh-tail:$((size - 2 * mib)):" "fresh-tail-direct:$((size - 2 * mib)):,direct"; do
+    t=$(timed_read "$path" "$(cut -d: -f2 <<<"$pl")" "$(cut -d: -f3 <<<"$pl")") || t="- 99999"
+    report="$report; ${pl%%:*} ${t% *} bytes ${t#* } ms"
+    got=${t% *} lat=${t#* }
+    if [ "$got" != 65536 ] || [ "$lat" -ge 1000 ]; then
+      echo "FAIL ($v): ${pl%%:*} during a hold: $got bytes in $lat ms, want 65536 under 1000 ms" >&2
+      dump_diagnostics
+      return 1
+    fi
+  done
+  wait "$fd9" 2>/dev/null || true
+  while read -r pl got lat; do
+    report="$report; $pl $got bytes $lat ms"
+    if [ "$got" != 65536 ] || [ "$lat" -ge 1000 ]; then
+      echo "FAIL ($v): $pl during a hold: $got bytes in $lat ms, want 65536 under 1000 ms" >&2
+      dump_diagnostics
+      return 1
+    fi
+  done < <(docker exec "$flodni" cat /tmp/fd9.out)
+  if [ -z "$st" ] || [ "$st" -ge 1000 ]; then
+    echo "FAIL ($v): stat took '${st:-no answer}' ms during a hold, want under 1000" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): 9 mount responsive during a hold, every read under 1 s: $report" >&2
+  wait "$scan2" 2>/dev/null || true
+
+  # 10. A reader killed mid-hold is not a failed read.
+  docker exec "$flodni" rm -f /tmp/scan3.pid
+  docker exec "$flodni" sh -c 'echo $$ >/tmp/scan3.pid; exec dd if="$1" of=/dev/null bs=1048576 2>/tmp/scan3.err' _ "$path" &
+  local scan3=$! pid3=""
+  sleep 5
+  pid3=$(docker exec "$flodni" cat /tmp/scan3.pid 2>/dev/null || true)
+  if [ -z "$pid3" ] || ! docker exec "$flodni" sh -c 'kill -0 "$1"' _ "$pid3" 2>/dev/null; then
+    echo "FAIL ($v): the third scanner is not held 5 s after its start (pid '${pid3:-none}'): $(docker exec "$flodni" cat /tmp/scan3.err 2>&1)" >&2
+    dump_diagnostics
+    return 1
+  fi
+  docker exec "$flodni" sh -c 'kill -9 "$1"' _ "$pid3" || true
+  wait "$scan3" 2>/dev/null || true
+  sleep 2
+  budget_not_failure "$v" "$hash" "$fail0" || return 1
+  echo "ok ($v): 10 reader killed mid-hold: no failed read" >&2
+
+  # 11. A fresh margin after a stop. Control: with the tally past the margin a reader that
+  # starts in the middle of the file (64 MiB, outside the windows and not yet in the
+  # read-ahead cache) is refused at its first read. Then a play and a stop: the play starts
+  # the tally afresh, the stop makes the file unconfirmed again, and a new reader gets the
+  # margin before it is refused. This comes before step 6, whose full read leaves the whole
+  # file in the read-ahead cache, where nothing is left to refuse.
+  scan_dd "$path" $((64 * mib))
+  echo "SCAN ($v): control, dd from 64 MiB with the tally past the margin: rc=$sd_rc bytes=${sd_bytes:-0} in ${sd_secs}s" >&2
+  if [ "$sd_rc" = 0 ] || [ "${sd_bytes:-0}" -gt $((1 * mib)) ]; then
+    echo "FAIL ($v): a new reader at 64 MiB past the margin must be refused at once, got rc=${sd_rc:-none} bytes=${sd_bytes:-none}: $sd_out" >&2
+    dump_diagnostics
+    return 1
+  fi
+  for ev in play stop; do
+    payload=$play_payload
+    [ "$ev" = stop ] && payload=$stop_payload
+    resp=$(post_webhook "$payload")
+    if ! head -n 1 <<<"$resp" | grep -q ' 200 '; then
+      echo "FAIL ($v): $ev webhook post: $(head -n 1 <<<"$resp")" >&2
+      dump_diagnostics
+      return 1
+    fi
+  done
+  sleep 2
+  scan_dd "$path" $((64 * mib))
+  echo "SCAN ($v): after a play and a stop, dd from 64 MiB: rc=$sd_rc bytes=$sd_bytes ($((sd_bytes / mib)) MiB) in ${sd_secs}s" >&2
+  if [ "$sd_rc" = 0 ] || [ -z "$sd_bytes" ] || [ "$sd_bytes" -lt "$margin" ] || [ "$sd_bytes" -gt "$want_max" ]; then
+    echo "FAIL ($v): after play and stop a new reader must get the margin ($margin) and then be refused: rc=${sd_rc:-none} bytes=${sd_bytes:-none}: $sd_out" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): 11 fresh margin after stop: refused at once before the play, $sd_bytes bytes (>= $margin) after it, then refused again" >&2
+  budget_not_failure "$v" "$hash" "$fail0" || return 1
+
+  # 6. The hold is lifted by a late play. The reader is held 5 s after its start (nothing
+  # signals the start of a hold), then a matched play arrives.
+  local lifted0
+  lifted0=$(prom_num "$(prom_body)" 'flodni_unconfirmed_read_holds_total{result="lifted"}')
+  docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sha256sum "$path" >"$out/hold.sha" 2>"$out/hold.err" &
+  local reader=$!
+  sleep 5
+  if ! kill -0 "$reader" 2>/dev/null; then
+    echo "FAIL ($v): the hashing reader ended before the play (it should be held): $(cat "$out/hold.err")" >&2
+    dump_diagnostics
+    return 1
+  fi
+  resp=$(post_webhook "$play_payload")
+  if ! head -n 1 <<<"$resp" | grep -q ' 200 '; then
+    echo "FAIL ($v): late play webhook post: $(head -n 1 <<<"$resp")" >&2
+    kill "$reader" 2>/dev/null || true
+    dump_diagnostics
+    return 1
+  fi
+  if ! wait "$reader"; then
+    echo "FAIL ($v): the held read failed after the play: $(cat "$out/hold.err")" >&2
+    dump_diagnostics
+    return 1
+  fi
+  actual=$(awk '{ print $1 }' "$out/hold.sha")
+  if [ "$actual" != "$expected" ]; then
+    echo "FAIL ($v): sha256 mismatch after the hold was lifted: got ${actual:-none}, want $expected" >&2
+    dump_diagnostics
+    return 1
+  fi
+  body=$(prom_body)
+  n=$(prom_num "$body" 'flodni_unconfirmed_read_holds_total{result="lifted"}')
+  if [ "$n" -lt $((lifted0 + 1)) ] || [ "$(prom_num "$body" flodni_unconfirmed_read_confirmed_after_refusal_total)" != 1 ]; then
+    echo "FAIL ($v): want holds_total{result=\"lifted\"} up from $lifted0 and confirmed_after_refusal_total 1: $(grep -E '^flodni_unconfirmed_read_(holds|confirmed_after_refusal)_total' <<<"$body" | tr '\n' ' ')" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): 6 hold lifted: the late play let the held read through, sha256 $actual, $(grep -E '^flodni_unconfirmed_read_(holds|confirmed_after_refusal)_total' <<<"$body" | tr '\n' ' ')" >&2
+  budget_not_failure "$v" "$hash" "$fail0" || return 1
+
+  # The one wait for the session close: the dead-swarm verdict is logged at close, and a
+  # refusal must not produce one.
+  local c0=$SECONDS closed="" deadline=$((SECONDS + 170))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    closed=$(sessions_body | grep -o '"closed":.*' || true)
+    grep -q "\"hash\":\"$hash\"" <<<"$closed" && break
+    sleep 3
+  done
+  if ! grep -q "\"hash\":\"$hash\"" <<<"$closed"; then
+    echo "FAIL ($v): the session did not close within 170 s" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if docker logs "$flodni" 2>&1 | grep -qF '[DeadSwarm]' || grep -q '"outcome":"dead_swarm"' <<<"$closed"; then
+    echo "FAIL ($v): a dead-swarm verdict after refusals: $(docker logs "$flodni" 2>&1 | grep -F '[DeadSwarm]')" >&2
+    dump_diagnostics
+    return 1
+  fi
+  budget_not_failure "$v" "$hash" "$fail0" || return 1
+  echo "ok ($v): 4 at close ($((SECONDS - c0)) s waited): no [DeadSwarm] line, no dead_swarm outcome, failed_reads 0: $(grep -o '"outcome":"[a-z_]*"' <<<"$closed" | tr '\n' ' ')" >&2
+  echo "ok ($v): $(grep -E '^flodni_unconfirmed_read_sessions_total\{' <<<"$(prom_body)" | tr '\n' ' ')" >&2
+  echo "ReaderBudget ($v): $(rb_lines | tr '\n' ' ')" >&2
+  echo "PASS ($v): not armed passes, a scan is refused with EIO after the hold, windows and a late play get through, no failed read, $((SECONDS - t0))s" >&2
+
+  docker stop -t 10 "$seeder" >/dev/null 2>&1 || true
+  docker logs "$seeder" 2>&1 | grep 'upload stats' | sed "s/^/($v) /" >&2 || true
+  stop_stack
+}
 
 want_variant() { [ -z "${E2E_ONLY:-}" ] || [ "$E2E_ONLY" = "$1" ]; }
 
@@ -1349,5 +1772,6 @@ if want_variant warm-on-add; then run_warm_on_add; fi
 if want_variant catch-up; then run_catchup; fi
 if want_variant late-confirm; then run_late_confirm; fi
 if want_variant keep-alive; then run_keepalive; fi
+if want_variant budget-refusal; then run_budget_refusal; fi
 if want_variant replacement; then run_replacement; fi
 echo "e2e: all variants passed" >&2
