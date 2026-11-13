@@ -317,11 +317,16 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
    size, and the warm shortcut checks the resolved file when the torrent is
    loaded. File ids come from the engine's own file list, and hashes are
    lower-cased.
-4. **Align the tail window to a page.** The kernel reads whole 4 KiB pages,
-   so a read of exactly the last N MiB of a file whose size is not
-   page-aligned starts a page before an N MiB tail window, and that page
-   comes from the engine instead of the cache. The end-to-end test measured
-   12 KiB so. The tail window's start is rounded down to a page boundary.
+4. **Align the tail window to a page.** [FINISHED] The kernel reads whole
+   4 KiB pages, so a read of exactly the last N MiB of a file whose size is
+   not page-aligned starts a page before an N MiB tail window, and that page
+   came from the engine instead of the cache. The end-to-end test measured
+   12 KiB so. The tail window's start is rounded down to a page boundary
+   (`warmup.TailStart`, used by the writers, the readers, the fills and the
+   reader budget), so the window grows by up to 4095 bytes. Covers written
+   before (exactly the configured size from the end) still load and serve
+   their own window as complete; they lack the leading page, which comes from
+   the engine as before.
 5. **End-to-end variants as parallel jobs.** CI runs each variant on its
    own runner, so wall time stays near the longest variant as variants are
    added, and variants can no longer collide on container names.
@@ -572,3 +577,9 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
   the file under 1 s while a reader is held. The test found that a held read
   froze every new open of the file; #133 fixed it. The pump park rests on
   fake-engine tests only.
+- 2026-11-13, before a deployment relies on it, step 4: the tail window's start
+  is rounded down to a 4 KiB boundary, so a read of exactly the last N MiB of
+  a file that is not page-aligned stays inside the window. Existing tail covers
+  keep loading. The `warm-on-add` end-to-end variant is back to a 4 MiB tail
+  window with the same assertion: 0 bytes through `fetch_block` for the 4 MiB
+  tail read.

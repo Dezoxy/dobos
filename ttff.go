@@ -249,7 +249,7 @@ func (s *TTFFSession) recordRead(src ttffSource, d time.Duration, n int, off int
 		if src == srcFetchBlock && !s.servedByNet.Load() && sessionActivePeers(s.hash) > 0 {
 			s.servedByNet.Store(true)
 		}
-		if off >= ttffDeepReadOff || (s.size > 0 && off >= s.size-warmup.TailWarmupSize) {
+		if off >= ttffDeepReadOff || (s.size > 0 && off >= warmup.TailStart(s.size)) {
 			s.tailOrDeep.Store(true)
 			s.firstDeepReadAt.CompareAndSwap(0, nowN)
 		}

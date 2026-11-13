@@ -252,7 +252,7 @@ func (x *fileStateIndex) runRecorder(stop <-chan struct{}) {
 func warmDeliveredAt(k warmup.FileKey, fileSize int64) time.Time {
 	t := torr.PeekTorrent(k.Hash)
 	head, _ := t.DeliveredAt(k.FileIdx, 0, min(warmup.FileSize, fileSize))
-	tailStart := max(0, fileSize-warmup.TailWarmupSize)
+	tailStart := warmup.TailStart(fileSize)
 	tail, _ := t.DeliveredAt(k.FileIdx, tailStart, fileSize-tailStart)
 	if tail.After(head) {
 		return tail
