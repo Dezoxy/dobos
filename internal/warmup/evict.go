@@ -39,6 +39,9 @@ const (
 // TriggerHeadCreate is the trigger of an eviction made to make room for a new head file.
 const TriggerHeadCreate = "head_create"
 
+// TriggerRequest is the trigger of an eviction made on request (EvictTo).
+const TriggerRequest = "request"
+
 // IsPlayed, if set, reports whether a playback confirmed by the media server protects
 // the file now (a play inside the configured protection time). It runs under the
 // cache's quota lock, so it must read memory only and never block. Nil: nothing is
@@ -65,6 +68,10 @@ type evictOpts struct {
 	exclude FileKey            // the file being created; never a victim
 	protect func(FileKey) bool // files that are never victims, such as those a fill has in flight
 	trigger string
+	// A request (EvictTo) evicts down to its own size instead of the configured quota,
+	// and walks the disk even when the running total looks low.
+	request bool
+	limit   int64
 }
 
 // evictLog writes one JSON line per evicted file. The prefix is stable so a log
@@ -136,9 +143,12 @@ func splitCacheName(stem string) FileKey {
 // resyncs totalSize.
 func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evicted []Eviction, room bool) {
 	quota := quotaBytes()
+	if opts.request {
+		quota = opts.limit
+	}
 
 	totalSize := atomic.LoadInt64(&d.totalSize)
-	if totalSize+needed <= quota {
+	if !opts.request && totalSize+needed <= quota {
 		return nil, true
 	}
 
@@ -243,4 +253,31 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 	}
 	atomic.StoreInt64(&d.totalSize, diskTotal)
 	return evicted, diskTotal+needed <= quota
+}
+
+// EvictResult is what one EvictTo call removed.
+type EvictResult struct {
+	Files      int
+	Bytes      int64
+	TotalAfter int64
+}
+
+// EvictTo evicts down to target bytes now, by the same victim selection as the quota
+// check (never-played files first, then played ones, each oldest first), and reports
+// each eviction as a quota eviction with the trigger TriggerRequest. It deletes cache
+// files only, inside the cache directory. A target at or above the current total
+// evicts nothing. Safe on a nil receiver, where it does nothing.
+func (d *DiskWarmupCache) EvictTo(target int64) EvictResult {
+	if d == nil {
+		return EvictResult{}
+	}
+	d.mu.Lock()
+	evicted, _ := d.enforceQuotaLocked(0, evictOpts{trigger: TriggerRequest, request: true, limit: target})
+	d.mu.Unlock()
+	reportEvictions(evicted) // after the locks: it may write to a database
+	res := EvictResult{Files: len(evicted), TotalAfter: d.TrackedBytes()}
+	for _, e := range evicted {
+		res.Bytes += e.HeadBytes + e.TailBytes
+	}
+	return res
 }

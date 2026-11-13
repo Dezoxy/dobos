@@ -551,9 +551,25 @@ are off by default.
   a JSON object: `hash` (full), `file` (index), `head_bytes`, `tail_bytes`
   (0 when that window was not on disk), `age_s` (since the newer window was
   written), `played` (inside its protection) and `trigger` (`head_create`,
-  or `warm_add` for an eviction made to fit a warm-on-add fill). It carries no
-  path. The prefix and field names are meant to be
-  stable.
+  `warm_add` for an eviction made to fit a warm-on-add fill, or `request` for
+  one made by `POST /api/warmup/evict`). It carries no path. The prefix and
+  field names are meant to be stable.
+- **Free space on request.** `POST /api/warmup/evict` with the body
+  `{"target_gb": 10}` (or `{"target_bytes": 10737418240}`; give exactly one,
+  not negative; `0` empties what may be evicted) evicts down to that size now,
+  in the same order as the quota: files never played first, then played files,
+  each oldest first. It answers `{"evicted_files": N, "evicted_bytes": N,
+  "total_bytes_after": N, "target_bytes": N}`; a target at or above the
+  current total evicts nothing. `400` is a bad target, `405` is any method
+  but POST, `503` is the cache off. **It is destructive:** it deletes warmup
+  cache files (a file that was played goes too once the unplayed ones are
+  not enough), which then come back only through the swarm or a refill. It
+  needs the `api_token` bearer header when a token is set (no `?token=`),
+  deletes only inside the cache directory, and touches no torrent, stub or
+  record except the eviction marks a quota eviction also writes. Each file
+  logs the `[WarmupEvict]` line with `trigger` `request`, and the eviction
+  counters move as for a quota eviction. The configured quota is not
+  changed: the next new head still evicts down to it.
 - **Cold reopen.** `flodni_warmup_cold_reopen_total` counts a confirmed play
   on a session that opened with no ready head, of a file with an eviction
   mark; it counts once per eviction and clears the mark. `previously_played`

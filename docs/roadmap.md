@@ -339,10 +339,11 @@ the move to a deployment. Steps 1 to 4, 6 and 7 are designed, not built.
 5. **End-to-end variants as parallel jobs.** CI runs each variant on its
    own runner, so wall time stays near the longest variant as variants are
    added, and variants can no longer collide on container names.
-6. **Free cache space on request.** The quota is read once at start, and a
-   lower quota evicts only when a new head is written. A call evicts down to
-   a given size now, in the normal order: never-played files first, oldest
-   first, and played files only after them.
+6. **Free cache space on request.** [FINISHED] The quota is read once at
+   start, and a lower quota evicts only when a new head is written.
+   `POST /api/warmup/evict` evicts down to a given size now, in the normal
+   order: never-played files first, oldest first, and played files only after
+   them.
 7. **Remove by the full hash.** [FINISHED] Removal by hash matched stub names
    on eight hex digits; stubs from older tools carry the first or the last
    eight, so some were missed, and a stub of another torrent could match. It
@@ -633,3 +634,9 @@ the move to a deployment. Steps 1 to 4, 6 and 7 are designed, not built.
   `flodni_warm_catchup_files`, `flodni_warm_catchup_scope{scope}`, and
   `scope` on the `[WarmCatchup]` lines. Tested against fakes and the migration;
   the end-to-end variant `catch-up` runs scope `"all"`.
+- 2026-11-13, before a deployment relies on it, step 6: `POST /api/warmup/evict`
+  with `{"target_gb": N}` (or `target_bytes`) evicts the cache down to that size
+  now, by the quota's own victim order and with its log lines (trigger
+  `request`), counters and eviction marks. Behind `api_token` like every route
+  but `/control` and `/api/health`. It deletes cache files and nothing else.
+  Tested in the cache and the handler; not run in the end-to-end test.

@@ -2,6 +2,7 @@ package warmup
 
 import (
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -240,5 +241,95 @@ func TestSplitCacheName(t *testing.T) {
 		if got := splitCacheName(stem); got != want {
 			t.Errorf("%q = %+v, want %+v", stem, got, want)
 		}
+	}
+}
+
+// requestEnv is a cache of three never-played 300 MiB files, a oldest, c newest.
+func requestEnv(t *testing.T) *DiskWarmupCache {
+	t.Helper()
+	d := evictEnv(t)
+	sparseFile(t, d.filePath("a", 1), 300*mb, 3*time.Hour)
+	sparseFile(t, d.filePath("b", 1), 300*mb, 2*time.Hour)
+	sparseFile(t, d.filePath("c", 1), 300*mb, time.Hour)
+	setTotal(d, 900*mb)
+	return d
+}
+
+func TestEvictToGoesDownToTheTargetOldestFirst(t *testing.T) {
+	d := requestEnv(t)
+	res := d.EvictTo(400 * mb)
+	if res.Files != 2 || res.Bytes != 600*mb || res.TotalAfter != 300*mb {
+		t.Fatalf("result = %+v", res)
+	}
+	if exists(d.filePath("a", 1)) || exists(d.filePath("b", 1)) || !exists(d.filePath("c", 1)) {
+		t.Fatal("the two oldest go, the newest stays")
+	}
+}
+
+func TestEvictToTakesPlayedFilesOnlyAfterNeverPlayed(t *testing.T) {
+	d := requestEnv(t)
+	IsPlayed = func(k FileKey) bool { return k.Hash == "a" } // the oldest is played
+	res := d.EvictTo(300 * mb)
+	if res.Files != 2 || !exists(d.filePath("a", 1)) || exists(d.filePath("b", 1)) || exists(d.filePath("c", 1)) {
+		t.Fatalf("never-played b and c go before the older played a: %+v", res)
+	}
+	res = d.EvictTo(0)
+	if res.Files != 1 || res.TotalAfter != 0 || exists(d.filePath("a", 1)) {
+		t.Fatalf("a target of 0 takes the played file last: %+v", res)
+	}
+}
+
+func TestEvictToAboveTheTotalEvictsNothing(t *testing.T) {
+	d := requestEnv(t)
+	res := d.EvictTo(900 * mb)
+	if res.Files != 0 || res.Bytes != 0 || res.TotalAfter != 900*mb {
+		t.Fatalf("result = %+v", res)
+	}
+	if !exists(d.filePath("a", 1)) || !exists(d.filePath("b", 1)) || !exists(d.filePath("c", 1)) {
+		t.Fatal("nothing may be removed")
+	}
+}
+
+func TestEvictToWalksTheDiskWhenTheRunningTotalIsLow(t *testing.T) {
+	d := requestEnv(t)
+	setTotal(d, 0) // drifted far under the disk
+	res := d.EvictTo(600 * mb)
+	if res.Files != 1 || res.TotalAfter != 600*mb || exists(d.filePath("a", 1)) {
+		t.Fatalf("a request trusts the disk, not the total: %+v", res)
+	}
+}
+
+func TestEvictToRecordsLikeAQuotaEviction(t *testing.T) {
+	d := requestEnv(t)
+	sparseFile(t, d.tailPath("a", 1), 100*mb, 3*time.Hour)
+	setTotal(d, 1000*mb)
+	var got []Eviction
+	OnEvicted = func(evs []Eviction) { got = append(got, evs...) }
+	var logged strings.Builder
+	oldOut := evictLog.Writer()
+	evictLog.SetOutput(&logged)
+	t.Cleanup(func() { evictLog.SetOutput(oldOut) })
+
+	before := CounterStats()
+	d.EvictTo(600 * mb)
+	after := CounterStats()
+
+	if len(got) != 1 || got[0].Key != (FileKey{"a", 1}) || got[0].Trigger != TriggerRequest ||
+		got[0].HeadBytes != 300*mb || got[0].TailBytes != 100*mb || got[0].Played {
+		t.Fatalf("OnEvicted got %+v", got)
+	}
+	if !strings.Contains(logged.String(), `"trigger":"request"`) || !strings.Contains(logged.String(), `"hash":"a"`) {
+		t.Fatalf("log line = %q", logged.String())
+	}
+	if after.EvictedHeads-before.EvictedHeads != 1 || after.EvictedTails-before.EvictedTails != 1 ||
+		after.EvictedHeadBytes-before.EvictedHeadBytes != 300*mb {
+		t.Fatal("the eviction counters must move as for a quota eviction")
+	}
+}
+
+func TestEvictToOnANilCacheDoesNothing(t *testing.T) {
+	var d *DiskWarmupCache
+	if res := d.EvictTo(0); res != (EvictResult{}) {
+		t.Fatalf("result = %+v", res)
 	}
 }
