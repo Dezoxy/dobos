@@ -74,6 +74,7 @@ type MkvHandle struct {
 	pumpOnce        sync.Once
 	isPrimaryHandle atomic.Bool  // pump creator, primary reconnects (refCount 0→1), proven readers
 	seqAdvances     atomic.Int32 // consecutive sequential streaming reads, feeds the promotion below
+	budgetHold      budgetHold   // reader budget: this handle's wait for a webhook (reader_budget.go)
 }
 
 // Compile-time interface checks for MkvHandle

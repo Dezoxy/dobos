@@ -119,6 +119,14 @@ type Config struct {
 	// first byte past the windows; a negative or absurd value is replaced by the default.
 	UnconfirmedReadMarginMB int64 `json:"unconfirmed_read_margin_mb"`
 
+	// RefuseUnconfirmedReads is the opt-in switch for refusing reads: once a session of a
+	// file with no confirmed playback has taken the margin past the windows, further
+	// fetches are held for a webhook and then refused with EIO (reader_budget.go). Off
+	// unless the owner turns it on; read at every read. It enforces only after a play
+	// webhook matched a file since start. No read path calls the gate yet, so on or off
+	// changes nothing today.
+	RefuseUnconfirmedReads bool `json:"refuse_unconfirmed_reads"`
+
 	// --- External Services (V1.4.6) ---
 	Plex struct {
 		URL         string `json:"url"`

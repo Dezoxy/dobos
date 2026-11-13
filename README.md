@@ -258,8 +258,10 @@ tail windows and logs the session once. It never refuses or slows a read.
   When a session's counted bytes reach the margin, one `[ReaderBudget]` line
   is written with `"event":"over_margin"`: `hash`, `file_index`, `size`,
   `swarm_bytes`, `cache_bytes`, `margin`, `open_age_ms`, `comm`, `pid`, `uid`
-  and `"enforced":false`. It carries no path or file name. The line prefix
-  and field names are meant to be stable. `swarm_bytes` and `cache_bytes`
+  and `enforced` (false unless `refuse_unconfirmed_reads` is on and a
+  webhook has matched; see below). It carries no path or file name. The
+  line prefix and field names are meant to be stable. `swarm_bytes` and
+  `cache_bytes`
   split the counted bytes by the read path that answered, for debugging:
   `swarm_bytes` waited for the engine (which can answer from pieces it
   already holds), `cache_bytes` came from the read-ahead cache. Neither is
@@ -281,8 +283,21 @@ tail windows and logs the session once. It never refuses or slows a read.
   reads.
 - **`flodni_playback_webhooks_received_total{matched}`** counts play and
   resume webhooks for a movie or an episode; `matched="true"` when the
-  webhook resolved to one file. Phase b's guard is designed to arm only once
-  `matched="true"` has been seen since start; that guard is not built.
+  webhook resolved to one file. The refusal gate below arms only once
+  `matched="true"` has been seen since start.
+- **`refuse_unconfirmed_reads`** in `config.json` (default `false`, read at
+  each read). Designed: past the margin, further fetches are held up to 15 s
+  for a webhook, then refused with EIO. **No caller yet:** the predicate, the
+  hold, the counters below and the `refused` log line exist in code and are
+  tested, but no read path calls them, so the key changes nothing and no
+  read is refused. `over_margin` reports `"enforced":true` when the key is
+  on and a webhook has matched since start, and false otherwise; until the
+  gate is wired, true there still means nothing is refused. The key and the
+  three series below are provisional names.
+- **Refusal series (no caller yet, all stay 0):**
+  `flodni_unconfirmed_read_refused_reads_total`,
+  `flodni_unconfirmed_read_holds_total{result="lifted|refused"}` and
+  `flodni_unconfirmed_read_confirmed_after_refusal_total`.
 
 Limits: reads on a handle after its session closed and sessions open at
 shutdown are not counted; reads the kernel page cache answers never reach
@@ -554,6 +569,9 @@ scraper on the same host or Docker network.
 | `flodni_playback_webhooks_received_total` | counter | `matched` | Play and resume webhooks for a movie or an episode; `matched` is `true` when the webhook resolved to one file, else `false`. |
 | `flodni_unconfirmed_read_bytes_total` | counter | none | Bytes past the head and tail windows that readers took from files with no confirmed playback, whichever path served them. Not bytes downloaded. See Reader budget. |
 | `flodni_unconfirmed_read_sessions_total` | counter | `outcome` | Sessions that crossed `unconfirmed_read_margin_mb`, each counted once when it closes: `confirmed_late` if a webhook confirmed the file afterwards, else `unconfirmed`. |
+| `flodni_unconfirmed_read_refused_reads_total` | counter | none | Reads the reader budget refused with EIO. No caller yet: stays 0. See Reader budget. |
+| `flodni_unconfirmed_read_holds_total` | counter | `result` | Holds of a refused handle, when they end: `lifted` by a confirmation, `refused` when the time ran out. No caller yet: stays 0. |
+| `flodni_unconfirmed_read_confirmed_after_refusal_total` | counter | none | Sessions with a refused read that a webhook then confirmed, once each. No caller yet: stays 0. |
 | `flodni_warmup_cold_reopen_total` | counter | `previously_played` | Confirmed plays that opened cold on a file quota eviction had removed, `true` or `false` by whether it had been played before. |
 | `flodni_warmup_unverified_drops_total` | counter | none | Warmup blocks, head or tail, never written because their pieces did not verify in time. |
 | `flodni_warmup_write_queue_drops_total` | counter | none | Head chunks dropped because the warmup write queue was full. |
