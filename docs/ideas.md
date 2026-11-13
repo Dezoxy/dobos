@@ -16,6 +16,16 @@ then nothing here is a commitment. Line numbers are as of 2026-11-10.
   b, reset or ignore the tally on `media.stop`: it survives a stop, so a
   crossed session would be refused again until the next webhook lands.
 
+- **Wake windows for a removal during a wake (not planned).** Two windows
+  remain around waking a closed torrent, shared by warm on add and the
+  mount's `rewake`. A: a removal that races a wake can bring the torrent
+  back in the engine, with its own trackers only, until it is removed again.
+  B: a few microseconds between the stored check and the add, in which the
+  add is a bare magnet with the DHT and PEX on until the metadata arrives.
+  The fixes (wake from the stored record itself; a reference-checked drop
+  after a cancelled wake) touch the mount's path and belong in their own
+  pull request.
+
 ## Must fix
 
 Bugs and data-loss risks. None open.

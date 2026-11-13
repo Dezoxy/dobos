@@ -27,6 +27,7 @@ import (
 	"flodni/internal/registry"
 	"flodni/internal/tuner"
 	"flodni/internal/vfs"
+	"flodni/internal/warmer"
 	"flodni/internal/warmup"
 	"fmt"
 	"golang.org/x/sys/cpu"
@@ -270,7 +271,10 @@ func main() {
 	fileStates.logf = logger.Printf
 	warmup.IsPlayed = fileStates.IsPlayed
 	warmup.OnEvicted = fileStates.OnEvicted
-	warmup.OnHashRemoved = fileStates.ForgetHash
+	// Warm on add (idle until warm_on_add is set): a removal cancels it before the
+	// torrent's records are forgotten.
+	addWarmer = warmer.New(addWarmerDeps(fileStates, backgroundStopChan))
+	warmup.OnHashRemoved = onHashRemoved(addWarmer, fileStates)
 	warmup.InitDiskWarmup(warmup.Options{
 		QuotaGB: gc().DiskWarmupQuotaGB,
 		Dir:     gc().WarmupDir,
@@ -334,7 +338,9 @@ func main() {
 
 	catalog.SetRetryDefaults(gc().MaxRetryAttempts, time.Duration(gc().RetryDelayMS)*time.Millisecond)
 
-	nativeBridge = nativeEngine{native.NewNativeClient()}
+	nativeClient := native.NewNativeClient()
+	nativeBridge = nativeEngine{nativeClient}
+	warmWake = nativeClient.WakeStored
 
 	go tuner.Start(context.Background())
 
@@ -695,6 +701,7 @@ func main() {
 				return globalTorrentRemover.addToBlacklist(hash, globalTorrentRemover.deriveTitleFromPath(path))
 			},
 			Logger:       logger,
+			OnAdded:      onLibraryAdded,
 			MediaServer:  mediaserver.New(gc().MediaServerType, gc().Plex.URL, gc().Plex.Token),
 			MovieSection: gc().Plex.LibraryID,
 			TVSection:    gc().Plex.TVLibraryID,

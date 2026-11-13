@@ -22,7 +22,7 @@ type FileKey struct {
 // EvictPolicy says which files one quota check may evict. EvictAny is the zero value
 // and what every head creation uses. The other two are for background warming (see
 // docs/roadmap.md, Readiness steps 2 and 3): FillWindows (fill.go) passes them, and
-// nothing calls FillWindows yet.
+// warm on add (internal/warmer) is the only caller of FillWindows.
 type EvictPolicy int
 
 const (

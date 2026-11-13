@@ -9,8 +9,8 @@ import (
 
 // Dezoxy fork: the fill primitive of Readiness step 2 (warm on add). It completes one
 // media file's head and tail windows from a torrent the engine already has, in chunks,
-// and writes only verified bytes. Like the eviction policies in evict.go it is a seam:
-// nothing calls it yet, and warm on add itself is not built (docs/roadmap.md).
+// and writes only verified bytes. Its only caller is warm on add (internal/warmer,
+// off by default); catch-up is not built (docs/roadmap.md).
 //
 // Why not WriteChunk or fillIndexTail: WriteChunk is asynchronous and drops silently,
 // and creates the head under EvictAny; fillIndexTail allocates a whole window, holds no

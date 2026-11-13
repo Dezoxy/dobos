@@ -80,6 +80,49 @@ func (ps *PlaybackState) GetStatus() bool {
 
 var playbackRegistry sync.Map // path -> *PlaybackState
 
+// playbackOpen reports whether anyone may be watching: a read-ahead pump is running, or
+// a session confirmed by the media server (or inferred from its reads) still has a live
+// FUSE handle. States restored at start stay confirmed with no handle, so the handle is
+// what says the stream is open. Warm on add pauses on it. The answer is cached for one
+// second: every worker and every fill poll asks.
+func playbackOpen() bool {
+	playbackOpenCache.mu.Lock()
+	defer playbackOpenCache.mu.Unlock()
+	now := playbackOpenNow()
+	if !playbackOpenCache.at.IsZero() && now.Sub(playbackOpenCache.at) < time.Second {
+		return playbackOpenCache.v
+	}
+	playbackOpenCache.v = computePlaybackOpen()
+	playbackOpenCache.at = now
+	return playbackOpenCache.v
+}
+
+var (
+	playbackOpenNow   = time.Now
+	playbackOpenCache struct {
+		mu sync.Mutex
+		at time.Time
+		v  bool
+	}
+)
+
+func computePlaybackOpen() bool {
+	open := false
+	activePumps.Range(func(_, _ any) bool { open = true; return false })
+	if open {
+		return true
+	}
+	playbackRegistry.Range(func(k, v any) bool {
+		ps, ok := v.(*PlaybackState)
+		if ok && (ps.GetStatus() || ps.IsInferredPlayback()) && anyLiveHandleFor(k.(string)) {
+			open = true
+			return false
+		}
+		return true
+	})
+	return open
+}
+
 // startPumpAtOpen decides whether Open() starts the read-ahead pump (Dezoxy fork).
 func startPumpAtOpen(pumpOnOpen, confirmedPlayback bool) bool {
 	return pumpOnOpen || confirmedPlayback

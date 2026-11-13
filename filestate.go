@@ -53,6 +53,9 @@ type fileStateIndex struct {
 	pending     map[warmup.FileKey]int64
 	wake        chan struct{}
 	deliveredAt func(k warmup.FileKey, fileSize int64) time.Time
+	// playLatch is set once any play is recorded, here or in the store. Warm on add
+	// evicts only with that evidence: without it every file ranks as never played.
+	playLatch bool
 }
 
 func newFileStateIndex(store fileStateStore, protectionDays int) *fileStateIndex {
@@ -102,6 +105,9 @@ func (x *fileStateIndex) attach(store fileStateStore) error {
 		if t := time.Unix(r.LastPlayedAt, 0); r.LastPlayedAt > 0 && t.After(e.lastPlayed) {
 			e.lastPlayed = t
 		}
+		if r.LastPlayedAt > 0 {
+			x.playLatch = true
+		}
 	}
 	return nil
 }
@@ -143,6 +149,28 @@ func (x *fileStateIndex) HasEvictedMark(k warmup.FileKey) bool {
 	return e != nil && e.evicted
 }
 
+// WarmPolicy is the eviction policy warm on add may use: EvictNeverPlayed only when the
+// state database is attached and some play was recorded (step 1 decision 6). Without
+// that evidence "never played" is every file, so it evicts nothing: EvictNone.
+func (x *fileStateIndex) WarmPolicy() warmup.EvictPolicy {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.store != nil && x.playLatch {
+		return warmup.EvictNeverPlayed
+	}
+	return warmup.EvictNone
+}
+
+// EvictedSince reports whether quota eviction removed the file at or after since. The
+// eviction mark alone can be weeks old; the time tells whether it explains a fill that
+// just lost its windows. Times are whole seconds.
+func (x *fileStateIndex) EvictedSince(k warmup.FileKey, since time.Time) bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	e := x.m[normKey(k)]
+	return e != nil && e.evictedAt > 0 && e.evictedAt >= since.Unix()
+}
+
 // MarkPlayed records a confirmed play.
 func (x *fileStateIndex) MarkPlayed(k warmup.FileKey) {
 	k = normKey(k)
@@ -154,6 +182,7 @@ func (x *fileStateIndex) MarkPlayed(k warmup.FileKey) {
 		x.m[k] = e
 	}
 	e.lastPlayed = now
+	x.playLatch = true
 	st := x.store
 	x.mu.Unlock()
 	if st != nil {
