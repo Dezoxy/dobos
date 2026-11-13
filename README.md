@@ -269,7 +269,11 @@ tail windows and logs the session once. It never refuses or slows a read.
   `"event":"confirmed_late"`, carries `hash`, `file_index`, `size`,
   `swarm_bytes`, `cache_bytes` and `late_ms`: a playback that a budget would
   have cut. `flodni_unconfirmed_read_sessions_total` counts each crossed
-  session once, when it closes.
+  session once, when it closes. The end-to-end test covers this path: the
+  `late-confirm` variant of `make e2e` posts a play webhook in the middle of
+  a read that has crossed the margin and checks the sha256 of the read,
+  `flodni_playback_webhooks_received_total{matched="true"}`, the
+  `confirmed_late` session count and the line.
 - **`comm`, `pid`, `uid`** come from the FUSE request of the latest open of
   the file. `comm` is read from `/proc/<pid>/comm` when the line is written,
   and is empty when the pid is 0 or not visible (another PID namespace, or

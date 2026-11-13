@@ -69,9 +69,10 @@ A change that violates one is wrong even if it works.
   with the race detector. `make e2e` seeds a private torrent and reads it
   through FUSE in the built image, fills a title's windows with warm on add
   and reads them back with the seeder dead, restarts the daemon to catch up on
-  a title that was never warmed, then replaces a TV episode with a
-  second release and refuses a third that never delivers (needs Docker and
-  `/dev/fuse`). The module
+  a title that was never warmed, sends a play webhook in the middle of a
+  read past the reader-budget margin and checks it counts as confirmed late,
+  then replaces a TV episode with a second release and refuses a third that
+  never delivers (needs Docker and `/dev/fuse`). The module
   and the binary are `flodni`; the `FLODNI_*` environment variables win over
   the older `TIRAMISU_*` names, and persisted file names (`tiramisu.db`,
   `tiramisu.log`) stay as they were.
