@@ -762,11 +762,7 @@ func shouldServeTailFromSSD(off, size, tailWarmupSize int64) bool {
 	if size <= 0 || tailWarmupSize <= 0 {
 		return false
 	}
-	tailStart := size - tailWarmupSize
-	if tailStart < 0 {
-		tailStart = 0
-	}
-	return off >= tailStart
+	return off >= warmup.TailStartFor(size, tailWarmupSize)
 }
 
 // shouldRecordResumeOff reports whether a read may update the persisted resume position.

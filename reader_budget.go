@@ -102,6 +102,15 @@ func countPlaybackWebhook(matched bool) {
 	}
 }
 
+// tailWindowLen is the length of the tail window of a file of this size, from the
+// page-aligned start every window user shares (warmup.TailStart).
+func tailWindowLen(size int64) int64 {
+	if size <= 0 {
+		return 0
+	}
+	return size - warmup.TailStart(size)
+}
+
 // bytesOutsideWindows is how many bytes of the read [off, off+n) fall outside the head
 // window [0, head) and the tail window [size-tail, size). Windows are clamped to the
 // file, and where they overlap (a short file) nothing is outside.
@@ -125,7 +134,7 @@ func (s *TTFFSession) countUnconfirmed(src ttffSource, n int, off int64) {
 	if src != srcFetchBlock && src != srcRACacheHit {
 		return
 	}
-	out := bytesOutsideWindows(off, int64(n), s.size, warmup.FileSize, warmup.TailWarmupSize)
+	out := bytesOutsideWindows(off, int64(n), s.size, warmup.FileSize, tailWindowLen(s.size))
 	if out == 0 || playbackConfirmed(s.path) {
 		return
 	}
@@ -171,7 +180,7 @@ func (s *TTFFSession) blocks(off, n, size int64) bool {
 	if !s.pastMargin() {
 		return false
 	}
-	if bytesOutsideWindows(off, n, size, warmup.FileSize, warmup.TailWarmupSize) == 0 {
+	if bytesOutsideWindows(off, n, size, warmup.FileSize, tailWindowLen(size)) == 0 {
 		return false
 	}
 	return !playbackConfirmed(s.path)
