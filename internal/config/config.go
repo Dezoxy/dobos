@@ -115,7 +115,7 @@ type Config struct {
 
 	// UnconfirmedReadMarginMB is how many bytes a reader with no confirmed playback may
 	// take, past the head and tail windows, before the session is logged and counted
-	// (reader_budget.go). It only measures: nothing is refused. 0 logs a session at its
+	// (reader_budget.go). On its own it only measures; with RefuseUnconfirmedReads on it is also where refusal starts. 0 logs a session at its
 	// first byte past the windows; a negative or absurd value is replaced by the default.
 	UnconfirmedReadMarginMB int64 `json:"unconfirmed_read_margin_mb"`
 
@@ -123,8 +123,8 @@ type Config struct {
 	// file with no confirmed playback has taken the margin past the windows, further
 	// fetches are held for a webhook and then refused with EIO (reader_budget.go). Off
 	// unless the owner turns it on; read at every read. It enforces only after a play
-	// webhook matched a file since start. No read path calls the gate yet, so on or off
-	// changes nothing today.
+	// webhook matched a file since start. With it off no read is
+	// refused or slowed.
 	RefuseUnconfirmedReads bool `json:"refuse_unconfirmed_reads"`
 
 	// --- External Services (V1.4.6) ---

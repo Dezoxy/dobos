@@ -213,9 +213,12 @@ finished.
    cache, to a session with no confirmed playback, past its two windows, and
    logs each session once when it crosses a margin
    (`unconfirmed_read_margin_mb`); it measures only and refuses nothing.
-   Phase b is designed, not built: an opt-in switch that stops fetching from
-   the swarm for such a reader past the budget and serves only what is
-   cached. The budget lifts as soon as a session registers, applies only once
+   Phase b is built, opt-in and off by default (`refuse_unconfirmed_reads`):
+   past the budget it stops fetching from the swarm for such a reader and
+   serves only what is cached; a refused read waits 15 s for a webhook, then
+   fails with EIO, and the pump is parked, not cancelled. It is tested against
+   a fake engine; the end-to-end variant with the switch on is not built.
+   The budget lifts as soon as a session registers, applies only once
    a matched playback webhook has been seen since start
    (`flodni_playback_webhooks_received_total{matched="true"}`), and a refusal
    never counts as a failed read in the readability record. Entry condition
@@ -224,7 +227,9 @@ finished.
    completes, `flodni_unconfirmed_read_sessions_total{outcome="confirmed_late"}`
    counts it and `flodni_playback_webhooks_received_total{matched="true"}`
    counts the webhook. That condition is met: the end-to-end variant
-   `late-confirm` does exactly that. Phase b stays designed, not built.
+   `late-confirm` does exactly that. The step stays unfinished: the
+   end-to-end test of the refusal (a scan-like reader cut at the margin, the
+   hold lifted by a late webhook) is the remaining part.
 
 ## Done
 

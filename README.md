@@ -236,12 +236,15 @@ and `[DeadSwarm]` lines are unchanged, and their wording is not a contract.
   page cache answers repeated reads without Flodni seeing them.
 - The line carries the library path. Remove it before sharing a log.
 
-## Reader budget (measurement only)
+## Reader budget (counting always; refusal opt-in, off by default)
 
-Counting exists; refusal is designed and not built. A file that no media
-server has confirmed as playing can still be read end to end by a scanner, a
-hasher or a copy. Flodni counts what such a reader takes past the head and
-tail windows and logs the session once. It never refuses or slows a read.
+Counting is implemented and always on. Refusal is implemented in code and
+tests, opt-in and off by default (`refuse_unconfirmed_reads`); the end-to-end
+test with the switch on is not built yet, so it has not run against a real
+mount. A file that no media server has confirmed as playing can still be read
+end to end by a scanner, a hasher or a copy. Flodni counts what such a reader
+takes past the head and tail windows and logs the session once. With the
+switch off it never refuses or slows a read.
 
 - **What counts.** A served read counts when the engine or the read-ahead
   cache answered it, the bytes lie outside the head window and the tail
@@ -286,15 +289,73 @@ tail windows and logs the session once. It never refuses or slows a read.
   webhook resolved to one file. The refusal gate below arms only once
   `matched="true"` has been seen since start.
 - **`refuse_unconfirmed_reads`** in `config.json` (default `false`, read at
-  each read). Designed: past the margin, further fetches are held up to 15 s
-  for a webhook, then refused with EIO. **No caller yet:** the predicate, the
-  hold, the counters below and the `refused` log line exist in code and are
-  tested, but no read path calls them, so the key changes nothing and no
-  read is refused. `over_margin` reports `"enforced":true` when the key is
-  on and a webhook has matched since start, and false otherwise; until the
-  gate is wired, true there still means nothing is refused. The key and the
-  three series below are provisional names.
-- **Refusal series (no caller yet, all stay 0):**
+  each read). Implemented, opt-in. When on, and once a play webhook has
+  matched a file since start, a session that took the margin past the windows
+  since the file was last confirmed (or since the start) gets no further
+  fetches from the swarm for a file that is not confirmed as playing:
+  - **What is refused.** A cache miss for bytes outside the two windows. The
+    read waits up to 15 s on its handle for a webhook (a late webhook lifts
+    the hold and the read goes ahead); after that, and for every later read
+    on that handle, it fails at once with `EIO`. The 15 s is a constant, not
+    a key. A short read is never returned (the kernel would cache the zeros),
+    and `EAGAIN` makes scanners loop.
+  - **What is always served.** A request the read-ahead cache covers in
+    full, the SSD head and tail windows, the tail-window fetch, reads wholly
+    inside a window, the wake at open, and warm on add and catch-up. A
+    request that is only partly cached, or that crosses a window edge, is
+    refused whole. The kernel is expected to retry page by page, which
+    serves the cached pages and fails at the first uncached one; that is
+    not verified until the end-to-end test exists.
+  - **The pump** (`pump_on_open`, or the one started for inferred playback)
+    is parked while its next chunk would be refused: its engine reader stays
+    open and unread, and it resumes on confirmation. It is never cancelled.
+  - **A refusal is not a failed read.** It never reaches the failure count
+    or the readability record, so it cannot produce a dead-swarm verdict.
+    A short read that ends in a refused sub-read is not counted as a failed
+    repair (it still counts as a short read). A caller that leaves while a
+    sub-read is held gets `EINTR`, not a failed read; this is the one
+    behaviour change with the switch off, for the older `EINTR` exits of a
+    sub-read.
+  - **After a confirmation or a stop** the tally starts afresh: a play that
+    ends does not leave the file refused on the next read.
+  - **Log and metrics.** One `"event":"refused"` line per session (`hash`,
+    `file_index`, `size`, the counted bytes, `margin`, `offset` of the first
+    refused read, `held_ms`, `comm`, `pid`, `uid`, `enforced`), no path.
+    `over_margin` reports `"enforced":true` when the key is on and a webhook
+    has matched since start. `confirmed_late` gains `refused_reads`.
+  - **Overshoot.** The margin is "stops starting fetches", not a byte cap:
+    read-ahead already in flight completes, and the parked pump's engine
+    reader may fill its own read-ahead. With the pump on, "cached" includes
+    what the pump had fetched ahead when the margin was crossed. A miss
+    inside the head window fetches a full read-ahead that can run past the
+    window edge, and the warm-landing prefetch fetches the whole chunk around
+    a window read. The size of the overshoot is not measured yet.
+  - **Limits, check before turning it on.** A webhook later than 15 s, lost,
+    or matched to the wrong file breaks that play shortly after the margin
+    (a resume on a recently played file with a lost webhook is refused too:
+    inferred playback is not exempt). Look at `late_ms` on `confirmed_late`
+    lines and at `flodni_playback_webhooks_received_total{matched="false"}`
+    first. A media server's full-file analysis (thumbnails, intro detection)
+    of an unplayed file will fail past the margin. Reads on a handle after
+    its session closed are not budgeted. Held reads occupy FUSE background
+    slots for up to 15 s: with `fuse_max_inflight_mb` set, each held read
+    keeps about 4 MB checked out (at the 16 MB floor, four held reads stop
+    the whole mount for up to 15 s), and `MaxBackground` is 25, so a few
+    handles held in parallel stall read-ahead for every file. A hold adds up
+    to 15 s to one read on top of the slot wait and fetch bounds, and can
+    outlast the 4 s refill budget.
+  - **More limits.** The tally is per file across opens: a player that opens
+    a file a scanner just pushed past the margin has no margin left, only the
+    15 s hold, and every new open of a refused file waits 15 s again. A stop
+    webhook un-confirms the file for every reader, so a second client, or a
+    stop that arrives after the next play, is cut after margin plus hold.
+    Windows are exempt by byte, not by page: a page that straddles the
+    tail-window start is refused when the file size is not page-aligned, and
+    kernel read-ahead across the head edge can stall a head read 15 s once per
+    open. A parked pump resumes when its session closes (no session, no
+    refusal); for inferred playback it can then fetch up to the read-ahead
+    budget once.
+- **Refusal series (all start at 0 and move only with the switch on):**
   `flodni_unconfirmed_read_refused_reads_total`,
   `flodni_unconfirmed_read_holds_total{result="lifted|refused"}` and
   `flodni_unconfirmed_read_confirmed_after_refusal_total`.
@@ -569,9 +630,9 @@ scraper on the same host or Docker network.
 | `flodni_playback_webhooks_received_total` | counter | `matched` | Play and resume webhooks for a movie or an episode; `matched` is `true` when the webhook resolved to one file, else `false`. |
 | `flodni_unconfirmed_read_bytes_total` | counter | none | Bytes past the head and tail windows that readers took from files with no confirmed playback, whichever path served them. Not bytes downloaded. See Reader budget. |
 | `flodni_unconfirmed_read_sessions_total` | counter | `outcome` | Sessions that crossed `unconfirmed_read_margin_mb`, each counted once when it closes: `confirmed_late` if a webhook confirmed the file afterwards, else `unconfirmed`. |
-| `flodni_unconfirmed_read_refused_reads_total` | counter | none | Reads the reader budget refused with EIO. No caller yet: stays 0. See Reader budget. |
-| `flodni_unconfirmed_read_holds_total` | counter | `result` | Holds of a refused handle, when they end: `lifted` by a confirmation, `refused` when the time ran out. No caller yet: stays 0. |
-| `flodni_unconfirmed_read_confirmed_after_refusal_total` | counter | none | Sessions with a refused read that a webhook then confirmed, once each. No caller yet: stays 0. |
+| `flodni_unconfirmed_read_refused_reads_total` | counter | none | Reads the reader budget refused with EIO. Moves only with `refuse_unconfirmed_reads` on. See Reader budget. |
+| `flodni_unconfirmed_read_holds_total` | counter | `result` | Holds of a refused handle, when they end: `lifted` by a confirmation (or the switch going off), `refused` when the time ran out. Moves only with `refuse_unconfirmed_reads` on. |
+| `flodni_unconfirmed_read_confirmed_after_refusal_total` | counter | none | Sessions with a refused read that a webhook then confirmed, once each (plays the budget would have broken). Moves only with `refuse_unconfirmed_reads` on. |
 | `flodni_warmup_cold_reopen_total` | counter | `previously_played` | Confirmed plays that opened cold on a file quota eviction had removed, `true` or `false` by whether it had been played before. |
 | `flodni_warmup_unverified_drops_total` | counter | none | Warmup blocks, head or tail, never written because their pieces did not verify in time. |
 | `flodni_warmup_write_queue_drops_total` | counter | none | Head chunks dropped because the warmup write queue was full. |

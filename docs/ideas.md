@@ -12,9 +12,12 @@ then nothing here is a commitment. Line numbers are as of 2026-11-10.
   vendored `anacrolix/torrent`.
 
 - **Reader budget follow-ups (not planned).** Attribute pump and prefetch
-  fills to the reader that caused them, after Reliability step 6. For phase
-  b, reset or ignore the tally on `media.stop`: it survives a stop, so a
-  crossed session would be refused again until the next webhook lands.
+  fills to the reader that caused them, after Reliability step 6. Reads
+  after a session closes are not budgeted (counted or refused). The
+  read-ahead step past a window edge: a miss inside a window is never refused,
+  and its read-ahead can extend past the window edge into the middle the
+  budget is meant to protect; measure the overshoot, then decide whether to
+  clamp it.
 
 - **Warm on add: pause, wake and removal in the end-to-end test (not
   planned).** The `warm-on-add` variant files one title. A canary public
