@@ -282,7 +282,8 @@ finished.
 
 These came out of reviews of the removal path, the cache directory and the
 file mapping. Steps 1 to 4 should land before a deployment depends on
-Flodni; steps 5 to 7 can land at any time. All are designed, not built.
+Flodni; steps 5 to 7 can land at any time. Step 8 is owner-ordered ahead of
+the move to a deployment. Steps 1 to 4, 6 and 7 are designed, not built.
 
 1. **One wake path, and removals that stay removed.** The mount's open and
    its read-time rewake wake a closed torrent from a bare magnet without
@@ -298,15 +299,23 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
    another is read. Unlinking one episode of a pack through the mount
    removes the whole torrent today; it should follow the same reference
    check as a library removal.
-2. **A missing cache disk means no cache.** With `warmup_dir` on a
-   separately mounted disk that is absent at start, Flodni creates the
-   directory on the filesystem underneath and fills it to the quota, and it
-   re-creates the directory at runtime if it vanishes. Flodni warns when
-   `warmup_dir` is set but the cache did not start, never re-creates the
-   directory after start, does not count a failed deletion as an eviction,
-   and says once that a read-only directory means no cache. The README
-   names the deployment side: make the start depend on the mount, keep the
-   empty mountpoint unwritable, and use a journalling filesystem.
+2. **A missing cache disk means no cache.** [FINISHED] With `warmup_dir` on
+   a separately mounted disk that is absent at start, Flodni used to create
+   the directory on the filesystem underneath and fill it to the quota, and
+   to re-create it at runtime if it vanished. Now it warns when `warmup_dir`
+   is set but the cache did not start, never re-creates the directory after
+   start, does not count a failed deletion as an eviction (and keeps the old
+   total when the quota walk cannot read the directory), serves reads from a
+   read-only directory without writing, has a fill check the directory before
+   it fetches (a distinct error, counted as write_failed), and warns when
+   `warmup_dir` shares a filesystem with its parent. A missing
+   `.dense-migrated` next to a populated cache no longer drops every head:
+   each head is checked for holes and only those go. The startup inode prune
+   has the same "the walk was whole" guard as the other prunes. The README
+   names the deployment side (the "Cache disk" section). A disk that is
+   absent at start still gets a cache on the filesystem underneath, with at
+   most a WARNING; keeping it off that filesystem is the deployment's job
+   (README, "Cache disk").
 3. **Never serve another file's bytes.** An open trusts the stub's file
    index when a warm head exists under it, and otherwise resolves the file
    by size and name, so a stub whose index is stale can be served from the
@@ -348,6 +357,25 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
    matches the full hash in the stub's own link instead, as do the
    already-present check of an add and the reference check before a torrent is
    dropped.
+7. **Remove by the full hash.** Removal by hash matches stub names on eight
+   hex digits; stubs from older tools carry the first or the last eight, so
+   some are missed, and a stub of another torrent could match. It matches
+   the full hash in the stub's own link instead.
+8. **Catch-up scope: retries only.** [FINISHED] `warm_catchup_scope` is
+   `"all"` (the default: every library file not warm, evicted or failing) or
+   `"retries"`. With warm on add on and no backlog to walk, a file warm on add
+   timed out on, dropped for quota, failed to wake or lost to a restart was
+   never tried again. With `"retries"`, catch-up feeds only files warm on add
+   attempted and did not finish: a failed read (the same 20 hour wait and 4
+   failed attempts), `dropped_quota`, `dropped_no_evidence`, `lost`,
+   `write_failed`, and a file warm on add queued over an hour ago with no
+   outcome recorded (a restart mid-warm, a wake error, a full queue). The
+   queued time is `file_state.queued_at` (schema 16), written when warm on add
+   enqueues and cleared when any attempt records an outcome. Files never
+   attempted are left alone. The evidence rules do not change: a retried read
+   the swarm served, failed or not, counts as today; `dropped_quota`,
+   `write_failed`, `lost` and a refused wake never count as swarm evidence and
+   never touch the readability or the per-torrent streak.
 
 ## Done
 
@@ -605,6 +633,24 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
   torrent that shares the digits is left alone. The walk reads every stub under
   the folder (a few hundred bytes each); a stub with no readable hash is skipped
   and logged once per walk.
+- 2026-11-13, before a deployment, step 8: `warm_catchup_scope` (`"all"` by
+  default, `"retries"`) limits catch-up to the files warm on add attempted and
+  did not finish, so a deployment with warm on add and no backlog walk retries
+  its own failures, drops and restarts at a low pace. New: the queued time
+  (`file_state.queued_at`, schema 16, additive), the state `out_of_scope` of
+  `flodni_warm_catchup_files`, `flodni_warm_catchup_scope{scope}`, and
+  `scope` on the `[WarmCatchup]` lines. Tested against fakes and the migration;
+  the end-to-end variant `catch-up` runs scope `"all"`.
+- 2026-11-13, before a deployment relies on it, step 2: a cache disk that
+  vanishes at runtime means no cache, and one absent at start gets a cache on
+  the filesystem underneath with at most a WARNING (the deployment keeps it
+  off that, see the README's "Cache disk"). The cache directory is created at
+  start only, a failed
+  unlink is not an eviction, an unreadable directory keeps the old total, a
+  read-only directory serves reads, and a start warns when the cache did not
+  initialise or `warmup_dir` is not a separate mount. A missing
+  `.dense-migrated` checks each head for holes (`SEEK_DATA`/`SEEK_HOLE`) and
+  drops only those; the startup inode prune needs a whole walk.
 - 2026-11-13, CI speed-up: the image job is split. `Image build` builds and
   saves both images and the end-to-end matrix starts from it; the required
   check `Image (build, smoke test, scan)` runs the smoke test and the scan

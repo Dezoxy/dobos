@@ -40,6 +40,11 @@ Bugs and data-loss risks. None open.
 
 ## Should improve
 
+- **The periodic inode prune checks the walk too.** `cleanup.go` prunes ghost
+  inodes after its own walk without the "the walk was whole" guard the start-up
+  prune now has; the walk adds the root path itself, so an empty or unmounted
+  library still leaves a non-empty set. Low stakes, since inodes derive from
+  hash and index.
 - **An `App` struct instead of package-level state.** The FUSE handle, the
   pump, the webhook and the cleanup manager share seven package-level maps
   (`activeHandles`, `activePumps`, `playbackRegistry`, `pumpTimers`,
