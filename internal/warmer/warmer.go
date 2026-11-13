@@ -5,7 +5,8 @@
 // no engine, cache or database to be tested.
 //
 // The queue is in memory: a restart forgets it, and the per-file record says which files
-// were never warmed. Two workers take one hash at a time. Playback pauses all of it.
+// were never warmed. Deps.Queued also marks each file at enqueue, until an attempt
+// records an outcome, so a file a restart or a wake error left is still known. Two workers take one hash at a time. Playback pauses all of it.
 //
 // Catch-up (Readiness step 3) is a second trigger on the same queue: AddCatchup takes
 // files of the library that were never warmed, and the Feeder in catchup.go hands them in
@@ -41,6 +42,12 @@ var Triggers = []string{Trigger, TriggerCatchup}
 // broken; this one means the hash can never be woken from here.
 var ErrNotStored = errors.New("the engine does not store this torrent")
 
+// ErrIndexMismatch is what Deps.Fill returns when the file the stub's index names in the
+// engine is not the file the stub describes (its length differs). Filling would write
+// another file's bytes under this key. The file is skipped: no retry, no cache state and
+// no swarm evidence, because nothing about the swarm or the cache was learned.
+var ErrIndexMismatch = errors.New("the stub's file index names another file in the torrent")
+
 // Outcomes of an attempt, the outcome label of flodni_warm_fills_total. A pause, a
 // shutdown and a removal record nothing and are not outcomes.
 const (
@@ -54,12 +61,13 @@ const (
 	OutcomeWriteFailed      = "write_failed"
 	OutcomeWakeError        = "wake_error"
 	OutcomeSkipped          = "skipped"
+	OutcomeIndexMismatch    = "index_mismatch"
 	OutcomeDroppedQueueFull = "dropped_queue_full"
 )
 
 // Outcomes lists every outcome, so the metrics can emit each at 0.
 var Outcomes = []string{OutcomeWarmed, OutcomePresent, OutcomeAlreadyWarm, OutcomeNoRoom, OutcomeFailed,
-	OutcomeEvicted, OutcomeLost, OutcomeWriteFailed, OutcomeWakeError, OutcomeSkipped, OutcomeDroppedQueueFull}
+	OutcomeEvicted, OutcomeLost, OutcomeWriteFailed, OutcomeWakeError, OutcomeSkipped, OutcomeIndexMismatch, OutcomeDroppedQueueFull}
 
 // Values of the per-file record the warmer writes.
 const (
@@ -99,6 +107,9 @@ type Update struct {
 	Cache       string
 	DeliveredAt time.Time
 	AttemptAt   time.Time
+	// ClearQueued ends the file's queued mark (Deps.Queued): the attempt recorded an
+	// outcome. It touches nothing else.
+	ClearQueued bool
 }
 
 // Deps is everything the warmer needs from outside. Every func is required except
@@ -125,6 +136,12 @@ type Deps struct {
 	EvictedSince func(k warmup.FileKey, since time.Time) bool
 	// Record applies an Update to the per-file record.
 	Record func(Update)
+	// Queued marks files as queued, before Add enqueues them (nil: no mark). The mark
+	// stays until an attempt records an outcome (Update.ClearQueued), so a file lost to
+	// a restart, a wake error or a full queue is still marked, and the catch-up scope
+	// "retries" finds it. It may block: it runs on the caller of Add, before the
+	// warmer's lock is taken, so a worker cannot clear a mark that is not written yet.
+	Queued func(keys []warmup.FileKey)
 	// SwarmRead stamps the per-torrent record: the swarm delivered bytes at that time.
 	SwarmRead func(hash string, at time.Time)
 	// Classify says why a timed-out fill got nothing: no_peers, not_active or timeout.
@@ -277,14 +294,26 @@ func zeroed(keys []string) map[string]int64 {
 	return m
 }
 
-// Add queues the files of an added title. It only enqueues: memory, no blocking. It
-// does nothing while the switch is off. Calls for one hash merge, so a pack filed
+// Add queues the files of an added title. It enqueues in memory, after Deps.Queued has
+// marked the files (the one write it can wait for). It does nothing while the switch is
+// off. Calls for one hash merge, so a pack filed
 // episode by episode loses no file, and a later Add clears a removal's tombstone.
 func (w *Warmer) Add(hash string, files []File) {
 	if w == nil || !w.d.Enabled() {
 		return
 	}
 	hash = strings.ToLower(hash)
+	if w.d.Queued != nil {
+		var keys []warmup.FileKey
+		for _, f := range files {
+			if f.Size > 0 && f.Index >= 0 {
+				keys = append(keys, warmup.FileKey{Hash: hash, FileIdx: f.Index})
+			}
+		}
+		if len(keys) > 0 {
+			w.d.Queued(keys)
+		}
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.closed {
@@ -784,6 +813,7 @@ func (w *Warmer) record(j *job, f *file, u Update, outcome string, retry, stampS
 		w.smu.Unlock()
 		w.scheduleRetry(j, f)
 	}
+	u.ClearQueued = true // any outcome ends the queued mark
 	w.d.Record(u)
 	if stampSwarm {
 		w.d.SwarmRead(j.hash, f.delivered)
@@ -1022,6 +1052,10 @@ func (w *Warmer) attempt(j *job, f *file) action {
 		} else {
 			delivered()
 		}
+	case errors.Is(err, ErrIndexMismatch):
+		// Only the attempt time is recorded: catch-up waits its retry period before it
+		// looks again, and nothing here counts as a cache failure or a read.
+		line.Outcome, line.Reason = OutcomeIndexMismatch, err.Error()
 	case errors.Is(err, warmup.ErrNoRoom):
 		line.Outcome = OutcomeNoRoom
 		u.Cache = CacheDroppedNoEvidence

@@ -107,6 +107,12 @@ type Config struct {
 	// a negative value is refused at load and replaced by the default (20). Read on
 	// each feed.
 	WarmCatchupPerHour int `json:"warm_catchup_per_hour"`
+	// WarmCatchupScope says which files catch-up feeds (roadmap, step 8): "all" (the
+	// default) is every library file not warm on disk, not evicted and not failing;
+	// "retries" is only the files warm on add attempted and did not finish (a failed
+	// read, dropped_quota, lost, write_failed, or queued for over an hour with no
+	// outcome), never the cold backlog. An unknown value is replaced by "all" at load.
+	WarmCatchupScope string `json:"warm_catchup_scope"`
 	// PlayedProtectionDays is how long a play confirmed by the media server keeps a
 	// file out of the first rounds of quota eviction, counted from its last play.
 	// After that the file ranks as never played. 0 means a play protects forever;
@@ -229,6 +235,7 @@ func LoadConfig() Config {
 		PlayedProtectionDays:    90,
 		UnconfirmedReadMarginMB: 64,
 		WarmCatchupPerHour:      20,
+		WarmCatchupScope:        "all",
 		PlaybackWebhookWarnDays: 7,
 
 		PlaybackKeepaliveMinutes:     15,
@@ -413,6 +420,13 @@ func (c *Config) finalize() {
 	if c.WarmCatchupPerHour < 0 {
 		log.Printf("[Config] WARNING: warm_catchup_per_hour %d is negative; using 20", c.WarmCatchupPerHour)
 		c.WarmCatchupPerHour = 20
+	}
+
+	if c.WarmCatchupScope != "all" && c.WarmCatchupScope != "retries" {
+		if c.WarmCatchupScope != "" {
+			log.Printf("[Config] WARNING: warm_catchup_scope %q is not \"all\" or \"retries\"; using \"all\"", c.WarmCatchupScope)
+		}
+		c.WarmCatchupScope = "all"
 	}
 
 	// Above ~100,000 days the protection time overflows a duration and would turn

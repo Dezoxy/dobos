@@ -4,6 +4,7 @@ import (
 	"flodni/internal/gostorm/native"
 	"flodni/internal/warmup"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -249,7 +250,7 @@ func (s *TTFFSession) recordRead(src ttffSource, d time.Duration, n int, off int
 		if src == srcFetchBlock && !s.servedByNet.Load() && sessionActivePeers(s.hash) > 0 {
 			s.servedByNet.Store(true)
 		}
-		if off >= ttffDeepReadOff || (s.size > 0 && off >= s.size-warmup.TailWarmupSize) {
+		if off >= ttffDeepReadOff || (s.size > 0 && off >= warmup.TailStart(s.size)) {
 			s.tailOrDeep.Store(true)
 			s.firstDeepReadAt.CompareAndSwap(0, nowN)
 		}
@@ -544,18 +545,57 @@ func ttffReleaseClose(path string) {
 	}
 }
 
-// ttffCleanupLoop closes sessions idle for ttffIdleClose, or idle beyond 30s
-// once older than ttffMaxLife (zombie handles with periodic probe reads);
-// active playbacks are never closed by age.
+// Test-only overrides of the session idle close and the cleanup tick, read once at
+// start. They exist so the end-to-end variants that wait for a session to close do not
+// wait minutes; they are not configuration.
+const (
+	envTestSessionIdleClose = "FLODNI_TEST_SESSION_IDLE_CLOSE"
+	envTestSessionTick      = "FLODNI_TEST_SESSION_TICK"
+	ttffTestMin             = time.Second
+	ttffTestMax             = 10 * time.Minute
+	ttffDefaultTick         = 60 * time.Second
+)
+
+// ttffTiming returns the idle close and the cleanup tick: the defaults, or the
+// test-only environment values when they parse as Go durations within 1s..10m. A value
+// outside that is ignored. notes says what was applied or ignored, for one log line each.
+func ttffTiming(getenv func(string) string) (idle, tick time.Duration, notes []string) {
+	idle, tick = ttffIdleClose, ttffDefaultTick
+	for _, o := range []struct {
+		name string
+		dst  *time.Duration
+	}{{envTestSessionIdleClose, &idle}, {envTestSessionTick, &tick}} {
+		raw := getenv(o.name)
+		if raw == "" {
+			continue
+		}
+		d, err := time.ParseDuration(raw)
+		if err != nil || d < ttffTestMin || d > ttffTestMax {
+			notes = append(notes, fmt.Sprintf("%s=%q ignored: want a duration from %s to %s", o.name, raw, ttffTestMin, ttffTestMax))
+			continue
+		}
+		*o.dst = d
+		notes = append(notes, fmt.Sprintf("%s=%s (test only)", o.name, d))
+	}
+	return idle, tick, notes
+}
+
+// ttffCleanupLoop closes sessions idle for the idle close (ttffIdleClose unless a test
+// overrides it), or idle beyond 30s once older than ttffMaxLife (zombie handles with
+// periodic probe reads); active playbacks are never closed by age.
 func ttffCleanupLoop() {
-	ticker := time.NewTicker(60 * time.Second)
+	idleClose, tickEvery, notes := ttffTiming(os.Getenv)
+	for _, n := range notes {
+		logger.Printf("[Sessions] %s", n)
+	}
+	ticker := time.NewTicker(tickEvery)
 	defer ticker.Stop()
 	for range ticker.C {
 		nowN := time.Now().UnixNano()
 		sessions.Range(func(key, val interface{}) bool {
 			s := val.(*TTFFSession)
 			idle := nowN - s.lastReadAt.Load()
-			if idle > int64(ttffIdleClose) ||
+			if idle > int64(idleClose) ||
 				(idle > int64(30*time.Second) && nowN-s.openedAt.Load() > int64(ttffMaxLife)) {
 				s.closeSession()
 			}

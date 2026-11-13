@@ -4,12 +4,38 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/anacrolix/torrent/metainfo"
+
 	"flodni/internal/cache"
+	"flodni/internal/gostorm/settings"
 	"flodni/internal/vfs"
 )
+
+// unstoredLogHashes is how many hashes the startup warning names.
+const unstoredLogHashes = 5
+
+// libraryUnstored is the number of library torrents the engine holds no record with
+// metainfo for, set once after the startup walk. Nil until then: a zero before the
+// count exists would read as "all stored".
+var libraryUnstored atomic.Pointer[int]
+
+// engineHasMetainfo reports whether the engine's database holds a record for the hash
+// with the torrent's metainfo. A record without it can only be re-added from a bare
+// magnet. One database read; a record that does not decode counts as absent.
+func engineHasMetainfo(hash string) bool {
+	var h metainfo.Hash
+	if err := h.FromHexString(hash); err != nil {
+		return false
+	}
+	rec := settings.GetTorrent(h)
+	return rec != nil && rec.TorrentSpec != nil && len(rec.InfoBytes) > 0
+}
 
 // StartupCacheBuilder pre-populates metadata cache at startup
 // This dramatically improves Plex scan performance (30s -> 10s for 1000+ files)
@@ -27,6 +53,10 @@ type StartupCacheBuilder struct {
 	startTime      time.Time
 	foundFiles     map[string]bool // V142: Track files for GC
 	foundHashes    map[string]bool // lower-case info hashes of every stub seen, for pruning
+
+	// hasMetainfo says whether the engine stores the hash with its metainfo; a test
+	// swaps it.
+	hasMetainfo func(hash string) bool
 }
 
 // NewStartupCacheBuilder creates a new startup cache builder
@@ -38,6 +68,7 @@ func NewStartupCacheBuilder(sourcePath string, metaCache *cache.LRUCache, logger
 		startTime:   time.Now(),
 		foundFiles:  make(map[string]bool),
 		foundHashes: make(map[string]bool),
+		hasMetainfo: engineHasMetainfo,
 	}
 }
 
@@ -80,6 +111,7 @@ func (b *StartupCacheBuilder) Start() {
 
 		b.pruneReadability(walked == 2)
 		b.pruneFileState(walked == 2)
+		b.warnUnstored()
 
 		// V133: Save inode map after startup scan completes
 		// This ensures the map is persisted even if no background save triggered
@@ -93,19 +125,7 @@ func (b *StartupCacheBuilder) Start() {
 		}
 
 		// V142: Inode GC - Remove ghost entries (files that no longer exist)
-		if globalInodeMap != nil {
-			b.mu.Lock()
-			// Make a copy or pass reference? Pass reference since we are done modifying it
-			// However, PruneMissing only reads from it, so it's safe if we don't modify it anymore.
-			// We hold b.mu just to be safe or we can just pass it as we are in the final serial block.
-			foundSet := b.foundFiles
-			b.mu.Unlock()
-
-			pruned := globalInodeMap.PruneMissing(foundSet)
-			if pruned > 0 {
-				b.logger.Printf("Startup GC: Pruned %d ghost inodes", pruned)
-			}
-		}
+		b.pruneInodes(walked == 2)
 	}()
 }
 
@@ -235,6 +255,26 @@ func (b *StartupCacheBuilder) libraryIfWhole(what string, complete bool) (map[st
 	return keep, true
 }
 
+// pruneInodes drops the inode entries of files the walk did not find, under the same
+// guard as the other prunes: a wrong or unmounted source path must not empty the file
+// rows.
+func (b *StartupCacheBuilder) pruneInodes(complete bool) {
+	if globalInodeMap == nil {
+		return
+	}
+	b.mu.Lock()
+	errs, found := b.errors, b.foundFiles
+	n := len(found)
+	b.mu.Unlock()
+	if !complete || errs > 0 || n == 0 {
+		b.logger.Printf("Inode prune skipped: complete=%v errors=%d files=%d", complete, errs, n)
+		return
+	}
+	if pruned := globalInodeMap.PruneMissing(found); pruned > 0 {
+		b.logger.Printf("Startup GC: Pruned %d ghost inodes", pruned)
+	}
+}
+
 // pruneReadability drops readability rows of torrents that left the library. It runs
 // only after a complete walk. Rows touched since the process started are kept.
 func (b *StartupCacheBuilder) pruneReadability(complete bool) {
@@ -276,6 +316,40 @@ func (b *StartupCacheBuilder) pruneFileState(complete bool) {
 	if len(dropped) > 0 {
 		b.logger.Printf("File state prune: removed the marks of %d torrents no longer in the library", len(dropped))
 	}
+}
+
+// warnUnstored counts the library torrents the engine stores no metainfo for, logs a
+// WARNING naming the first few hashes (no paths) and sets libraryUnstored. With none
+// missing it logs a plain line, so a log shows the count ran. It reads the
+// engine database once per distinct hash, in this background goroutine after the walk,
+// so it never delays the mount. It changes nothing: such a torrent still wakes from its
+// bare magnet today.
+func (b *StartupCacheBuilder) warnUnstored() {
+	b.mu.Lock()
+	hashes := make([]string, 0, len(b.foundHashes))
+	for h := range b.foundHashes {
+		hashes = append(hashes, h)
+	}
+	b.mu.Unlock()
+	if len(hashes) == 0 || b.hasMetainfo == nil {
+		return
+	}
+	sort.Strings(hashes)
+	var missing []string
+	for _, h := range hashes {
+		if !b.hasMetainfo(h) {
+			missing = append(missing, h)
+		}
+	}
+	n := len(missing)
+	libraryUnstored.Store(&n)
+	if n == 0 {
+		b.logger.Printf("Library torrents with no stored engine record with metainfo: 0 of %d", len(hashes))
+		return
+	}
+	shown := missing[:min(n, unstoredLogHashes)]
+	b.logger.Printf("WARNING: %d of %d library torrents have no stored engine record with metainfo (first %d: %s); one opened after an idle close is re-added from its bare magnet",
+		n, len(hashes), len(shown), strings.Join(shown, " "))
 }
 
 // Statistics helpers (thread-safe)

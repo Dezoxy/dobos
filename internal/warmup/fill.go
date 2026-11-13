@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Dezoxy fork: the fill primitive of Readiness step 2 (warm on add). It completes one
@@ -50,6 +52,9 @@ var (
 	// eviction, RemoveHash, the reaper dropping a small head, or a write the cache
 	// declined. It never re-creates the file, and it is not proof of a quota eviction.
 	ErrEvicted = errors.New("warmup fill: evicted while filling")
+	// ErrCacheDir means the cache directory is gone or not writable, found before any
+	// byte was fetched: a fill would download windows it cannot store.
+	ErrCacheDir = errors.New("warmup fill: cache directory missing or not writable")
 	// ErrTimeout means a chunk or the file did not verify in time. It wraps the last
 	// error of the reader that drove the download, if there was one.
 	ErrTimeout = errors.New("warmup fill: timed out")
@@ -126,8 +131,7 @@ func (d *DiskWarmupCache) FillWindows(req FillRequest) (FillResult, error) {
 	hash, id := req.Key.Hash, req.Key.FileIdx
 	hpath, tpath := d.filePath(hash, id), d.tailPath(hash, id)
 	headTarget := min(FileSize, req.FileSize)
-	tailStart := max(0, req.FileSize-TailWarmupSize)
-	tailLen := req.FileSize - tailStart
+	tailStart, tailLen := d.tailWindow(tpath, req.FileSize)
 
 	headHave := d.headSize(hpath)
 	if headHave >= headTarget && d.TailReady(hash, id) {
@@ -135,12 +139,13 @@ func (d *DiskWarmupCache) FillWindows(req FillRequest) (FillResult, error) {
 		return res, nil
 	}
 
+	if err := unix.Access(d.dir, unix.W_OK); err != nil {
+		return res, fmt.Errorf("%w: %v", ErrCacheDir, err)
+	}
+
 	missing := max(0, headTarget-headHave)
 	for _, g := range d.tailGaps(tpath, tailLen) {
 		missing += g.end - g.start
-	}
-	if err := os.MkdirAll(d.dir, 0755); err != nil {
-		return res, fmt.Errorf("warmup fill: %w", err)
 	}
 	trigger := req.Trigger
 	if trigger == "" {

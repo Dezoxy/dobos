@@ -55,10 +55,13 @@ const (
 	OutcomeMetainfo
 	// OutcomeFailed: a session ended with a read that gave up and nothing served.
 	OutcomeFailed
+	// OutcomeNotStored: the engine refused to wake the torrent because it keeps no
+	// record of it. Not a failed read and not a dead swarm: Source is set, Reason is not.
+	OutcomeNotStored
 )
 
 // Outcome is one reachability observation. Reason and Source are set for
-// OutcomeFailed only.
+// OutcomeFailed only; Source is also set for OutcomeNotStored.
 type Outcome struct {
 	Hash   string
 	Kind   OutcomeKind
@@ -96,42 +99,33 @@ func ActivePeers(hash string) int {
 	return t.Torrent.Stats().ActivePeers
 }
 
-// ErrNotStored means the engine keeps no record of the hash, so WakeStored refused it.
-var ErrNotStored = errors.New("the engine does not store this torrent")
+// ErrNotStored means the engine keeps no record of the hash, so the wake refused it.
+// It is the engine's own error, so a match on either name holds.
+var ErrNotStored = torr.ErrNotStored
 
 var reHexHash = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
 
-// storedMagnet is the link WakeStored hands to Wake: the bare hash, with no tracker, no
-// peer and no name. AddTorrent fills in what the engine stored for the hash.
+// storedMagnet is the link WakeStored hands to Wake: the bare hash. Wake takes the
+// hash from a link and nothing else, so no tracker, peer or name travels with it.
 func storedMagnet(hash string) string { return "magnet:?xt=urn:btih:" + hash }
 
 // WakeStored wakes a torrent the engine closed, for a caller that has no link of its own
-// (Dezoxy fork, warm on add). It refuses a hash the engine no longer stores: Wake would
-// add it from the bare magnet, with the public trackers and the DHT, and a private
-// torrent (BEP 27) must never get those (hard rule 3). For a stored hash AddTorrent
-// restores the trackers and the info it was added with. The check and the add are not
-// one step; a removal between them is the same exposure the mount's rewake has.
+// (Dezoxy fork, warm on add). Wake itself refuses a hash the engine does not store,
+// so this only validates the hash and delegates.
 func (c *NativeClient) WakeStored(ctx context.Context, hash string) error {
 	if !reHexHash.MatchString(hash) {
 		return fmt.Errorf("%w: malformed hash", ErrNotStored)
 	}
-	hash = strings.ToLower(hash)
-	t := torr.PeekTorrent(hash)
-	if t == nil {
-		return ErrNotStored
-	}
-	// A closed torrent whose record holds no metainfo would be added as a bare magnet:
-	// its private flag unknown, so the DHT and PEX stay on until the metainfo arrives.
-	if t.UnderlyingTorrent() == nil && (t.TorrentSpec == nil || len(t.TorrentSpec.InfoBytes) == 0) {
-		return fmt.Errorf("%w: its record holds no metainfo", ErrNotStored)
-	}
-	return c.Wake(ctx, storedMagnet(hash), -1)
+	return c.Wake(ctx, storedMagnet(strings.ToLower(hash)), -1)
 }
 
 // Wake triggers the start of a torrent (Ghost -> Active) entirely in-memory
-// Synchronous & Deduplicated. The context bounds the call: a FUSE Open that the kernel
-// already cancelled must not keep the activation, and its semaphore token, alive for
-// the metadata timeout.
+// Synchronous & Deduplicated. The link is used for its hash only: the torrent comes
+// from the engine's stored record (torr.LoadStored), so a magnet's trackers and peers
+// never reach a torrent, and a hash with no stored metainfo is refused with
+// ErrNotStored (hard rule 3: a private torrent gets no public tracker or DHT).
+// The context bounds the call: a FUSE Open that the kernel already cancelled must not
+// keep the activation, and its semaphore token, alive for the metadata timeout.
 func (c *NativeClient) Wake(ctx context.Context, magnetUrl string, fileIdx int) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -148,7 +142,12 @@ func (c *NativeClient) Wake(ctx context.Context, magnetUrl string, fileIdx int) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// 1. Parse Magnet/Link to get hash
+	// A wake takes a magnet and nothing else: any other link (an http(s) URL) would be
+	// fetched by ParseLink, and a wake must never fetch or add from a link.
+	if !strings.HasPrefix(magnetUrl, "magnet:") {
+		return fmt.Errorf("%w: a wake takes a magnet, not a link to fetch", ErrNotStored)
+	}
+	// 1. Parse the magnet to get its hash
 	spec, err := apiUtils.ParseLink(magnetUrl)
 	if err != nil {
 		return fmt.Errorf("parse link error: %w", err)
@@ -174,10 +173,13 @@ func (c *NativeClient) Wake(ctx context.Context, magnetUrl string, fileIdx int) 
 
 	// 3. Synchronous Wakeup
 	if t == nil {
-		// Add/Start Torrent via Internal API
+		// Start the torrent from its stored record, never from the link.
 		var err error
-		t, err = torr.AddTorrent(spec, "", "", "", "")
+		t, err = torr.LoadStored(hash)
 		if err != nil {
+			if errors.Is(err, ErrNotStored) {
+				return err
+			}
 			return fmt.Errorf("add torrent error: %w", err)
 		}
 	}
@@ -766,13 +768,6 @@ func (c *NativeClient) ListTorrents() ([]TorrentStats, error) {
 		}
 	}
 	return result, nil
-}
-
-// RemoveTorrent removes a torrent from the server
-func (c *NativeClient) RemoveTorrent(hash string) error {
-	// torr.RemTorrent also removes the torrent's disk warmup files.
-	torr.RemTorrent(hash)
-	return nil
 }
 
 // PipeResponseWriter bridges GoStorm's HTTP responses to our Go pipe.

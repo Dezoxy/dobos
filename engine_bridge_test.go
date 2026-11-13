@@ -59,13 +59,13 @@ type fakeEngine struct {
 	aheads  []aheadCall
 	readers []*fakeReader
 	woke    []string
+	wakeFn  func(ctx context.Context, magnet string, fileIdx int) error // scripts Wake's answer; nil = success
 
 	blockFn func(i int, off int64, p []byte) (int, error)
 	aheadFn func(i int, off int64, buf, dest []byte, onFill func(int, bool, error)) (int, error)
 	newRead func() *fakeReader
 
 	torrents  []native.TorrentStats
-	removed   []string
 	hashesCut int
 }
 
@@ -113,19 +113,24 @@ func (f *fakeEngine) NewStreamReader(string, int, int64) streamReader {
 	return r
 }
 
-func (f *fakeEngine) Wake(_ context.Context, magnet string, _ int) error {
+func (f *fakeEngine) Wake(ctx context.Context, magnet string, fileIdx int) error {
 	f.mu.Lock()
 	f.woke = append(f.woke, magnet)
+	fn := f.wakeFn
 	f.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, magnet, fileIdx)
+	}
 	return nil
+}
+
+func (f *fakeEngine) wakeCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.woke)
 }
 
 func (f *fakeEngine) ListTorrents() ([]native.TorrentStats, error) { return f.torrents, nil }
-
-func (f *fakeEngine) RemoveTorrent(hash string) error {
-	f.removed = append(f.removed, hash)
-	return nil
-}
 
 func (f *fakeEngine) CleanupHashes() int { return f.hashesCut }
 
@@ -1211,21 +1216,5 @@ func TestReadAttachesToTheRunningPumpInsteadOfUpgrading(t *testing.T) {
 	}
 	if fe.readerCount() != 0 {
 		t.Error("no second reader")
-	}
-}
-
-// --- the other callers of the interface ---
-
-func TestTorrentRemoverUsesTheBridge(t *testing.T) {
-	useTestGlobals(t)
-	fe := &fakeEngine{torrents: []native.TorrentStats{{Hash: "AAAA1111", Title: "one"}, {Hash: "BBBB2222", Title: "two"}}}
-	tr := NewTorrentRemover(fe, logger)
-
-	hash, title, err := tr.findFullHashBySuffix("b2222")
-	if err != nil || hash != "BBBB2222" || title != "two" {
-		t.Errorf("findFullHashBySuffix = (%q, %q, %v)", hash, title, err)
-	}
-	if ok, err := tr.removeTorrent("BBBB2222"); !ok || err != nil || len(fe.removed) != 1 || fe.removed[0] != "BBBB2222" {
-		t.Errorf("removeTorrent = (%v, %v), removed %v", ok, err, fe.removed)
 	}
 }

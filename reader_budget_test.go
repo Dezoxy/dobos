@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"flodni/internal/warmup"
 )
 
 const rbPrefix = "[ReaderBudget] "
@@ -306,5 +308,29 @@ func TestReadInnerCacheHitReachesTheBudget(t *testing.T) {
 	}
 	if b, _, _ := rbCounts(); b-b0 != 4096 {
 		t.Fatalf("counter +%d, want 4096", b-b0)
+	}
+}
+
+// The tail window starts on a page boundary, so the page that straddles size-N is inside
+// it: reading it counts nothing and is not refused.
+func TestReaderBudgetTailExemptionUsesTheAlignedStart(t *testing.T) {
+	s := budgetEnv(t, 0)
+	s.size = 1<<30 + 1000
+	start := warmup.TailStart(s.size)
+	if start >= s.size-warmup.TailWarmupSize {
+		t.Fatalf("TailStart %d is not below size-window %d", start, s.size-warmup.TailWarmupSize)
+	}
+	b0, _, _ := rbCounts()
+	s.countUnconfirmed(srcFetchBlock, 1000, start) // the leading page of the window
+	if b, _, _ := rbCounts(); b != b0 {
+		t.Fatalf("a read inside the aligned tail window counted +%d", b-b0)
+	}
+	if s.blocks(start, 1000, s.size) {
+		t.Fatal("a read inside the aligned tail window was refused")
+	}
+	// One page below the window is outside.
+	s.countUnconfirmed(srcFetchBlock, 4096, start-4096)
+	if b, _, _ := rbCounts(); b-b0 != 4096 {
+		t.Fatalf("a read below the window counted +%d, want 4096", b-b0)
 	}
 }

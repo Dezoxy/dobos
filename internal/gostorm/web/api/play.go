@@ -54,8 +54,13 @@ func play(c *gin.Context) {
 	}
 
 	if tor.Stat == state.TorrentInDB {
-		tor, err = torr.AddTorrent(spec, tor.Title, tor.Poster, tor.Data, tor.Category)
+		// A wake of a stored torrent: from its record only, never from the link.
+		tor, err = torr.LoadStored(spec.InfoHash.HexString())
 		if err != nil {
+			if errors.Is(err, torr.ErrNotStored) {
+				c.AbortWithError(http.StatusNotFound, err)
+				return
+			}
 			c.AbortWithError(http.StatusInternalServerError, err)
 			return
 		}

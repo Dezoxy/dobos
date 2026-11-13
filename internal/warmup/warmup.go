@@ -2,6 +2,7 @@ package warmup
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"flodni/internal/gostorm/settings"
@@ -20,6 +22,29 @@ var FileSize int64 = 64 * 1024 * 1024
 
 // TailWarmupSize is the per-file tail window (V265: Cues/seek index). Set at init.
 var TailWarmupSize int64 = 16 * 1024 * 1024
+
+// tailPage is the unit the tail window's start is rounded to: the kernel reads whole
+// 4 KiB pages, so a read of the last N bytes of a file whose size is not page-aligned
+// starts on the page before size-N, and that page must be in the window.
+const tailPage = 4096
+
+// TailStart is where the tail window of a file of this size begins: size minus
+// TailWarmupSize rounded down to a 4 KiB boundary, 0 for a file that fits the window.
+// The window grows by up to 4095 bytes. Every place that needs the window's start or
+// length uses this, so the writers, the readers and the budget agree.
+func TailStart(size int64) int64 { return TailStartFor(size, TailWarmupSize) }
+
+// TailStartFor is TailStart for a window of this configured size.
+func TailStartFor(size, window int64) int64 {
+	if size <= window || window <= 0 {
+		return 0
+	}
+	return (size - window) &^ (tailPage - 1)
+}
+
+// legacyTailStart is where a tail window begun before the start was aligned: exactly
+// the configured size from the end. Covers written then still load (see loadCoverage).
+func legacyTailStart(size int64) int64 { return max(0, size-TailWarmupSize) }
 
 // headBoundaryChunk lets the chunk that starts exactly at FileSize be written in full
 // (upstream: instant start serves up to FileSize plus one pump chunk). Index mode turns
@@ -132,6 +157,7 @@ type cachedHandle struct {
 	f            *os.File
 	lastUsedNano atomic.Int64 // atomic to prevent race with handleReaper
 	closed       atomic.Bool  // set by closeHandle before f.Close() so writeWorker can detect stale handles
+	readOnly     bool         // opened O_RDONLY: the directory refuses writes, reads still work
 }
 
 // V264: sizeEntry stores the cached size of a warmup file with TTL.
@@ -151,17 +177,35 @@ type tailRange struct {
 	mu     sync.Mutex
 	ranges []tailSpan // disjoint, merged, sorted by start
 	window int64      // length of the tail window; 0 means TailWarmupSize (a short file has less)
+	start  int64      // where the window begins in the media file; set with window
 	size   int64      // the media file's size, 0 until a write or a restored cover file says
 }
 
 // setWindow records the length of the file's tail window, so a file shorter than
 // TailWarmupSize can complete, and the file's size, which is what the head's target
 // depends on (the head cache does not know it).
-func (tr *tailRange) setWindow(n, fileSize int64) {
+func (tr *tailRange) setWindow(start, n, fileSize int64) {
 	tr.mu.Lock()
+	tr.start = start
 	tr.window = n
 	tr.size = fileSize
 	tr.mu.Unlock()
+}
+
+// windowFor returns the start and length of the tail window of a file of fileSize that
+// this tracker's bytes are laid out for. It is the aligned window, except for a cover
+// written before the start was aligned (exactly TailWarmupSize from the end): its file
+// holds the bytes from that start, so it keeps it. That window lacks the aligned
+// window's leading page, which a read leaves to the engine; the cover is complete for
+// the window it covers.
+func (tr *tailRange) windowFor(fileSize int64) (start, length int64) {
+	start = TailStart(fileSize)
+	tr.mu.Lock()
+	if tr.window > 0 && tr.size == fileSize && tr.start == legacyTailStart(fileSize) {
+		start = tr.start
+	}
+	tr.mu.Unlock()
+	return start, fileSize - start
 }
 
 // fileSize returns the recorded size of the media file, 0 if unknown.
@@ -250,6 +294,8 @@ func (d *DiskWarmupCache) noteWrite(hash string, fileID int) {
 // DiskWarmupCache persists the first 128MB of each streamed file to SSD.
 type DiskWarmupCache struct {
 	dir           string
+	headsChecked  int          // heads the start-up hole check looked at (set once, before the workers run)
+	headsHoley    int          // ...and the ones it dropped
 	mu            sync.Mutex   // protects quota enforcement
 	totalSize     int64        // V288: Tracked total size of all warmup files in bytes
 	missing       sync.Map     // path -> time.Time (negative cache for missing files)
@@ -272,9 +318,38 @@ var logf = log.New(os.Stdout, "[DiskWarmup] ", log.LstdFlags)
 // removeFile deletes a cache or coverage file. A file that stays behind is no
 // longer counted by the size accounting, so a failure is logged.
 func removeFile(path string) {
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	_ = removed(path)
+}
+
+// removed unlinks path and reports whether it is gone: a file already missing is gone,
+// a failed unlink (read-only directory, a stuck entry) is not, and is logged.
+func removed(path string) bool {
+	err := os.Remove(path)
+	if err != nil && !os.IsNotExist(err) {
 		logf.Printf("[DiskWarmup] remove %s failed: %v", filepath.Base(path), err)
+		return false
 	}
+	return true
+}
+
+// writeMarker creates the empty density marker.
+func writeMarker(path string) {
+	f, err := os.Create(path)
+	if err != nil {
+		logf.Printf("[DiskWarmup] WARNING: cannot write %s: %v", filepath.Base(path), err)
+		return
+	}
+	_ = f.Close() // an empty marker file
+}
+
+// onParentFilesystem reports whether dir sits on the same device as its parent, the
+// sign of an empty mountpoint. Only a hint: a plain directory does too.
+func onParentFilesystem(dir string) bool {
+	var a, b syscall.Stat_t
+	if syscall.Stat(dir, &a) != nil || syscall.Stat(filepath.Dir(filepath.Clean(dir)), &b) != nil {
+		return false
+	}
+	return a.Dev == b.Dev
 }
 
 func InitDiskWarmup(opts Options) {
@@ -307,10 +382,21 @@ func InitDiskWarmup(opts Options) {
 		dir = settings.BTsets.TorrentsSavePath
 	}
 	if dir == "" || dir == "/" {
+		if opts.Dir != "" {
+			logf.Printf("[DiskWarmup] WARNING: warmup_dir %q is not usable: no cache", dir)
+		}
 		return
 	}
+	// The one place the directory is created: at start. A directory that vanishes later
+	// stays gone (no cache) instead of being re-created on the parent filesystem.
+	_, statErr := os.Stat(dir)
+	existed := statErr == nil
 	if err := os.MkdirAll(dir, 0755); err != nil {
+		logf.Printf("[DiskWarmup] WARNING: warmup_dir %q cannot be created: %v: no cache", dir, err)
 		return
+	}
+	if existed && onParentFilesystem(dir) {
+		logf.Printf("[DiskWarmup] WARNING: warmup_dir is not a separate mount (%s shares its parent's filesystem): fine for a plain directory, but an unmounted cache disk looks the same", dir)
 	}
 
 	DiskWarmup = &DiskWarmupCache{
@@ -319,24 +405,36 @@ func InitDiskWarmup(opts Options) {
 	}
 
 	// One-shot migration: head files written before the density invariant may hold holes
-	// that read back as zeros, and nothing on disk can tell them apart from dense ones.
-	// Head warmup is the library-wide instant-start cache, so this must not repeat on
-	// every boot - the marker makes it a single cold start per file, once.
+	// that read back as zeros, and nothing on disk can tell them apart from dense ones
+	// except the holes themselves. A missing marker next to a populated cache therefore
+	// checks each head and drops only the ones with holes: dropping every head because a
+	// cleanup deleted the marker once cost a deployment its whole cache. A cache that has
+	// the marker is not checked at start. An empty or new directory gets the marker with
+	// nothing to check.
 	migrated := filepath.Join(dir, denseMarker)
-	dropHeads := false
+	checkHeads := false
 	if _, err := os.Stat(migrated); os.IsNotExist(err) {
-		dropHeads = true
+		entries, rerr := os.ReadDir(dir)
+		checkHeads = rerr == nil && len(entries) > 0
+		if rerr == nil && len(entries) == 0 {
+			writeMarker(migrated)
+		}
 	}
 
-	if total, dropped, residues, err := DiskWarmup.scanExisting(dropHeads); err == nil {
+	total, dropped, residues, err := DiskWarmup.scanExisting(checkHeads)
+	if err != nil {
+		logf.Printf("[DiskWarmup] WARNING: start-up walk of %s failed: %v: the cache total starts at 0", dir, err)
+	} else {
 		atomic.StoreInt64(&DiskWarmup.totalSize, total)
 		logf.Printf("[DiskWarmup] Initial size: %.1fGB (dropped %d stale cache files, %d residues)", float64(total)/(1<<30), dropped, residues)
-	}
-
-	if dropHeads {
-		if f, err := os.Create(migrated); err == nil {
-			_ = f.Close() // an empty marker file
-			logf.Printf("[DiskWarmup] Head cache rebuilt for the write-density invariant (one-shot)")
+		if checkHeads {
+			// A directory with no head in it (a fresh disk's lost+found) has nothing to
+			// warn about.
+			if DiskWarmup.headsChecked > 0 {
+				logf.Printf("[DiskWarmup] WARNING: %s was missing: checked %d heads for holes, dropped %d (the one-shot density check; never delete that file by hand)",
+					denseMarker, DiskWarmup.headsChecked, DiskWarmup.headsHoley)
+			}
+			writeMarker(migrated)
 		}
 	}
 
@@ -349,11 +447,12 @@ func InitDiskWarmup(opts Options) {
 
 // scanExisting walks the cache at startup. A tail file stays only when persistTails is
 // on and its coverage file proves which ranges are real for the current window size;
-// otherwise it goes, since the on-disk size of a sparse file proves nothing. Head files
-// go when the one-shot density migration runs, and a head below the ready floor goes as
+// otherwise it goes, since the on-disk size of a sparse file proves nothing. With
+// checkHeads (the density marker was missing) a head with a hole goes and the rest stay;
+// the counts land in headsChecked and headsHoley. A head below the ready floor goes as
 // a residue: the reaper only walks open handles, so the backlog left by a previous
 // process would otherwise live until quota pressure and keep passing for warm coverage.
-func (d *DiskWarmupCache) scanExisting(dropHeads bool) (total int64, dropped, residues int, err error) {
+func (d *DiskWarmupCache) scanExisting(checkHeads bool) (total int64, dropped, residues int, err error) {
 	dir := d.dir
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -381,11 +480,21 @@ func (d *DiskWarmupCache) scanExisting(dropHeads bool) (total int64, dropped, re
 			}
 			continue
 		}
-		if dropHeads && strings.HasSuffix(name, warmupSuffix) {
-			if os.Remove(full) == nil {
-				dropped++
+		if checkHeads && strings.HasSuffix(name, warmupSuffix) {
+			d.headsChecked++
+			holes, herr := headHasHoles(full)
+			if herr != nil {
+				logf.Printf("[DiskWarmup] head check of %s failed, kept: %v", name, herr)
+			} else if holes {
+				if rerr := os.Remove(full); rerr != nil {
+					logf.Printf("[DiskWarmup] head %s has holes but could not be removed, kept: %v", name, rerr)
+				} else {
+					logf.Printf("[DiskWarmup] dropped %s: it has holes", name)
+					d.headsHoley++
+					dropped++
+					continue
+				}
 			}
-			continue
 		}
 		if strings.HasSuffix(name, warmupSuffix) {
 			info, ierr := e.Info()
@@ -458,10 +567,10 @@ func (d *DiskWarmupCache) dropResidue(path string) {
 	if err != nil || fi.Size() >= headReadyFloor {
 		return
 	}
-	logf.Printf("[DiskWarmup] DROPPED %s (%.1fKB): incomplete head warmup below the ready floor",
-		filepath.Base(path), float64(fi.Size())/(1<<10))
 	d.sizeCache.Delete(path)
 	if os.Remove(path) == nil {
+		logf.Printf("[DiskWarmup] DROPPED %s (%.1fKB): incomplete head warmup below the ready floor",
+			filepath.Base(path), float64(fi.Size())/(1<<10))
 		// Written bytes were counted against the quota, so the drop gives them back
 		// instead of leaving the drift to the next full walk in enforceQuotaLocked.
 		atomic.AddInt64(&d.totalSize, -fi.Size())
@@ -469,17 +578,33 @@ func (d *DiskWarmupCache) dropResidue(path string) {
 	d.missing.Store(path, time.Now())
 }
 
+// openFile opens a cache file; a test swaps it to stand in for a read-only directory.
+var openFile = os.OpenFile
+
+// readOnlyLogged keeps the read-only notice to one per process.
+var readOnlyLogged atomic.Bool
+
 func (d *DiskWarmupCache) getHandle(path string) (*cachedHandle, error) {
 	if val, ok := d.handles.Load(path); ok {
 		ch := val.(*cachedHandle)
 		ch.lastUsedNano.Store(time.Now().UnixNano())
 		return ch, nil
 	}
-	f, err := os.OpenFile(path, os.O_RDWR, 0644)
+	readOnly := false
+	f, err := openFile(path, os.O_RDWR, 0644)
+	if err != nil && (errors.Is(err, syscall.EROFS) || errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM)) {
+		// A read-only cache directory still holds valid heads: serve them, write nothing.
+		if f, err = openFile(path, os.O_RDONLY, 0); err == nil {
+			readOnly = true
+			if readOnlyLogged.CompareAndSwap(false, true) {
+				logf.Printf("[DiskWarmup] WARNING: the cache directory is read-only: serving reads, no new bytes will be cached")
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
-	ch := &cachedHandle{f: f}
+	ch := &cachedHandle{f: f, readOnly: readOnly}
 	ch.lastUsedNano.Store(time.Now().UnixNano())
 	if actual, loaded := d.handles.LoadOrStore(path, ch); loaded {
 		_ = f.Close() // lost the race; nothing was written through it
@@ -566,9 +691,6 @@ func (d *DiskWarmupCache) processWrite(hash string, fileID int, data []byte, off
 	// whether eviction ran, never the accounting.
 	// Only a chunk at offset 0 can create the file, so only it may make room for it.
 	if _, err := os.Stat(path); off == 0 && os.IsNotExist(err) {
-		if err := os.MkdirAll(d.dir, 0755); err != nil {
-			logf.Printf("[DiskWarmup] mkdir %s failed: %v", d.dir, err)
-		}
 		d.mu.Lock()
 		evicted, _ := d.enforceQuotaLocked(FileSize, evictOpts{
 			exclude: FileKey{hash, fileID}, trigger: TriggerHeadCreate})
@@ -642,6 +764,9 @@ func (d *DiskWarmupCache) writeHeadLocked(path string, off int64, data []byte) (
 
 	ch, err := d.getHandle(path)
 	if err != nil {
+		return
+	}
+	if ch.readOnly {
 		return
 	}
 	if ch.closed.Load() {
@@ -770,6 +895,32 @@ func (d *DiskWarmupCache) TailReady(hash string, fileID int) bool {
 	return ok && val.(*tailRange).complete()
 }
 
+// tailWindow returns the tail window of the file at path: its start and length in the
+// media file, taken from the tracker when there is one.
+func (d *DiskWarmupCache) tailWindow(path string, fileSize int64) (start, length int64) {
+	if val, ok := d.tailCoverage.Load(path); ok {
+		return val.(*tailRange).windowFor(fileSize)
+	}
+	start = TailStart(fileSize)
+	return start, fileSize - start
+}
+
+// clipToTail maps a write at absoluteOffset onto the window [start, start+length): the
+// offset relative to the window and the part of data inside it, false if none is.
+func clipToTail(data []byte, absoluteOffset, start, length int64) (rel int64, clipped []byte, ok bool) {
+	if absoluteOffset < start {
+		return 0, nil, false
+	}
+	rel = absoluteOffset - start
+	if rel >= length {
+		return 0, nil, false
+	}
+	if rel+int64(len(data)) > length {
+		data = data[:length-rel]
+	}
+	return rel, data, len(data) > 0
+}
+
 // tailRangeFor returns the coverage tracker for path, creating it if absent.
 func (d *DiskWarmupCache) tailRangeFor(path string) *tailRange {
 	if val, ok := d.tailCoverage.Load(path); ok {
@@ -829,23 +980,9 @@ func (d *DiskWarmupCache) WriteTail(hash string, fileID int, data []byte, absolu
 func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absoluteOffset, fileSize int64) {
 	path := d.tailPath(hash, fileID)
 
-	tailStart := fileSize - TailWarmupSize
-	if tailStart < 0 {
-		tailStart = 0
-	}
-	if absoluteOffset < tailStart {
-		return
-	}
-
-	tailLen := fileSize - tailStart
-	relOffset := absoluteOffset - tailStart
-	if relOffset >= tailLen {
-		return
-	}
-	if relOffset+int64(len(data)) > tailLen {
-		data = data[:tailLen-relOffset]
-	}
-	if len(data) == 0 {
+	tailStart, tailLen := d.tailWindow(path, fileSize)
+	relOffset, clipped, ok := clipToTail(data, absoluteOffset, tailStart, tailLen)
+	if !ok {
 		return
 	}
 
@@ -855,15 +992,12 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 	defer d.tailMu.Unlock()
 
 	tr := d.tailRangeFor(path)
-	tr.setWindow(tailLen, fileSize)
+	tr.setWindow(tailStart, tailLen, fileSize)
 	if tr.complete() {
 		return
 	}
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if err := os.MkdirAll(d.dir, 0755); err != nil {
-			logf.Printf("[DiskWarmup] mkdir %s failed: %v", d.dir, err)
-		}
 		d.missing.Delete(path)
 
 		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
@@ -874,8 +1008,15 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 		// carry over, in memory or on disk.
 		d.tailCoverage.Delete(path)
 		removeFile(path + coverSuffix)
+		// ...and the new file takes the aligned window, whatever the old one had.
+		tailStart = TailStart(fileSize)
+		tailLen = fileSize - tailStart
+		if relOffset, clipped, ok = clipToTail(data, absoluteOffset, tailStart, tailLen); !ok {
+			_ = f.Close()
+			return
+		}
 		tr = d.tailRangeFor(path)
-		tr.setWindow(tailLen, fileSize)
+		tr.setWindow(tailStart, tailLen, fileSize)
 		tailCh := &cachedHandle{f: f}
 		tailCh.lastUsedNano.Store(time.Now().UnixNano())
 		if old, loaded := d.handles.Swap(path, tailCh); loaded {
@@ -892,6 +1033,9 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 	if err != nil {
 		return
 	}
+	if ch.readOnly {
+		return
+	}
 	if ch.closed.Load() {
 		logf.Printf("[DiskWarmup] Write skipped (tail): handle closed for %s", filepath.Base(path))
 		return
@@ -905,7 +1049,7 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 	if fi, serr := ch.f.Stat(); serr == nil {
 		prevSize = fi.Size()
 	}
-	n, _ := ch.f.WriteAt(data, relOffset)
+	n, _ := ch.f.WriteAt(clipped, relOffset)
 	if n <= 0 {
 		return
 	}
@@ -920,17 +1064,12 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 }
 
 func (d *DiskWarmupCache) ReadTail(hash string, fileID int, buf []byte, absoluteOffset, fileSize int64) (int, error) {
-	tailStart := fileSize - TailWarmupSize
-	if tailStart < 0 {
-		tailStart = 0
-	}
+	path := d.tailPath(hash, fileID)
+	tailStart, tailLen := d.tailWindow(path, fileSize)
 	if absoluteOffset < tailStart {
 		return 0, nil
 	}
-
-	tailLen := fileSize - tailStart
 	relOffset := absoluteOffset - tailStart
-	path := d.tailPath(hash, fileID)
 
 	// Clamp to the tail window: a buffer overhanging EOF still hits if the bytes it can
 	// actually return were written.
@@ -1077,13 +1216,9 @@ func (d *DiskWarmupCache) EnsureTail(hash string, fileID int, fileSize int64) {
 	go func() {
 		defer d.tailFills.Delete(path)
 
-		tailStart := fileSize - TailWarmupSize
-		if tailStart < 0 {
-			tailStart = 0
-		}
-		tailLen := fileSize - tailStart
+		tailStart, tailLen := d.tailWindow(path, fileSize)
 		tr := d.tailRangeFor(path)
-		tr.setWindow(tailLen, fileSize)
+		tr.setWindow(tailStart, tailLen, fileSize)
 
 		started := time.Now()
 		var fetched int64
@@ -1250,14 +1385,18 @@ func (d *DiskWarmupCache) loadCoverage(path string) bool {
 	if json.Unmarshal(raw, &cf) != nil || cf.TailLen <= 0 || cf.TailStart < 0 {
 		return false
 	}
-	if cf.TailLen != TailWarmupSize && !(cf.TailStart == 0 && cf.TailLen < TailWarmupSize) {
+	// The window this build would write for that file size, or the exact one from the
+	// end that earlier builds wrote (a deployment's covers are in that format; they keep
+	// loading and lack only the aligned window's leading page).
+	size := cf.TailStart + cf.TailLen
+	if cf.TailStart != TailStart(size) && !(cf.TailLen == TailWarmupSize && cf.TailStart == legacyTailStart(size)) {
 		return false
 	}
 	fi, err := os.Stat(path)
 	if err != nil {
 		return false
 	}
-	tr := &tailRange{window: cf.TailLen, size: cf.TailStart + cf.TailLen}
+	tr := &tailRange{window: cf.TailLen, start: cf.TailStart, size: size}
 	for _, sp := range cf.Spans {
 		if sp[0] < 0 || sp[1] <= sp[0] || sp[1] > cf.TailLen || sp[1] > fi.Size() {
 			return false
@@ -1313,11 +1452,7 @@ func (d *DiskWarmupCache) fillIndexTail(job tailJob) {
 	if d.TailReady(job.hash, job.fileID) || TailFetch == nil {
 		return
 	}
-	tailStart := job.fileSize - TailWarmupSize
-	if tailStart < 0 {
-		tailStart = 0
-	}
-	tailLen := job.fileSize - tailStart
+	tailStart, tailLen := d.tailWindow(job.path, job.fileSize)
 	if RangeVerified != nil {
 		if RequestPieces != nil {
 			RequestPieces(job.hash, job.fileID, tailStart, tailLen)

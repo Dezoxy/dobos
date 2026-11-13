@@ -145,3 +145,44 @@ func TestHoldPredicateRunsUnderTheLockWithoutEngineAccess(t *testing.T) {
 		t.Fatal("not held")
 	}
 }
+
+// A hold that ends (the ceiling or a stop) hands the torrent to the plain idle close:
+// the ticker's close path, which reports the idle-close hook and takes the wrapper out
+// of the registry. It is not a removal, so the stored record, the files and the saved
+// state stay (RemTorrent is never reached from UpdateStats).
+func TestReleasedHoldTakesTheIdleClosePath(t *testing.T) {
+	tr := heldFixture(t)
+	holding := true
+	// As in TestUpdateStatsKeepsRunningWhileHeld, the predicate drops the cache after
+	// answering so the held tick's read-ahead goroutine has nothing to run against.
+	setHoldExpiry(t, func(string) bool {
+		if holding {
+			tr.cache = nil
+		}
+		return holding
+	})
+	var closes []string
+	setOnIdleClose(t, func(h string) { closes = append(closes, h) })
+	h := metainfo.NewHashFromHex(idleHookHash)
+
+	tr.UpdateStats()
+	if len(closes) != 0 || tr.Stat == state.TorrentClosed {
+		t.Fatalf("closed while held: closes %v, stat %v", closes, tr.Stat)
+	}
+	if _, ok := tr.bt.torrents[h]; !ok {
+		t.Fatal("a held torrent left the registry")
+	}
+
+	holding = false // the ceiling passed, or a stop arrived
+	tr.cache = &torrstor.Cache{}
+	tr.UpdateStats()
+	if len(closes) != 1 || closes[0] != idleHookHash {
+		t.Fatalf("idle-close hook calls = %v, want one for %s", closes, idleHookHash)
+	}
+	if tr.Stat != state.TorrentClosed {
+		t.Fatalf("stat = %v, want TorrentClosed", tr.Stat)
+	}
+	if _, ok := tr.bt.torrents[h]; ok {
+		t.Fatal("a released torrent stayed in the registry")
+	}
+}

@@ -79,7 +79,9 @@ func TestHandlePrometheus(t *testing.T) {
 		"flodni_playback_webhook_last_timestamp_seconds", "flodni_unconfirmed_read_last_session_timestamp_seconds", "flodni_warning",
 		"flodni_torrent_idle_closes_total", "flodni_torrent_reopens_total", "flodni_read_stalls_total",
 		"flodni_keepalive_releases_total", "flodni_keepalive_evicted_total", "flodni_keepalive_held_torrents",
+		"flodni_wake_refused_total",
 		"flodni_warm_fill_bytes_total", "flodni_warm_cache_failures_total", "flodni_warm_queue_files", "flodni_warm_paused",
+		"flodni_stub_index_mismatch_total",
 	} {
 		if !strings.Contains(body, "# TYPE "+fam+" ") {
 			t.Errorf("family %s missing", fam)
@@ -94,6 +96,7 @@ func TestHandlePrometheus(t *testing.T) {
 		`flodni_warmup_cold_reopen_total{previously_played="true"}`,
 		`flodni_warmup_cold_reopen_total{previously_played="false"}`,
 		`flodni_playback_starts_total`,
+		`flodni_stub_index_mismatch_total`,
 		`flodni_torrent_idle_closes_total{confirmed="true"}`,
 		`flodni_torrent_idle_closes_total{confirmed="false"}`,
 		`flodni_torrent_reopens_total{confirmed="true"}`,
@@ -185,8 +188,9 @@ type failingStore struct{}
 func (failingStore) RecordMetadataFailure(string, string, string, time.Time) error {
 	return errors.New("disk full")
 }
-func (failingStore) RecordSwarmRead(string, time.Time) error { return nil }
-func (failingStore) ResetMetadataFailures(string) error      { return nil }
+func (failingStore) RecordSwarmRead(string, time.Time) error         { return nil }
+func (failingStore) ResetMetadataFailures(string) error              { return nil }
+func (failingStore) RecordNotStored(string, string, time.Time) error { return nil }
 
 func TestVerdictCountedWhenTheStoreFails(t *testing.T) {
 	rec := newReachabilityRecorder(failingStore{}, log.New(io.Discard, "", 0))

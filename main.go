@@ -435,7 +435,7 @@ func main() {
 	globalCleanupManager = NewCleanupManager(logger, metaCache, nativeBridge)
 	globalCleanupManager.Start()
 
-	globalTorrentRemover = NewTorrentRemover(nativeBridge, logger)
+	globalTorrentRemover = NewTorrentRemover(logger)
 
 	// Own mux: nothing else in the process (expvar, pprof) can add routes to the control port.
 	mux := http.NewServeMux()
@@ -547,6 +547,7 @@ func main() {
 	}
 	mux.HandleFunc("/api/torrents/health", newTorrentsHealthHandler(healthStore, fileStates.WarmSnapshot, logger))
 	mux.HandleFunc("/api/health", newHealthChecks().handler)
+	mux.HandleFunc("/api/warmup/evict", newWarmupEvictHandler(evictWarmupTo))
 
 	mux.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -716,6 +717,12 @@ func main() {
 			MovieSection: gc().Plex.LibraryID,
 			TVSection:    gc().Plex.TVLibraryID,
 		})
+		// rm through the mount removes the stub the same way the API does, and drops
+		// the torrent only when no other stub uses it.
+		unlinkRemove = func(ctx context.Context, path string) error {
+			_, err := libMgr.Remove(ctx, library.RemoveRequest{Path: path})
+			return err
+		}
 		// Catch-up (idle unless warm_on_add is on): warms the titles already filed.
 		startCatchup(libMgr)
 		libHandler := library.NewHandler(libMgr)

@@ -42,8 +42,9 @@ A change that violates one is wrong even if it works.
    gets a `NOTICE` entry.
 3. **A private torrent stays private.** No DHT, PEX or public-tracker
    fallback for a torrent flagged private (BEP 27). Tests pin it in
-   `internal/library/privacy_test.go`, `internal/gostorm/torr/retrack_test.go`
-   and `internal/anacrolix-torrent/private_guard_test.go`; a change near peer
+   `internal/library/privacy_test.go`, `internal/gostorm/torr/retrack_test.go`,
+   `internal/gostorm/native/wakestored_test.go` and
+   `internal/anacrolix-torrent/private_guard_test.go`; a change near peer
    discovery or tracker handling extends them.
 4. **The vendored engine is not ours to tidy.**
    `internal/anacrolix-torrent/` takes fixes only: no reformatting, no
@@ -71,12 +72,16 @@ A change that violates one is wrong even if it works.
   and reads them back with the seeder dead, restarts the daemon to catch up on
   a title that was never warmed, sends a play webhook in the middle of a
   read past the reader-budget margin and checks it counts as confirmed late,
-  holds a torrent with a confirmed playback through two idle windows and
-  releases it on a stop webhook, then replaces a TV episode with a second
-  release and refuses a third that never delivers (needs Docker and
-  `/dev/fuse`). The module and the binary are `flodni`; the `FLODNI_*`
-  environment variables win over the older `TIRAMISU_*` names, and persisted
-  file names (`tiramisu.db`, `tiramisu.log`) stay as they were.
+  measures the engine's idle closes with a webhook while the torrent is
+  closed, holds a torrent with a confirmed playback through two idle windows
+  and releases it on a stop webhook, runs the opt-in refusal against the mount
+  (a scan cut at the margin with EIO and no failed read, a late play lifting
+  the hold), then replaces a TV episode with a second release and refuses a
+  third that never delivers, and removes three titles back to back while a
+  fourth is read (needs Docker and `/dev/fuse`). The module
+  and the binary are `flodni`; the `FLODNI_*` environment variables win over
+  the older `TIRAMISU_*` names, and persisted file names (`tiramisu.db`,
+  `tiramisu.log`) stay as they were.
 - **Layout:** `main.go` and the other root `.go` files are the daemon;
   `internal/` holds the packages (`vfs`, `gostorm`, `library`, `warmup`,
   `config` and more); `docker/` the image; `docs/` the roadmap, the ideas
@@ -169,12 +174,19 @@ agent's frontmatter. This section overrides the model advice in
   only for a one-line fix.
 - **Advisor: Fable 5.2**, pinned as `claude-fable-5-2` in `advisorModel`
   and in the `advisor` agent, because the `fable` alias resolves to an
-  older version. Bump both together. Consulted before committing to an approach, when an
-  error recurs, and before declaring a task done. Use the built-in advisor
-  (`advisorModel`) when the session offers it; it re-reads the whole
-  transcript, so `/compact` before long stretches. Otherwise brief the
-  `advisor` agent: it sees only the brief, so include the goal, the
-  options, the evidence and the constraints.
+  older version. Bump both together. It is expensive in tokens, so use it
+  only where it matters: a plan or a diff review of a change near private
+  torrents (hard rule 3), the vendored engine or its locks, concurrency,
+  or data that can be lost (the cache, the state database, removals), and
+  a diagnosis still stuck after one round. Skip it for docs and roadmap
+  changes, test-only changes, small fixes with a clear cause and a failing
+  test, and follow-up rounds after fixes, which the orchestrator verifies
+  itself. Prefer one review of the finished diff to a plan plus a review.
+  Use the built-in advisor (`advisorModel`) when the session offers it; it
+  re-reads the whole transcript, so `/compact` before long stretches.
+  Otherwise brief the `advisor` agent narrowly: it sees only the brief, so
+  name the files and the exact questions, the evidence and the
+  constraints.
 - **Builder: Sonnet at high effort.** All code and test writing goes to
   `implementer` against a written contract, and so do mechanical edits that
   span more than a couple of files. Reviews go to the reviewers, build
