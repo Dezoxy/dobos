@@ -15,7 +15,8 @@
 # fail); E2E_PROM_DUMP=<file> saves the /metrics/prometheus body of each
 # non-replacement variant (the last one wins; a scrape sample for the docs);
 # E2E_ONLY=<variant> runs just that variant (default, slow-seeder,
-# index-cache, warm-on-add, catch-up, late-confirm, keep-alive, budget-refusal, replacement). slow-seeder is default with a seeder that
+# index-cache, warm-on-add, catch-up, late-confirm, keep-alive, budget-refusal,
+# replacement, removal). slow-seeder is default with a seeder that
 # keeps the engine's 1 MiB per-peer request allowance. The index-cache variant runs
 # with a random FLODNI_API_TOKEN: the seeder must see 401 without the bearer
 # header before its authorised add, and the same for GoStorm's 8090 (401 on
@@ -35,6 +36,12 @@
 # the 15 s hold, no failed read, the windows served, the hold lifted by a late play, a
 # fresh margin after a stop, a killed and a concurrent reader, and the seeder's upload
 # bounded. It waits for the session close once, at the end.
+# The removal variant (index-cache config, auth off) files four movies, reads A in the
+# background, opens a descriptor on B, removes B and C through the library API back to
+# back and D with rm through the mount, and asserts that A reads intact, that GoStorm's
+# `get` answers 404 for B, C and D at once and after the idle timeout, that B's
+# descriptor fails with EIO at an uncached offset (a refused wake, not a failed read) and
+# that no index-cache file of the three remains.
 # E2E_WARM_NEGATIVE=1 runs the warm-on-add variant with the switch off: it must
 # fail at step 2 (no fill). It is not part of make e2e.
 set -euo pipefail
@@ -468,6 +475,7 @@ JSON
       # with warm_on_add true.
       catchup_config false "$file"
       ;;
+    removal) write_config index-cache "$file" ;;
     slow-seeder) write_config default "$file" ;;
     *) echo "unknown variant $variant" >&2; return 1 ;;
   esac
@@ -1774,6 +1782,199 @@ run_budget_refusal() {
   stop_stack
 }
 
+# gostorm_get_status hash: the HTTP status of GoStorm's `get` for one hash (404 when the
+# engine neither runs nor stores it), over 8090 (auth is off in the removal variant).
+gostorm_get_status() {
+  docker exec "$flodni" bash -c 'b="{\"action\":\"get\",\"hash\":\"$1\"}"
+    exec 3<>/dev/tcp/127.0.0.1/8090 && printf "POST /torrents HTTP/1.0\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${#b}\r\n\r\n%s" "$b" >&3 && head -n 1 <&3' _ "$1" 2>/dev/null | awk '{ printf "%s", $2 }' || true
+}
+
+# cache_files hash: how many files of the index cache belong to the hash.
+cache_files() {
+  docker exec "$flodni" ls /cache/index 2>/dev/null | grep -c "^$1-" || true
+}
+
+# expect_get v status label hash...: every hash answers `get` with the status.
+expect_get() {
+  local v=$1 want=$2 label=$3 h got
+  shift 3
+  for h in "$@"; do
+    got=$(gostorm_get_status "$h")
+    if [ "$got" != "$want" ]; then
+      echo "FAIL ($v): $label: get $h answers '${got:-nothing}', want $want" >&2
+      dump_diagnostics
+      return 1
+    fi
+  done
+  echo "ok ($v): $label: get answers $want for $#" >&2
+}
+
+# run_removal: roadmap "Before a deployment relies on it", step 1, end to end. Four movies
+# are filed. A is read in the background; a descriptor is open on B; B and C are removed
+# through POST /api/library/remove back to back and D with rm through the mount. Asserted:
+# A's sha256, `get` answers 404 for B, C and D at once and again after the engine's idle
+# timeout (15 s) plus a margin, a read on B's descriptor at an uncached offset fails with
+# EIO, the wake is counted as refused and is not a failure (failed_reads 0, no dead-swarm
+# verdict), and no index-cache file of B, C or D remains.
+run_removal() {
+  local dir t0=$SECONDS v=removal
+  start_stack "$v" -mode removal
+  local out="$dir/out"
+  wait_for_file "$out/d.path" "$WAIT_SECONDS" "$v"
+  echo "step add four titles: $((SECONDS - t0))s since start" >&2
+  local l path_a path_b path_c path_d hash_a hash_b hash_c hash_d
+  for l in a b c d; do
+    printf -v "path_$l" '%s' "$MOUNT_PATH/$(cat "$out/$l.path")"
+    printf -v "hash_$l" '%s' "$(cat "$out/$l.hash")"
+  done
+  check_no_warning "$v" || return 1
+  expect_get "$v" 200 "before the removals" "$hash_a" "$hash_b" "$hash_c" "$hash_d" || return 1
+
+  # One descriptor on B: 1 MiB at the start, then it waits for the go file and reads
+  # 1 MiB at 40 MiB, an offset nothing cached.
+  docker exec "$flodni" rm -f /tmp/rm.go
+  docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sh -c \
+    '( dd bs=1048576 count=1 iflag=fullblock of=/dev/null status=none; \
+       until [ -e /tmp/rm.go ]; do sleep 0.1; done; \
+       dd bs=1048576 skip=40 count=1 iflag=fullblock of=/dev/null status=none ) < "$1"' _ "$path_b" >"$out/b.out" 2>"$out/b.err" &
+  local reader=$!
+  # C and D are read at the start too, so each has index-cache files to lose.
+  local p
+  for p in "$path_c" "$path_d"; do
+    if ! docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" dd if="$p" of=/dev/null bs=1048576 count=1 status=none; then
+      echo "FAIL ($v): head read of $p failed" >&2
+      dump_diagnostics
+      return 1
+    fi
+  done
+  local nb=0 nc=0 nd=0 deadline=$((SECONDS + 30))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    nb=$(cache_files "$hash_b") nc=$(cache_files "$hash_c") nd=$(cache_files "$hash_d")
+    [ "$nb" -ge 1 ] && [ "$nc" -ge 1 ] && [ "$nd" -ge 1 ] && break
+    sleep 1
+  done
+  if [ "$nb" -lt 1 ] || [ "$nc" -lt 1 ] || [ "$nd" -lt 1 ]; then
+    echo "FAIL ($v): premise: index-cache files before the removals: B $nb, C $nc, D $nd, want each at least 1" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): index-cache files before the removals: B $nb, C $nc, D $nd" >&2
+  local fail0 refused0
+  fail0=$(prom_num "$(prom_body)" 'flodni_fuse_short_read_results_total{result="failed"}')
+  refused0=$(prom_num "$(prom_body)" 'flodni_wake_refused_total')
+
+  # A is read to the end in the background while the removals run: 8 MiB at a time with a
+  # pause (about 8 s for the 192 MiB), then the rest, so the read outlasts the removals.
+  docker exec "$flodni" timeout -k 10 "$READ_TIMEOUT" sh -c \
+    '{ i=0; while [ "$i" -lt 192 ]; do dd if="$1" bs=1048576 skip="$i" count=8 status=none || exit 1; i=$((i + 8)); sleep 0.3; done
+       dd if="$1" bs=1048576 skip=192 status=none; } | sha256sum' _ "$path_a" >"$out/a.read" 2>"$out/a.err" &
+  local reader_a=$!
+  sleep 1
+  local rm_t0=$SECONDS resp
+  resp=$(docker exec "$flodni" bash -c 'post() { local b="{\"hash\":\"$1\"}"
+      exec 3<>/dev/tcp/127.0.0.1/9080
+      printf "POST /api/library/remove HTTP/1.0\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${#b}\r\n\r\n%s" "$b" >&3
+      head -n 1 <&3; exec 3<&-; }
+    post "$1"; post "$2"' _ "$hash_b" "$hash_c")
+  if [ "$(grep -c ' 200 ' <<<"$resp")" != 2 ]; then
+    echo "FAIL ($v): library remove of B and C: $resp" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if ! docker exec "$flodni" rm "$path_d"; then
+    echo "FAIL ($v): rm of D through the mount failed" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "step removals: B and C through the API, D with rm, $((SECONDS - rm_t0))s" >&2
+  if kill -0 "$reader_a" 2>/dev/null; then
+    echo "ok ($v): A's read was still running when the removals returned" >&2
+  else
+    echo "FAIL ($v): A's read had finished before the removals returned: the overlap is not tested" >&2
+    dump_diagnostics
+    return 1
+  fi
+  expect_get "$v" 404 "right after the removals" "$hash_b" "$hash_c" "$hash_d" || return 1
+  local x
+  for x in "$path_b" "$path_c" "$path_d"; do
+    if ! stub_gone "$x"; then
+      echo "FAIL ($v): the stub $x is still there" >&2
+      dump_diagnostics
+      return 1
+    fi
+  done
+  echo "ok ($v): the stubs of B, C and D are gone" >&2
+
+  # B's descriptor reads at an uncached offset: the engine no longer stores B.
+  docker exec "$flodni" touch /tmp/rm.go
+  if wait "$reader"; then
+    echo "FAIL ($v): the read on B's descriptor succeeded after the removal" >&2
+    dump_diagnostics
+    return 1
+  fi
+  if ! grep -q 'Input/output error' "$out/b.err"; then
+    echo "FAIL ($v): the read on B's descriptor did not fail with EIO: $(cat "$out/b.err")" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): the read on B's descriptor at 40 MiB failed: $(head -n 1 "$out/b.err")" >&2
+
+  local a_got
+  if ! wait "$reader_a"; then
+    echo "FAIL ($v): the background read of A failed: $(cat "$out/a.err")" >&2
+    dump_diagnostics
+    return 1
+  fi
+  a_got=$(cut -d' ' -f1 "$out/a.read")
+  if [ "$a_got" != "$(cat "$out/a.sha256")" ]; then
+    echo "FAIL ($v): A's sha256 is $a_got, want $(cat "$out/a.sha256")" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): A read in the background while the others were removed: sha256 $a_got" >&2
+
+  # The refusal is counted and is not a failure.
+  local refused
+  refused=$(prom_num "$(prom_body)" 'flodni_wake_refused_total')
+  if [ "$refused" -le "$refused0" ]; then
+    echo "FAIL ($v): flodni_wake_refused_total did not move: $refused0 -> $refused" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): flodni_wake_refused_total $refused0 -> $refused" >&2
+  budget_not_failure "$v" "$hash_b" "$fail0" || return 1
+  local rec
+  rec=$(grep -o "{\"hash\":\"$hash_b\"[^}]*}" <<<"$(health_body)" || true)
+  if ! grep -q '"last_failure_reason":"not_stored"' <<<"$rec"; then
+    echo "FAIL ($v): B's readability record does not say not_stored: ${rec:-no record}" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): B's readability record: $rec" >&2
+
+  # Past the engine's idle timeout (15 s) with a margin: nothing wakes or saves a removed
+  # torrent, and A, which was not removed, is still stored.
+  sleep 30
+  expect_get "$v" 404 "after the idle timeout" "$hash_b" "$hash_c" "$hash_d" || return 1
+  expect_get "$v" 200 "control: A is not removed" "$hash_a" || return 1
+  if docker logs "$flodni" 2>&1 | grep -F '[DeadSwarm]' >/dev/null; then
+    echo "FAIL ($v): a dead-swarm verdict: $(docker logs "$flodni" 2>&1 | grep -F '[DeadSwarm]')" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): no [DeadSwarm] line" >&2
+  nb=$(cache_files "$hash_b") nc=$(cache_files "$hash_c") nd=$(cache_files "$hash_d")
+  if [ "$nb" != 0 ] || [ "$nc" != 0 ] || [ "$nd" != 0 ]; then
+    echo "FAIL ($v): index-cache files left: B $nb, C $nc, D $nd: $(docker exec "$flodni" ls /cache/index)" >&2
+    dump_diagnostics
+    return 1
+  fi
+  echo "ok ($v): no index-cache file of B, C or D remains" >&2
+  echo "PASS ($v): A sha256 intact, B, C and D answer 404 at once and after the idle timeout, B's read fails with EIO, refusals counted, no failure, no cache file left, $((SECONDS - t0))s" >&2
+
+  stop_stack
+}
+
 want_variant() { [ -z "${E2E_ONLY:-}" ] || [ "$E2E_ONLY" = "$1" ]; }
 
 if want_variant default; then run_variant default; fi
@@ -1785,4 +1986,5 @@ if want_variant late-confirm; then run_late_confirm; fi
 if want_variant keep-alive; then run_keepalive; fi
 if want_variant budget-refusal; then run_budget_refusal; fi
 if want_variant replacement; then run_replacement; fi
+if want_variant removal; then run_removal; fi
 echo "e2e: all variants passed" >&2
