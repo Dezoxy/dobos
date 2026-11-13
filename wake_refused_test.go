@@ -40,6 +40,9 @@ func refusedEnv(t *testing.T, slot bool) (fe *fakeEngine, db *metadb.DB, s *TTFF
 	t.Helper()
 	fe = refusingEngine(t)
 	db = readabilityEnv(t, 0, false) // torrentLive false: every read on a miss wakes
+	// Registered after readabilityEnv, so it runs before that restores the logger and
+	// the other globals the background WarmLanding prefetch still reads.
+	t.Cleanup(func() { settled(t) })
 	for i := range notStoredPaths {
 		path := fmt.Sprintf("/m/gone%d.mkv", i)
 		sess := &TTFFSession{path: path, size: 1 << 30, hash: rHash}
