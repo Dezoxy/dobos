@@ -98,6 +98,9 @@ var readInnerCall = (*MkvHandle).readInner
 // cache, so the read is retried instead of a hole being made permanent.
 func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
 	res, errno := readInnerCall(h, fuseCtx, dest, off)
+	if errno == errnoBudgetRefused {
+		return nil, syscall.EIO // before the failure accounting below: not the swarm failing
+	}
 	if errno != 0 || res == nil {
 		return res, errno
 	}
@@ -120,6 +123,12 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 			break // a blocked FUSE read puts smbd in D-state; bail out rather than hang
 		}
 		sub, subErrno := readInnerCall(h, fuseCtx, dest[total:], off+int64(total))
+		if subErrno == errnoBudgetRefused {
+			return nil, syscall.EIO // a refused sub-read is not an unfillable gap: no repair accounting
+		}
+		if subErrno == syscall.EINTR && fuseCtx.Err() != nil {
+			return nil, syscall.EINTR // the caller left (a hold lasts up to 15 s): not a failed read
+		}
 		if subErrno != 0 || sub == nil {
 			break
 		}
@@ -256,7 +265,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 			// WarmLanding on new handle: pre-fetch chunk at resume position while pump catches
 			// up. Fires only for new handles (prevOff==-1) since V286b covers existing handles.
 			// A scanner's first read past the head is a probe, not a resume (Dezoxy fork).
-			if prevOff == -1 && h.hash != "" && !isScanRead(h) {
+			if prevOff == -1 && h.hash != "" && !isScanRead(h) && !budgetBlocksFetch(h.path, off, int64(len(dest)), h.size) {
 				warmChunk := raCache.ChunkSize(h.path)
 				warmStart := (off / warmChunk) * warmChunk
 				// Unified with predictive-prefetch key format to avoid double-fetching the same chunk.
@@ -335,7 +344,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 			// Warm landing zone: pre-fetch the first chunk at the seek target while the
 			// pump sleeps its 200ms retry. Starts anacrolix piece download ~200ms earlier,
 			// reducing FetchBlock blocking time in Read() and preventing smbd D-state.
-			if h.hash != "" {
+			if h.hash != "" && !budgetBlocksFetch(h.path, off, int64(len(dest)), h.size) {
 				warmChunk := raCache.ChunkSize(h.path)
 				warmStart := (off / warmChunk) * warmChunk
 				// Unified with predictive-prefetch key format to avoid double-fetching the same chunk.
@@ -454,7 +463,8 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 		chunkSize := raCache.ChunkSize(h.path)
 		nextChunkStart := (off/chunkSize + 1) * chunkSize
 
-		if !isScanRead(h) && (!h.hasSlot.Load() || (nextChunkStart-off < chunkSize/4)) && !raCache.Exists(h.path, nextChunkStart) {
+		if !isScanRead(h) && (!h.hasSlot.Load() || (nextChunkStart-off < chunkSize/4)) && !raCache.Exists(h.path, nextChunkStart) &&
+			!budgetBlocksFetch(h.path, nextChunkStart, chunkSize, h.size) {
 			prefetchKey := fmt.Sprintf("%s:%d", h.path, nextChunkStart)
 			if _, loaded := inFlightPrefetches.LoadOrStore(prefetchKey, true); !loaded {
 				goStart, goKey, goHash, goFileID := nextChunkStart, prefetchKey, h.hash, h.fileID
@@ -504,6 +514,13 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 
 		ttffRead(h.path, srcRACacheHit, time.Since(cacheStart), n, off)
 		return fuse.ReadResultData(dest[:n]), 0
+	}
+
+	// Reader budget: a miss past the margin of an unconfirmed file starts no fetch, pump, slot
+	// wait or wake. The gate holds the read for a late webhook first; Read maps the refusal to
+	// EIO. Cache hits, the SSD windows and reads wholly inside them never get here refused.
+	if errno := h.budgetGate(fuseCtx, off, len(dest)); errno != 0 {
+		return nil, errno
 	}
 
 	target := int(end - off + 1)
@@ -794,7 +811,7 @@ DATA_READY:
 		maxCached := raCache.MaxCachedOffset(h.path)
 		isLagging := maxCached < nextChunkStart
 
-		if isStreaming && (!h.hasSlot.Load() || isLagging) {
+		if isStreaming && (!h.hasSlot.Load() || isLagging) && !budgetBlocksFetch(h.path, nextChunkStart, chunkSize, h.size) {
 			if distanceToNext < chunkSize/4 {
 				prefetchKey := fmt.Sprintf("%s:%d", h.path, nextChunkStart)
 				if _, loaded := inFlightPrefetches.LoadOrStore(prefetchKey, true); !loaded {

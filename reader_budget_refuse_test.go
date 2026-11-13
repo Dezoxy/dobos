@@ -359,7 +359,7 @@ func TestOverMarginReportsEnforcedTruthfully(t *testing.T) {
 }
 
 func TestErrnoBudgetRefusedIsAValidErrno(t *testing.T) {
-	// Read must map it to EIO (wired in the next change); a leak would still be a real errno.
+	// Read must map it to EIO; a leak would still be a real errno.
 	if errnoBudgetRefused != syscall.EDQUOT || errnoBudgetRefused == syscall.EIO {
 		t.Fatalf("errnoBudgetRefused = %v", errnoBudgetRefused)
 	}

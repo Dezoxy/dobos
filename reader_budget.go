@@ -20,11 +20,10 @@ import (
 // past the head and tail windows (which the warmup cache serves anyway) and logs a
 // session once when it crosses a margin (phase a, measuring).
 //
-// Phase b, opt-in refusal, is being built in steps. This file holds the predicate
-// (budgetBlocksFetch), the per-handle hold (budgetGate), the metrics and the log lines.
-// No read path calls the gate yet, so nothing here refuses or slows a read: the switch
-// refuse_unconfirmed_reads changes nothing until the next step wires handle.go and
-// pump.go.
+// Phase b, opt-in refusal: the predicate (budgetBlocksFetch), the per-handle hold
+// (budgetGate), the metrics and the log lines. handle.go asks the gate at the first cache
+// miss and the predicate at its four prefetch sites; pump.go parks on the predicate. With
+// refuse_unconfirmed_reads off (the default) nothing here refuses or slows a read.
 //
 // The Prometheus counter is what the reader took past the windows, whichever path
 // served it: outside the exempt windows every such byte is swarm cost, even when it
@@ -92,7 +91,7 @@ const (
 // must map it to EIO before the kernel sees it (and before it reaches ttffReadFailed or the
 // short-read repair), because a refusal is not the swarm failing to deliver. EDQUOT is a
 // valid errno, so a leak would still be an answer the kernel can complete a request with.
-// Nothing maps it yet: no read path calls budgetGate.
+// MkvHandle.Read maps it at both readInner call sites.
 const errnoBudgetRefused = syscall.EDQUOT
 
 func countPlaybackWebhook(matched bool) {
