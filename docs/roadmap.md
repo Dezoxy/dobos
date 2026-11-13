@@ -329,10 +329,12 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
    lower quota evicts only when a new head is written. A call evicts down to
    a given size now, in the normal order: never-played files first, oldest
    first, and played files only after them.
-7. **Remove by the full hash.** Removal by hash matches stub names on eight
-   hex digits; stubs from older tools carry the first or the last eight, so
-   some are missed, and a stub of another torrent could match. It matches
-   the full hash in the stub's own link instead.
+7. **Remove by the full hash.** [FINISHED] Removal by hash matched stub names
+   on eight hex digits; stubs from older tools carry the first or the last
+   eight, so some were missed, and a stub of another torrent could match. It
+   matches the full hash in the stub's own link instead, as do the
+   already-present check of an add and the reference check before a torrent is
+   dropped.
 
 ## Done
 
@@ -572,3 +574,11 @@ Flodni; steps 5 to 7 can land at any time. All are designed, not built.
   the file under 1 s while a reader is held. The test found that a held read
   froze every new open of the file; #133 fixed it. The pump park rests on
   fake-engine tests only.
+- 2026-11-13, before a deployment relies on it, step 7: removal by hash
+  (`POST /api/library/remove`), the already-present check of an add and the
+  reference check before a torrent is dropped match the full 40-hex hash in each
+  stub's own link, not the eight digits in its name. Legacy stubs tagged with
+  the first or the last eight are found in either folder, and a stub of another
+  torrent that shares the digits is left alone. The walk reads every stub under
+  the folder (a few hundred bytes each); a stub with no readable hash is skipped
+  and logged once per walk.

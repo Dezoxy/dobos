@@ -556,6 +556,16 @@ are off by default.
   so the rate is a lower bound. Neither counts a play whose webhook matches
   no open file.
 
+## Removing a title
+
+`POST /api/library/remove` takes a `path` or a `hash`. A hash removes every
+stub whose own link carries that full 40-hex hash, whatever its file name: the
+eight digits older tools put in the name (first eight for episodes, last eight
+for movies) are not used, so a stub of another torrent that shares them is
+left alone. The call reads each stub under both folders. A stub with no
+readable hash is skipped and logged once per call. The torrent is dropped once
+no stub links to it.
+
 ## Warm on add
 
 **Experimental, off by default.** With `warm_on_add` set (and `warmup_dir`
