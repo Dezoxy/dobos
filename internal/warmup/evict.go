@@ -141,6 +141,11 @@ func splitCacheName(stem string) FileKey {
 // then played files, each class oldest first by the newer of its two windows. The file
 // in opts.exclude is never a victim. The verdict follows the disk walk, which also
 // resyncs totalSize.
+// maxEvictFailures is how many units one quota check may fail to remove before it gives
+// up: a read-only or broken directory fails them all, and a failed removal no longer
+// lowers the total that ends the loop.
+const maxEvictFailures = 8
+
 func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evicted []Eviction, room bool) {
 	quota := quotaBytes()
 	if opts.request {
@@ -152,7 +157,13 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 		return nil, true
 	}
 
-	entries, _ := os.ReadDir(d.dir)
+	entries, err := os.ReadDir(d.dir)
+	if err != nil {
+		// A vanished or unreadable directory proves nothing about the total: keep the
+		// old one rather than store 0, which would undercount until the next restart.
+		logf.Printf("[DiskWarmup] quota walk of %s failed: %v: total kept, nothing evicted", d.dir, err)
+		return nil, false
+	}
 	units := map[string]*evictUnit{}
 	var diskTotal int64
 	for _, e := range entries {
@@ -225,31 +236,50 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 	d.tailMu.Lock()
 	defer d.tailMu.Unlock()
 	d.removals.Add(1)
+	failed := 0
 	for _, u := range victims {
 		if diskTotal+needed <= quota {
 			break
 		}
-		for _, p := range []string{u.headPath, u.tailPath} {
+		// A failed unlink is not an eviction: its bytes stay counted, and nothing is
+		// reported, so the state database does not mark a file that is still there.
+		allGone := true
+		var headGone, tailGone int64
+		for i, p := range []string{u.headPath, u.tailPath} {
 			if p == "" {
 				continue
 			}
 			d.closeHandle(p)
+			if !removed(p) {
+				allGone = false
+				continue
+			}
+			removeFile(p + coverSuffix)
 			d.sizeCache.Delete(p)
 			d.tailCoverage.Delete(p)
-			removeFile(p)
-			removeFile(p + coverSuffix)
+			if i == 0 {
+				headGone = u.headBytes
+				evictedHeads.Add(1)
+				evictedHeadBytes.Add(u.headBytes)
+			} else {
+				tailGone = u.tailBytes
+				evictedTails.Add(1)
+				evictedTailBytes.Add(u.tailBytes)
+			}
 		}
-		diskTotal -= u.size()
-		if u.tailPath != "" {
-			evictedTails.Add(1)
-			evictedTailBytes.Add(u.tailBytes)
+		diskTotal -= headGone + tailGone
+		if headGone+tailGone > 0 {
+			// Reported with the bytes actually removed: a head gone with its tail stuck
+			// is still an eviction of that head.
+			evicted = append(evicted, Eviction{Key: u.key, HeadBytes: headGone, TailBytes: tailGone,
+				Age: now.Sub(u.newest), Played: u.played, Trigger: opts.trigger})
 		}
-		if u.headPath != "" {
-			evictedHeads.Add(1)
-			evictedHeadBytes.Add(u.headBytes)
+		if !allGone {
+			if failed++; failed >= maxEvictFailures {
+				logf.Printf("[DiskWarmup] eviction stopped: %d units could not be removed", failed)
+				break
+			}
 		}
-		evicted = append(evicted, Eviction{Key: u.key, HeadBytes: u.headBytes, TailBytes: u.tailBytes,
-			Age: now.Sub(u.newest), Played: u.played, Trigger: opts.trigger})
 	}
 	atomic.StoreInt64(&d.totalSize, diskTotal)
 	return evicted, diskTotal+needed <= quota
