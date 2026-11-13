@@ -720,6 +720,7 @@ pumpSlotResolved:
 		if woke, err := rewake(fuseCtx, h.hash, h.magnet, h.fileID, torrentLive, h.wake); err != nil {
 			logger.Printf("[VFS] Re-activation failed for %s: %v", filepath.Base(h.path), err)
 		} else if woke {
+			countReopen(h.path, h.hash)
 			logger.Printf("[VFS] Re-activated %s after the engine closed it as idle", filepath.Base(h.path))
 		}
 		// V753: the very first read of a session can miss raCache/warmup even when

@@ -139,11 +139,11 @@ Releases and deployment are scheduled separately.
    seconds. A play webhook already marks the torrent as not to expire, but
    the mark sits on the engine's torrent object: it is set only if the
    torrent is loaded when the webhook arrives, and a reopened torrent comes
-   back without it. Phase a is designed, not built, and changes no
+   back without it. Phase a is built (2026-11-13) and changes no
    behaviour: it counts the engine's idle closes, the reopens of a closed
    torrent for a read, and the reads slower than one second, each split by
-   whether the file had a webhook-confirmed playback, and adds them to the
-   session record. Phase b is designed, not built: while a file has a
+   whether a file of the torrent had a webhook-confirmed playback, and adds
+   them to the session record. Phase b is designed, not built: while a file has a
    confirmed playback its torrent is not closed for idleness. The hold is
    decided at the moment of expiry from the playback state, so it survives
    a reopening. A stop webhook ends it at once; otherwise it ends 15
@@ -486,3 +486,12 @@ finished.
   `/api/health` (never changes the status or the HTTP code) and
   `flodni_warning{name="no_play_webhook"}` report it. The README has a "Play
   webhook" section. The keep-alive remains designed, not built.
+- 2026-11-13, reliability step 8, phase a: `flodni_torrent_idle_closes_total`,
+  `flodni_torrent_reopens_total` and `flodni_read_stalls_total`, each split
+  by `confirmed`, and `reopens`, `stalls`, `max_stall_ms` and `confirmed` on
+  the session record. No behaviour change. Phase b (the hold) stays designed,
+  not built, so the step is not finished. Its entry condition is met: the new
+  keep-alive end-to-end variant asserts the known leak, a confirmed idle
+  close after a webhook that arrived while the torrent was closed
+  (`idle_closes{confirmed="true"}` at least 1). Phase b flips that
+  assertion to 0.

@@ -71,7 +71,8 @@ A change that violates one is wrong even if it works.
   and reads them back with the seeder dead, restarts the daemon to catch up on
   a title that was never warmed, sends a play webhook in the middle of a
   read past the reader-budget margin and checks it counts as confirmed late,
-  then replaces a TV episode with a second release and refuses a third that
+  measures the engine's idle closes with a webhook while the torrent is
+  closed, then replaces a TV episode with a second release and refuses a third that
   never delivers (needs Docker and `/dev/fuse`). The module
   and the binary are `flodni`; the `FLODNI_*` environment variables win over
   the older `TIRAMISU_*` names, and persisted file names (`tiramisu.db`,

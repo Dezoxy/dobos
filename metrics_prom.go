@@ -194,6 +194,18 @@ func collectPlaybackProm(w *promtext.Writer) {
 	w.Counter("flodni_playback_starts_total",
 		"Playbacks the media server webhook confirmed (not playing to playing).",
 		promSample(playbackStarts.Load()))
+	w.Counter("flodni_torrent_idle_closes_total",
+		"Torrents the engine closed because no reader had them for the idle timeout. confirmed is true when a file of the torrent had a webhook-confirmed playback (the label is refreshed once a second).",
+		promSample(keepaliveCounters.idleCloses[1].Load(), lbl("confirmed", "true")),
+		promSample(keepaliveCounters.idleCloses[0].Load(), lbl("confirmed", "false")))
+	w.Counter("flodni_torrent_reopens_total",
+		"Closed torrents a read on an open handle woke again. confirmed as in flodni_torrent_idle_closes_total.",
+		promSample(keepaliveCounters.reopens[1].Load(), lbl("confirmed", "true")),
+		promSample(keepaliveCounters.reopens[0].Load(), lbl("confirmed", "false")))
+	w.Counter("flodni_read_stalls_total",
+		"Served reads that took longer than one second. Failed reads are not counted. confirmed as in flodni_torrent_idle_closes_total.",
+		promSample(keepaliveCounters.stalls[1].Load(), lbl("confirmed", "true")),
+		promSample(keepaliveCounters.stalls[0].Load(), lbl("confirmed", "false")))
 	w.Counter("flodni_warmup_cold_reopen_total",
 		"Confirmed plays that opened with no ready head on a file quota eviction had removed, counted once per eviction. previously_played says whether the file had been played before.",
 		promSample(coldReopensPrevPlay.Load(), lbl("previously_played", "true")),

@@ -257,7 +257,7 @@ directory is on a mounted volume, and it is not rotated. Without the log FIFO th
 goes to stdout only.
 
 ```text
-[GoProxy] 2026/11/12 09:02:10 [Session] {"path":"/mnt/flodni-real/tv/Example/Example.S01E01_0123abcd.mkv","hash":"0123456789abcdef0123456789abcdef01234567","size":31461601,"opened_at":"2026-11-12T09:00:05Z","closed_at":"2026-11-12T09:02:10Z","bytes_served":31461601,"first_byte_ms":12,"reads":241,"failed_reads":0,"outcome":"served","file_index":1,"bytes_fetch_block":135393,"bytes_racache_hit":31326208,"bytes_warmup_head":0,"bytes_warmup_tail":0,"swarm_served":true,"duration_ms":125000,"failure_reason":null}
+[GoProxy] 2026/11/12 09:02:10 [Session] {"path":"/mnt/flodni-real/tv/Example/Example.S01E01_0123abcd.mkv","hash":"0123456789abcdef0123456789abcdef01234567","size":31461601,"opened_at":"2026-11-12T09:00:05Z","closed_at":"2026-11-12T09:02:10Z","bytes_served":31461601,"first_byte_ms":12,"reads":241,"failed_reads":0,"outcome":"served","file_index":1,"bytes_fetch_block":135393,"bytes_racache_hit":31326208,"bytes_warmup_head":0,"bytes_warmup_tail":0,"swarm_served":true,"duration_ms":125000,"failure_reason":null,"reopens":0,"stalls":0,"max_stall_ms":0,"confirmed":false}
 ```
 
 Everything after `[Session] ` is one JSON object on one line, the same
@@ -286,6 +286,9 @@ and `[DeadSwarm]` lines are unchanged, and their wording is not a contract.
 | `swarm_served` | boolean | A read was answered through the engine while a peer was connected: the rule that sets `last_swarm_read_at`. |
 | `reads`, `failed_reads` | number | Reads served, and reads that gave up. |
 | `failure_reason` | string or null | Why the last failed read gave up (the values of `last_failure_reason`); `null` if no read failed. Set whenever a read failed; only `dead_swarm` says the session counted as a failure. |
+| `reopens` | number | Times a read on an open handle woke a torrent the engine had closed as idle. The wake at open does not count. |
+| `stalls`, `max_stall_ms` | number | Served reads that took over one second, and the slowest one in milliseconds. Failed reads are not counted. |
+| `confirmed` | boolean | A play webhook confirmed the file while the session was open, or it was confirmed when the session started. Sticky: a later stop webhook does not clear it. |
 | `outcome` | string | `served`: 1 MiB or more, or over 64 KiB with a read past 8 MiB or in the tail window. `probe`: fewer bytes, a scan. `unserved`: no bytes. `dead_swarm`: the session counted as a failure in the readability record, whatever it served; it never appears when the state database is off. The thresholds may change. |
 
 - The four byte fields name the path that answered each read, not where
@@ -300,6 +303,20 @@ and `[DeadSwarm]` lines are unchanged, and their wording is not a contract.
   for more than a minute (30 s once the session is older than 30 minutes)
   is cut short in this record, and one whose session ended when another
   handle closed before the first byte shows as `unserved`.
+- `reopens`, `stalls` and `max_stall_ms` are lower bounds: a play with long
+  gaps spans several sessions, and reads on a handle after its session
+  closed are not counted. The process-wide counters
+  `flodni_torrent_reopens_total` and `flodni_read_stalls_total` have no
+  such gap.
+- The `confirmed` label of the three process-wide counters is per torrent: a
+  scanner's stall on a sibling episode of a confirmed season pack counts
+  `confirmed="true"`, while that session's own `confirmed` is false. The
+  label comes from a set rebuilt once a second, so a webhook can show up in
+  it a second late.
+- Counting edges: a read that waits over a second for another reader's
+  fetch counts its own stall; the wake's own duration is not part of the
+  stall measure; reopens can exceed idle closes, because two reads in
+  different cache chunks can both wake a closed torrent.
 - A session still open when Flodni stops gets no line.
 - `bytes_served` counts what Flodni handed to the kernel. The kernel's
   page cache answers repeated reads without Flodni seeing them.
@@ -697,6 +714,9 @@ scraper on the same host or Docker network.
 | `flodni_warm_catchup_files` | gauge | `state` | Library files catch-up has not warmed, as of the last pass: `pending`, `retry_wait`, `gave_up`, `evicted`, `not_stored`, `left_no_room`; every state present from 0. See "Warm on add". |
 | `flodni_warmup_files` | gauge | `window` | Media files with a warm window on disk now: `head` counts heads at or above the 1 MiB ready floor, `tail` counts tails fully covered. Only with the cache enabled. |
 | `flodni_playback_starts_total` | counter | none | Playbacks the media server webhook confirmed (not playing to playing). |
+| `flodni_torrent_idle_closes_total` | counter | `confirmed` | Torrents the engine closed because no reader had them for the idle timeout. `confirmed` is `true` when a file of the torrent had a webhook-confirmed playback; the label is refreshed once a second. Both values present from 0. Counts only; nothing is held open yet (Reliability step 8, phase a). |
+| `flodni_torrent_reopens_total` | counter | `confirmed` | Closed torrents a read on an open handle woke again; the wake at open is not counted. `confirmed` as above. |
+| `flodni_read_stalls_total` | counter | `confirmed` | Served reads that took over one second; failed reads are not counted. `confirmed` as above. Independent of sessions. |
 | `flodni_playback_webhooks_received_total` | counter | `matched` | Play and resume webhooks for a movie or an episode; `matched` is `true` when the webhook resolved to one file, else `false`. |
 | `flodni_playback_webhook_last_timestamp_seconds` | gauge | `matched` | Unix time of the last play or resume webhook for a movie or an episode, `matched` as above; 0 = none seen. Persisted hourly with the state database. See Play webhook. |
 | `flodni_unconfirmed_read_last_session_timestamp_seconds` | gauge | none | Unix time of the last session that crossed `unconfirmed_read_margin_mb` and closed unconfirmed; 0 = none seen. |
