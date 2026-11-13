@@ -21,7 +21,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/wlynxg/anet v0.0.5
 	go.etcd.io/bbolt v1.5.0
-	golang.org/x/exp v0.0.0-20251125195548-87e1e737ad39
+	golang.org/x/exp v0.0.0-20261113113407-e3970619a1a4
 	golang.org/x/sys v0.49.0
 	golang.org/x/time v0.16.0
 	modernc.org/sqlite v1.61.1
