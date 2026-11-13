@@ -6,7 +6,7 @@
 // the expected sha256 and the FUSE path in a shared directory for run.sh.
 //
 // With -mode replacement it files three single-file episode releases instead:
-// see replacement.go.
+// see replacement.go. With -mode removal it files four movies: see removal.go.
 package main
 
 import (
@@ -57,7 +57,7 @@ func main() {
 	flodni := flag.String("flodni", "flodni", "hostname of the Flodni container")
 	peerPort := flag.Int("peer-port", 51413, "TCP peer port")
 	trackerPort := flag.Int("tracker-port", 6969, "HTTP announce port")
-	mode := flag.String("mode", "stream", "stream (one movie) or replacement (three episode releases)")
+	mode := flag.String("mode", "stream", "stream (one movie), replacement (three episode releases) or removal (four movies)")
 	flag.BoolVar(&engineDefaultAlloc, "engine-default-alloc", false,
 		"keep the engine's 1 MiB per-peer request allowance (a slow real peer) instead of 64 MiB")
 	flag.Parse()
@@ -70,6 +70,8 @@ func main() {
 		err = run(*out, *flodni, *peerPort, *trackerPort)
 	case "replacement":
 		err = runReplacement(*out, *flodni, *peerPort, *trackerPort)
+	case "removal":
+		err = runRemoval(*out, *flodni, *peerPort, *trackerPort)
 	default:
 		err = fmt.Errorf("unknown mode %q", *mode)
 	}

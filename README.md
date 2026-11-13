@@ -864,7 +864,9 @@ torrent that was removed stays removed: a wake that was still adding it
 finishes first and the removal then takes it, and a save by an idle close that
 lost the race writes no record. The one case left is an explicit add of the
 same hash after the removal, which is a new add. This is unit-tested under the
-race detector; the end-to-end run of it is not built yet (roadmap, step 1).
+race detector, and end to end: the `removal` variant of `make e2e` removes
+three titles back to back (two through the library API, one with `rm`) while a
+fourth is read and a descriptor is open on one of them.
 
 ## Metrics
 
