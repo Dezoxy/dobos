@@ -713,6 +713,22 @@ closed torrent and reports the engine's state for it before the pass).
   `warm_on_add` was off keeps its removal mark until a restart: catch-up lists
   it as `pending` every pass and feeds nothing.
 
+### A stub the engine does not store
+
+At startup the daemon logs one `WARNING: N of M library torrents have no
+stored engine record with metainfo` line, naming the first five hashes, and
+exports `flodni_library_torrents_unstored` (counted once, after the library
+walk). Such a stub, from a library add made before the engine saved it, a lost
+`config.db` or a raw engine `rem` with the stub left, still opens today: the
+engine re-adds it from a bare magnet, with the DHT and the public trackers
+and no private flag known until the metainfo arrives. A later change will
+refuse it instead (`docs/roadmap.md`, step 1). The library adds the engine
+now saves at once (`save_to_db`), so only existing stubs are affected. To
+repair one, add the hash to the engine with `save_to_db` set (`POST /torrents`
+with `{"action":"add","link":"magnet:?xt=urn:btih:<hash>","save_to_db":true}`
+on the engine port), or run a library remove and then a library add. A
+library add alone answers "already present" and changes nothing.
+
 ## Metrics
 
 `GET /metrics/prometheus` on the control port serves the Prometheus text
@@ -775,6 +791,7 @@ scraper on the same host or Docker network.
 | `flodni_warmup_unverified_drops_total` | counter | none | Warmup blocks, head or tail, never written because their pieces did not verify in time. |
 | `flodni_warmup_write_queue_drops_total` | counter | none | Head chunks dropped because the warmup write queue was full. |
 | `flodni_readability_torrents` | gauge | `state` | Library torrents by readability: `failed` has a failure streak, `ok` has none and a read served by the swarm, `never_read` is the rest (no record, or a streak reset by a metainfo without a read). Not exported when the state database is off. |
+| `flodni_library_torrents_unstored` | gauge | none | Library torrents with no stored engine record holding metainfo, counted once at startup after the library walk and not refreshed. Not exported until counted. See "A stub the engine does not store". |
 | `flodni_readahead_cache_bytes` | gauge | none | Bytes in the read-ahead cache. |
 | `flodni_readahead_cache_active_bytes` | gauge | none | The part that is not stale. |
 | `flodni_readahead_cache_entries` | gauge | none | Entries in the cache. |
