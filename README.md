@@ -465,10 +465,10 @@ switch off it never refuses or slows a read.
     15 s hold, and every new open of a refused file waits 15 s again. A stop
     webhook un-confirms the file for every reader, so a second client, or a
     stop that arrives after the next play, is cut after margin plus hold.
-    Windows are exempt by byte, not by page: a page that straddles the
-    tail-window start is refused when the file size is not page-aligned, and
-    kernel read-ahead across the head edge can stall a head read 15 s once per
-    open. A parked pump resumes when its session closes (no session, no
+    Windows are exempt by byte, not by page: the tail window starts on a 4 KiB
+    boundary, so the page that straddles the file's size minus the tail size is
+    inside it, but kernel read-ahead across the head edge can stall a head read
+    15 s once per open. A parked pump resumes when its session closes (no session, no
     refusal); for inferred playback it can then fetch up to the read-ahead
     budget once.
 - **End-to-end test.** The `budget-refusal` variant (margin 16 MiB, windows
@@ -576,7 +576,10 @@ while queued are covered by unit tests only (the `catch-up` variant does wake a
 closed torrent and reports the engine's state for it before the pass).
 
 - **Cost.** It downloads the windows (by default 64 MiB of head and 16 MiB of
-  tail per file, `warmup_head_size_mb` and `warmup_tail_size_mb`) from the
+  tail per file, `warmup_head_size_mb` and `warmup_tail_size_mb`; the tail
+  window is page-aligned: its start is rounded down to a 4 KiB boundary, so it
+  is up to 4095 bytes longer, and a read of exactly the last N MiB of a file
+  stays inside it) from the
   swarm for every file of every title added, played or not. A private tracker
   may count that download against the account; that is why it is off by
   default. A pack added episode by episode warms each episode. Catch-up (below)
