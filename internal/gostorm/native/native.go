@@ -768,13 +768,6 @@ func (c *NativeClient) ListTorrents() ([]TorrentStats, error) {
 	return result, nil
 }
 
-// RemoveTorrent removes a torrent from the server
-func (c *NativeClient) RemoveTorrent(hash string) error {
-	// torr.RemTorrent also removes the torrent's disk warmup files.
-	torr.RemTorrent(hash)
-	return nil
-}
-
 // PipeResponseWriter bridges GoStorm's HTTP responses to our Go pipe.
 type PipeResponseWriter struct {
 	writer *io.PipeWriter

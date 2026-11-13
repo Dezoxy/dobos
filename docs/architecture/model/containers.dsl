@@ -20,6 +20,7 @@ flodni = softwareSystem "Flodni" "Presents torrents as ordinary media files and 
     daemon.vfs -> daemon.engine "Requests byte ranges from" "In-process"
     daemon.vfs -> daemon.warmup "Reads head and index bytes from" "In-process"
     daemon.vfs -> stubs "Lists and resolves" "File I/O"
+    daemon.vfs -> daemon.library "Removes stubs through, when a file is deleted from the mount" "In-process"
     daemon.library -> stubs "Writes, replaces and removes" "File I/O"
     daemon.library -> daemon.engine "Adds and drops torrents in" "In-process"
     daemon.library -> daemon.warmer "Hands newly filed files, and later the stubs it lists for catch-up, to" "In-process"

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	tsutils "flodni/internal/gostorm/utils"
 	"flodni/internal/gostorm/web"
 	"flodni/internal/library"
@@ -10,6 +11,7 @@ import (
 	"flodni/internal/warmup"
 	"fmt"
 	"github.com/cespare/xxhash/v2"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -518,6 +520,10 @@ func invalidateSyncRemovedPath(path string) {
 	globalDirCache.Delete(path)
 }
 
+// unlinkRemove removes the stub at path through the library's reference-checked
+// removal; main wires it once the library exists.
+var unlinkRemove func(ctx context.Context, path string) error
+
 // Unlink handles file deletion and triggers torrent auto-remove (FASE 4.2)
 func (d *VirtualDirNode) Unlink(ctx context.Context, name string) syscall.Errno {
 	logger.Printf("=== UNLINK === dir=%s file=%s", d.physicalPath, name)
@@ -533,34 +539,30 @@ func (d *VirtualDirNode) Unlink(ctx context.Context, name string) syscall.Errno 
 	forceCloseVirtualFile(fullPath)
 	tailFillTargets.Delete(fullPath)
 
-	// Extract hash and remove torrent from GoStorm
-	success, blacklisted, err := globalTorrentRemover.RemoveTorrentFromFile(fullPath)
-	if err != nil {
-		logger.Printf("UNLINK ERROR: failed to remove torrent: %v", err)
-		// Continue with file deletion even if torrent removal fails
-	} else if success {
-		logger.Printf("UNLINK: torrent successfully removed from GoStorm")
-	} else if blacklisted {
-		logger.Printf("UNLINK: torrent not removed (already gone, or still referenced), but hash was blacklisted")
-	} else {
-		logger.Printf("UNLINK: torrent not removed and hash not blacklisted (see the warning above)")
+	// The library deletes the stub, invalidates the caches and forgets the
+	// episode, then drops the torrent only when no other stub uses it. A torrent
+	// that is not dropped is not an error here: the stub is gone.
+	if unlinkRemove == nil {
+		logger.Printf("UNLINK ERROR: no library removal is wired")
+		return syscall.EIO
+	}
+	if err := unlinkRemove(ctx, fullPath); err != nil {
+		var le *library.Error
+		if errors.As(err, &le) {
+			switch le.Status {
+			case http.StatusBadRequest:
+				logger.Printf("UNLINK: refused, %s is not a stub inside the media directories: %v", fullPath, err)
+				return syscall.EPERM
+			case http.StatusNotFound:
+				logger.Printf("UNLINK: no stub at %s", fullPath)
+				return syscall.ENOENT
+			}
+		}
+		logger.Printf("UNLINK ERROR: failed to remove %s: %v", fullPath, err)
+		return syscall.EIO
 	}
 
-	// Delete physical .mkv file
-	if err := os.Remove(fullPath); err != nil {
-		logger.Printf("UNLINK ERROR: failed to delete file: %v", err)
-		return vfs.ToErrno(err)
-	}
-
-	registry.RemoveFromRegistry(fullPath)
-	globalDirCache.Delete(d.physicalPath)
-	// Same reason as the sync removal path: a lookup by exact path is answered from
-	// the metadata cache, which would keep serving this file for the whole TTL.
-	if metaCache != nil {
-		metaCache.Delete(fullPath)
-	}
-
-	logger.Printf("UNLINK COMPLETE: file deleted successfully")
+	logger.Printf("UNLINK COMPLETE: stub removed")
 	return 0
 }
 

@@ -62,6 +62,13 @@ fits inside Docker's default 10 s `stop_grace_period`. A longer grace period
 is fine; do not set it below 10 s, or Docker kills the process before the
 deadline.
 
+Deleting a title with `rm` through the mount removes its stub. The torrent
+and its cache files go only when no other stub uses it, so deleting one
+episode of a season pack keeps the pack for the others. The release is not
+added to the blacklist. An `.mkv` outside the `movies/` and `tv/` directories
+is refused with `EPERM` and left in place. A media server may rescan after the
+removal.
+
 ### Page cache on a second open
 
 The kernel drops a file's cached pages at every open unless the filesystem
