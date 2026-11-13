@@ -354,11 +354,13 @@ steps marked [FINISHED] are built, the others are designed, not built.
    differs from the stub's, once each. The warmer (warm on add and catch-up)
    refuses a file whose engine length differs from the stub's size
    (outcome `index_mismatch`, not retried, no swarm evidence). With the
-   torrent in the engine, a warm head is checked against the engine's file
-   list and the resolved file wins; with it closed, the head is trusted only
-   if it is no longer than the stub's file. File ids come from the engine's
-   own file list, and hashes are lower-cased. One hole stays, in
-   `docs/ideas.md`.
+   torrent in the engine, or its saved record (read without a wake) lists the
+   files, a warm head is used only when the file at the stub's index has the
+   stub's length; otherwise the open resolves by size and name against that
+   list, and fails with `EIO` when no file has the stub's length. With no
+   list, the head is trusted only if it is no longer than the stub's file.
+   File ids come from the engine's own list, and hashes are lower-cased. One
+   hole stays, in `docs/ideas.md`.
 4. **Align the tail window to a page.** The kernel reads whole 4 KiB pages,
    so a read of exactly the last N MiB of a file whose size is not
    page-aligned starts a page before an N MiB tail window, and that page
@@ -701,5 +703,5 @@ steps marked [FINISHED] are built, the others are designed, not built.
   serves another file's head for a stale stub index when the torrent is in
   the engine, and the warmer refuses a size mismatch. New:
   `flodni_stub_index_mismatch_total` and the warm outcome `index_mismatch`.
-  Tested against fakes; a closed torrent with a stale stub that collides with
-  a sibling's warm head is still open (`docs/ideas.md`).
+  Tested against fakes; a torrent with no saved file list and a stale stub that
+  collides with a sibling's warm head is still open (`docs/ideas.md`).

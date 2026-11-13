@@ -25,16 +25,15 @@ then nothing here is a commitment. Line numbers are as of 2026-11-10.
   title is queued or paused, need a second title held open; the seeder has
   no such mode.
 
-- **Close the stale-stub hole on a closed torrent (not planned).** An open of
-  a stub whose index is stale, on a torrent the engine has closed, still takes
-  the warm head under that index when it is no longer than the stub's file; a
-  sibling's head of a plausible length passes. The tripwire
-  (`flodni_stub_index_mismatch_total`) sees it only once the torrent is open.
-  The audit that closes it walks every stub's `link=` and `index=` against the
-  engine's stored file list (the record `GET /torrents` serves, or the
-  metainfo in the database) and reports each stub whose index names a file of
+- **Close the stale-stub hole for a torrent with no saved file list (not
+  planned).** An open of a stub whose index is stale, on a torrent the engine
+  has closed and whose record has no file list (saved before the metadata),
+  still takes the warm head under that index when it is no longer than the
+  stub's file; a sibling's head of a plausible length passes. The audit that
+  closes it walks every stub's `link=` and `index=` against the file list in
+  the engine's record and reports each stub whose index names a file of
   another length than the stub's size, for a library remove and add to
-  repair. It needs no running torrent and can run at start.
+  repair; records with no list need one wake to be read.
 
 ## Must fix
 

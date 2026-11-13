@@ -23,6 +23,15 @@ func useEngineFiles(t *testing.T, files []library.TorrentFile) {
 	prev := engineFileList
 	engineFileList = func(string) []library.TorrentFile { return files }
 	t.Cleanup(func() { engineFileList = prev })
+	useStoredFiles(t, nil) // no database in these tests; a test that wants a record sets it after
+}
+
+// useStoredFiles stands in the engine's stored record (nil: none).
+func useStoredFiles(t *testing.T, files []library.TorrentFile) {
+	t.Helper()
+	prev := storedFileList
+	storedFileList = func(string) []library.TorrentFile { return files }
+	t.Cleanup(func() { storedFileList = prev })
 }
 
 func useMismatchSeen(t *testing.T) {
@@ -92,21 +101,148 @@ func TestOpenTargetResidentTorrentKeepsAnAgreeingWarmHead(t *testing.T) {
 	}
 }
 
-func TestOpenTargetClosedTorrentRefusesAHeadLongerThanTheFile(t *testing.T) {
+func TestSuspectHeadWithNoFileListIsALongerHeadThanTheFile(t *testing.T) {
+	useEngineReadPath(t)
+	hash := useDiskWarmup(t)
+	useStoredFiles(t, nil)
+	writeHead(t, hash, 2, 3*int(mb))
+	if !suspectHead(hash, 2, 2*mb) {
+		t.Error("a 3 MiB head under a 2 MiB stub was taken as plausible")
+	}
+	if suspectHead(hash, 2, 3*mb) || suspectHead(hash, 2, 500*mb) {
+		t.Error("a head no longer than the file was refused")
+	}
+}
+
+// Open goes cold on an implausible head, so the resolve runs against the list the
+// synchronous wake loaded: the size-matched file is served, not the stub's index.
+func TestOpenTargetColdOpenAfterAnImplausibleHeadResolvesBySize(t *testing.T) {
 	useEngineReadPath(t)
 	useMismatchSeen(t)
 	hash := useDiskWarmup(t)
-	useEngineFiles(t, nil) // closed
-	writeHead(t, hash, 2, 3*int(mb))
+	useEngineFiles(t, staleStubFiles())
 	url := "http://x/stream?link=" + hash + "&index=2"
+	h, idx, ready, err := openTarget(url, 300*mb, "/lib/a.mkv", hash, 2, false)
+	if err != nil || h != hash || idx != 1 || ready {
+		t.Fatalf("got (%s, %d, ready=%v, %v), want file 1 not ready", h, idx, ready, err)
+	}
+	if got := stubIndexMismatches.total.Load(); got != 1 {
+		t.Errorf("mismatch count = %d, want 1", got)
+	}
+}
 
-	// The stub's file is 2 MiB: a 3 MiB head under its index is another file's.
-	_, idx, ready, err := openTarget(url, 2*mb, "/lib/a.mkv", hash, 2, true)
-	if ready {
+func TestOpenTargetSameSizeSiblingNeverTakesACorrectStub(t *testing.T) {
+	files := []library.TorrentFile{
+		{Index: 1, Path: "2.mkv", Length: 300 * mb},
+		{Index: 2, Path: "12.mkv", Length: 300 * mb},
+	}
+	for _, c := range []struct {
+		name     string
+		resident bool
+		warm     bool
+	}{{"resident, warm", true, true}, {"resident, cold", true, false}, {"closed, warm", false, true}} {
+		t.Run(c.name, func(t *testing.T) {
+			useEngineReadPath(t)
+			useMismatchSeen(t)
+			hash := useDiskWarmup(t)
+			if c.resident {
+				useEngineFiles(t, files)
+			} else {
+				useEngineFiles(t, nil)
+			}
+			if c.warm {
+				writeHead(t, hash, 2, int(mb))
+			}
+			url := "http://x/stream?link=" + hash + "&index=2"
+			_, idx, ready, err := openTarget(url, 300*mb, "/lib/Show_S01E12_"+hash[:8]+".mkv", hash, 2, c.warm)
+			if err != nil || idx != 2 || ready != c.warm {
+				t.Fatalf("got idx=%d ready=%v err=%v, want 2 ready=%v", idx, ready, err, c.warm)
+			}
+			if got := stubIndexMismatches.total.Load(); got != 0 {
+				t.Errorf("a correct stub counted %d mismatches", got)
+			}
+		})
+	}
+}
+
+func TestOpenTargetNoSizeMatchFailsAndCountsOnce(t *testing.T) {
+	useEngineReadPath(t)
+	useMismatchSeen(t)
+	hash := useDiskWarmup(t)
+	useEngineFiles(t, staleStubFiles())
+	url := "http://x/stream?link=" + hash + "&index=2"
+	for i := 0; i < 2; i++ {
+		_, _, _, err := openTarget(url, 123*mb, "/lib/zzz.mkv", hash, 2, false)
+		if !errors.Is(err, library.ErrStubMismatch) {
+			t.Fatalf("err = %v, want ErrStubMismatch", err)
+		}
+	}
+	if got := stubIndexMismatches.total.Load(); got != 1 {
+		t.Errorf("mismatch count = %d, want 1", got)
+	}
+}
+
+// The ids of the stored record are the engine's, whatever the metainfo's order or a
+// sort of the paths would give: here id 1 is c.mkv, id 2 a.mkv, id 3 b.mkv.
+func engineOrderFiles() []library.TorrentFile {
+	return []library.TorrentFile{
+		{Index: 1, Path: "c.mkv", Length: 100 * mb},
+		{Index: 2, Path: "a.mkv", Length: 200 * mb},
+		{Index: 3, Path: "b.mkv", Length: 300 * mb},
+	}
+}
+
+func TestStoredIdsDecideNotRawOrSortedOrder(t *testing.T) {
+	useEngineReadPath(t)
+	useMismatchSeen(t)
+	hash := useDiskWarmup(t)
+	useEngineFiles(t, nil)
+	useStoredFiles(t, engineOrderFiles())
+	url := "http://x/stream?link=" + hash + "&index=2"
+	// Stub index 2 is a.mkv (200 MiB) by the engine's ids; sorted order would make id 2 b.mkv.
+	_, idx, _, err := openTarget(url, 200*mb, "/lib/a.mkv", hash, 2, false)
+	if err != nil || idx != 2 {
+		t.Fatalf("idx=%d err=%v, want 2", idx, err)
+	}
+	if got := stubIndexMismatches.total.Load(); got != 0 {
+		t.Errorf("a correct stub counted %d mismatches", got)
+	}
+}
+
+func TestClosedTorrentStoredLengthDisagreeingMakesTheHeadSuspect(t *testing.T) {
+	useEngineReadPath(t)
+	useMismatchSeen(t)
+	hash := useDiskWarmup(t)
+	useEngineFiles(t, nil)
+	useStoredFiles(t, engineOrderFiles())
+	writeHead(t, hash, 3, int(mb)) // under the stale stub's index, and short enough to look plausible
+	// A stub of 100 MiB naming index 3 (b.mkv, 300 MiB): the head is suspect.
+	if !suspectHead(hash, 3, 100*mb) {
+		t.Fatal("a stored length that differs from the stub's size did not make the head suspect")
+	}
+	if suspectHead(hash, 3, 300*mb) {
+		t.Fatal("a stored length that agrees made the head suspect")
+	}
+	// The cold open then resolves by the stored list to the size-matched id.
+	url := "http://x/stream?link=" + hash + "&index=3"
+	_, idx, ready, err := openTarget(url, 100*mb, "/lib/c.mkv", hash, 3, false)
+	if err != nil || idx != 1 || ready {
+		t.Fatalf("got idx=%d ready=%v err=%v, want 1 not ready", idx, ready, err)
+	}
+}
+
+func TestClosedTorrentWithNoStoredFilesFallsBackToTheHeadLength(t *testing.T) {
+	useEngineReadPath(t)
+	useMismatchSeen(t)
+	hash := useDiskWarmup(t)
+	useEngineFiles(t, nil)
+	useStoredFiles(t, nil) // the record was saved before the metadata
+	writeHead(t, hash, 2, 3*int(mb))
+	if !suspectHead(hash, 2, 2*mb) {
 		t.Error("a head longer than the stub's file was trusted")
 	}
-	if err != nil || idx != 2 {
-		t.Errorf("got idx=%d err=%v, want the stub's pair as the fallback", idx, err)
+	if suspectHead(hash, 2, 500*mb) {
+		t.Error("a plausible head was refused")
 	}
 }
 
@@ -127,12 +263,12 @@ func TestOpenTargetClosedTorrentKeepsTheShortcutForAPlausibleHead(t *testing.T) 
 func TestStubIndexMismatchCountsOncePerPath(t *testing.T) {
 	useMismatchSeen(t)
 	logs := captureLogs(t)
-	noteStubIndexMismatch("/lib/a.mkv", "aa", 2, 1)
-	noteStubIndexMismatch("/lib/a.mkv", "aa", 2, 1)
+	noteStubIndexMismatch("/lib/a.mkv", "aa", 2, 1, false)
+	noteStubIndexMismatch("/lib/a.mkv", "aa", 2, 1, false)
 	if got := stubIndexMismatches.total.Load(); got != 1 {
 		t.Fatalf("count = %d after two opens of one path, want 1", got)
 	}
-	noteStubIndexMismatch("/lib/b.mkv", "aa", 3, 1)
+	noteStubIndexMismatch("/lib/b.mkv", "aa", 3, 1, false)
 	if got := stubIndexMismatches.total.Load(); got != 2 {
 		t.Fatalf("count = %d after a second path, want 2", got)
 	}
@@ -215,5 +351,32 @@ func TestWarmFillRefusesAStubSizeThatIsNotTheEnginesFile(t *testing.T) {
 		if errors.Is(err, warmer.ErrIndexMismatch) {
 			t.Errorf("%s: refused: %v", name, err)
 		}
+	}
+}
+
+// A handle built from the cold open's pair does not read the foreign head: the read
+// goes to the engine, which a head hit never does.
+func TestForeignHeadIsNotServedThroughTheHandle(t *testing.T) {
+	fe := useEngineReadPath(t)
+	useMismatchSeen(t)
+	hash := useDiskWarmup(t)
+	useEngineFiles(t, []library.TorrentFile{
+		{Index: 1, Path: "a.mkv", Length: 2 * mb},
+		{Index: 2, Path: "b.mkv", Length: 5 * mb},
+	})
+	writeHead(t, hash, 2, 3*int(mb))
+	url := "http://x/stream?link=" + hash + "&index=2"
+	if !suspectHead(hash, 2, 2*mb) {
+		t.Fatal("the foreign head was not seen as implausible")
+	}
+	h, idx, _, err := openTarget(url, 2*mb, "/lib/a.mkv", hash, 2, false) // the cold open
+	if err != nil || idx != 1 {
+		t.Fatalf("cold open resolved to %d (%v), want file 1", idx, err)
+	}
+	handle := engineHandle("/test/foreign-head.mkv", 2*mb)
+	handle.hash, handle.fileID, handle.usesWarmup = h, idx, true
+	_ = readBytes(t, handle, 4096, 4096)
+	if len(fe.aheadCalls())+len(fe.blockCalls()) == 0 {
+		t.Error("the read was answered from the foreign head")
 	}
 }

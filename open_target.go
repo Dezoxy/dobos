@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"flodni/internal/gostorm/torr"
 	"flodni/internal/gostorm/torr/state"
 	"flodni/internal/library"
 	"flodni/internal/promtext"
@@ -30,6 +32,20 @@ func residentFiles(hash string) []library.TorrentFile {
 	return filesFromStats(t.Status().FileStats)
 }
 
+// storedFileList is the file list saved with the torrent's record, read without waking
+// the torrent: nil when there is none. A var so a test can stand in the database.
+var storedFileList = func(hash string) []library.TorrentFile {
+	return filesFromStats(torr.StoredFiles(hash))
+}
+
+// knownFiles is the torrent's file list: the resident one, else the stored one.
+func knownFiles(hash string) []library.TorrentFile {
+	if files := engineFileList(hash); len(files) > 0 {
+		return files
+	}
+	return storedFileList(hash)
+}
+
 // filesFromStats takes the ids and the order from the engine's own list (Status()'s
 // FileStats, the list the engine reader resolves ids through). A fresh sort need not
 // reproduce it: paths that tie in the comparison, such as 1.mkv and 01.mkv, can come out
@@ -44,35 +60,65 @@ func filesFromStats(stats []*state.TorrentFileStat) []library.TorrentFile {
 	return files
 }
 
+// suspectHead reports a head under the stub's own index that may belong to another
+// file. With the torrent's file list known (resident, or the stored record: neither
+// wakes it), the file at the stub's index must have the stub's length. Without a list,
+// the head must not be longer than the stub's whole file, which only another file's
+// head can be. Open runs it before choosing the wake: a suspect head makes a cold open,
+// so the wake is synchronous and openTarget resolves against the engine's list.
+func suspectHead(hash string, idx int, size int64) bool {
+	if files := knownFiles(hash); len(files) > 0 {
+		for _, f := range files {
+			if f.Index == idx {
+				return f.Length != size
+			}
+		}
+		return true
+	}
+	return warmup.DiskWarmup.GetAvailableRange(hash, idx) > size
+}
+
 // openTarget decides the (hash, file index) an open serves, and whether the warm head
 // under it is ready; err is set when nothing could be resolved (the open then relies on
-// the cache and a retry). headReady says a head exists under the stub's own index.
+// the cache and a retry), or is library.ErrStubMismatch, which Open turns into EIO.
+// headReady says a head exists under the stub's own index.
 //
-// With a head under the stub's index the open used to trust the stub and never resolve,
-// so a stale index served whichever file owned that head. Now:
-//   - torrent resident: the stub is checked against the engine's list. On disagreement the
-//     resolved pair wins and readiness is recomputed for it.
-//   - torrent closed: nothing to check against, so the shortcut stays, unless the head is
-//     longer than the stub's file, which only another file's head can be.
+// With the torrent's file list known, the one rule in library.ResolveOpenTarget decides:
+// the stub's index when the file there has the stub's length, else the file of that
+// length, else ErrStubMismatch. Every other pair than the stub's is counted. With no
+// list (closed, no stored record) the stub is trusted, as Open has already refused a
+// head longer than the stub's file.
 func openTarget(url string, size int64, path, hashStr string, urlIdx int, headReady bool) (hash string, idx int, ready bool, err error) {
-	if headReady && hashStr != "" {
-		if len(engineFileList(hashStr)) > 0 {
-			h, i, rerr := resolveTargetFile(url, size, path)
-			if rerr != nil || (h == hashStr && i == urlIdx) {
-				return hashStr, urlIdx, true, nil
-			}
-			noteStubIndexMismatch(path, hashStr, urlIdx, i)
-			return h, i, warmup.DiskWarmup.HeadReady(h, i), nil
-		}
-		if warmup.DiskWarmup.GetAvailableRange(hashStr, urlIdx) <= size {
-			return hashStr, urlIdx, true, nil
-		}
+	var files []library.TorrentFile
+	if hashStr != "" {
+		files = knownFiles(hashStr)
 	}
-	h, i, err := resolveTargetFile(url, size, path)
-	if err == nil && hashStr != "" && urlIdx > 0 && i != urlIdx {
-		noteStubIndexMismatch(path, hashStr, urlIdx, i)
+	if headReady && hashStr != "" && len(files) == 0 {
+		return hashStr, urlIdx, true, nil
 	}
-	return h, i, false, err
+	t, err := resolveOpenTarget(url, size, path, files, true)
+	if err != nil {
+		if errors.Is(err, library.ErrStubMismatch) {
+			noteStubIndexMismatch(path, hashStr, urlIdx, 0, true)
+			return "", 0, false, err
+		}
+		if headReady && hashStr != "" {
+			return hashStr, urlIdx, true, nil // unresolvable (no bridge): today's shortcut
+		}
+		return "", 0, false, err
+	}
+	if hashStr != "" && urlIdx > 0 && t.FileIndex != urlIdx {
+		noteStubIndexMismatch(path, hashStr, urlIdx, t.FileIndex, false)
+	}
+	switch {
+	case !headReady:
+		ready = false
+	case t.Hash == hashStr && t.FileIndex == urlIdx:
+		ready = true
+	default:
+		ready = warmup.DiskWarmup.HeadReady(t.Hash, t.FileIndex)
+	}
+	return t.Hash, t.FileIndex, ready, nil
 }
 
 // stubIndexMismatches counts the paths whose stub index differs from the file the open
@@ -91,11 +137,16 @@ func (s *stubIndexTripwire) reset() {
 
 // noteStubIndexMismatch logs and counts the first open of a path whose stub index is
 // not the file the open resolved.
-func noteStubIndexMismatch(path, hash string, stubIdx, resolvedIdx int) {
+func noteStubIndexMismatch(path, hash string, stubIdx, resolvedIdx int, unverified bool) {
 	if _, dup := stubIndexMismatches.seen.LoadOrStore(path, struct{}{}); dup {
 		return
 	}
 	stubIndexMismatches.total.Add(1)
+	if unverified {
+		logger.Printf("WARNING: stub index: %s names file %d of %s, which has another length than the stub, and no file has the stub's length; the stub is stale and the open fails with EIO (remove it from the library and add it again)",
+			path, stubIdx, hash)
+		return
+	}
 	logger.Printf("WARNING: stub index: %s names file %d of %s but resolves to file %d; the stub is stale (remove it from the library and add it again)",
 		path, stubIdx, hash, resolvedIdx)
 }

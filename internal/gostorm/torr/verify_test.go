@@ -78,3 +78,14 @@ func TestFileLengthNilTorrent(t *testing.T) {
 		t.Fatalf("a missing torrent reported a length: %d, %v", n, ok)
 	}
 }
+
+func TestParseStoredFilesKeepsTheEnginesIds(t *testing.T) {
+	data := `{"GoStorm":{"Files":[{"id":1,"path":"c.mkv","length":10},{"id":2,"path":"a.mkv","length":20}]}}`
+	got := parseStoredFiles(data)
+	if len(got) != 2 || got[0].Id != 1 || got[0].Path != "c.mkv" || got[1].Id != 2 || got[1].Length != 20 {
+		t.Fatalf("got %+v", got)
+	}
+	if parseStoredFiles("") != nil || parseStoredFiles("{}") != nil || parseStoredFiles("not json") != nil {
+		t.Error("a record with no list gave one")
+	}
+}

@@ -889,23 +889,32 @@ A stub names its file by the index the engine gave it when the stub was
 written. Flodni writes the index and the size from the same engine record, so
 its own stubs agree with the engine. A stub from elsewhere, or an engine that
 numbered a pack's files another way, can leave the index naming a different
-file. An open then resolves the file by size and name instead of trusting the
-index, and counts the stub:
+file. The ids are the engine's own (the list saved with the torrent's record
+and `Status()` serve the same ids): not the order of the metainfo and not a
+sort of the paths. An open compares the stub with that list by one rule: the
+stub's index wins when the engine's file there has the stub's length; else the
+file of that length (by name if several); else the open fails with `EIO`.
 
 - **The counter.** `flodni_stub_index_mismatch_total` counts the paths whose
-  stub index differs from the file an open resolved, once per path per
-  process, and each first open logs one `WARNING: stub index:` line naming the
-  path. It is 0 from the start. A non-zero value means a stale stub exists;
-  zero over a few weeks of use means none of the files opened has one.
+  stub index differs from the file an open resolved, or names no file of the
+  stub's length, once per path per process. Each first open logs one
+  `WARNING: stub index:` line naming the path. It is 0 from the start. A
+  non-zero value means a stale stub exists; zero over a few weeks of use means
+  none of the files opened has one.
 - **To repair a stub:** run a library remove and then a library add of the
   title. A library add alone answers "already present" and changes nothing.
-- **What is guarded.** With the torrent in the engine, an open checks a warm
-  head against the engine's file list and serves the resolved file when the
-  stub disagrees. With the torrent closed it cannot check, and takes the warm
-  head only if it is no longer than the stub's file. Warm on add and catch-up
-  refuse a file whose engine length differs from the stub's size (outcome
-  `index_mismatch`). Not guarded: a closed torrent whose stale stub shares its
-  index with another file's warm head of a plausible length (`docs/ideas.md`).
+- **What is guarded.** The open reads the engine's list from the engine when
+  the torrent is loaded, else from the record saved with it, without waking the
+  torrent. A warm head under the stub's index is used only when the file there
+  has the stub's length; otherwise the open is cold (the torrent is woken
+  first) and resolves by the rule above. When no file has the stub's length the
+  open fails with `EIO` and the counter moves: nothing is served for a stub
+  that cannot be matched. A record saved before the metainfo has no list; then
+  an open takes a warm head only if it is no longer than the stub's file. Warm
+  on add and catch-up refuse a file whose engine length differs from the
+  stub's size (outcome `index_mismatch`). Not guarded: a torrent with no
+  stored list whose stale stub shares its index with another file's warm head
+  of a plausible length (`docs/ideas.md`).
 
 ## Metrics
 
