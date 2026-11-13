@@ -413,12 +413,12 @@ JSON
 JSON
       ;;
     warm-on-add)
-      # The index-cache config with the warmer on and windows larger than what the
-      # variant reads (16 MiB head for 8 MiB, 8 MiB tail for 4 MiB). The kernel
-      # reads whole pages and reads ahead: the head read runs up to 4 MiB past its
-      # end, and the tail read of the last 4 MiB starts on the page before the
-      # file's size minus 4 MiB (the size is not page aligned), which a 4 MiB tail
-      # window does not cover (measured: 12 KiB went through fetch_block).
+      # The index-cache config with the warmer on and a 16 MiB head window for the
+      # 8 MiB head read (the kernel reads ahead: the head read runs up to 4 MiB past
+      # its end). The 4 MiB tail window is the size of the tail read: its start is
+      # rounded down to a page, so the kernel's read of the last 4 MiB, which starts on
+      # the page before the file's size minus 4 MiB (the size is not page aligned),
+      # stays inside the window.
       # E2E_WARM_NEGATIVE=1 switches the warmer off, so step 2 must fail.
       local warm=true
       if [ "${E2E_WARM_NEGATIVE:-}" = "1" ]; then warm=false; fi
@@ -426,7 +426,7 @@ JSON
 {"telemetry": false, "telemetry_url": "", "scheduler": {"enabled": false},
  "physical_source_path": "$SOURCE_PATH", "fuse_mount_path": "$MOUNT_PATH",
  "pump_on_open": false, "warmup_dir": "/cache/index",
- "warmup_head_size_mb": 16, "warmup_tail_size_mb": 8, "disk_warmup_quota_gb": 1,
+ "warmup_head_size_mb": 16, "warmup_tail_size_mb": 4, "disk_warmup_quota_gb": 1,
  "warm_on_add": $warm}
 JSON
       ;;
@@ -842,8 +842,10 @@ run_warm_on_add() {
   hb=$(grep -o '"head_bytes":[0-9]*' <<<"$json" | cut -d: -f2)
   tb=$(grep -o '"tail_bytes":[0-9]*' <<<"$json" | cut -d: -f2)
   idx=$(grep -o '"file":[0-9]*' <<<"$json" | cut -d: -f2)
-  if [ "${pieces:-0}" -le 0 ] || [ "${hb:-0}" -ne $((16 * 1048576)) ] || [ "${tb:-0}" -ne $((8 * 1048576)) ]; then
-    echo "FAIL ($v): [Warm] line wants delivered_pieces > 0, head_bytes 16 MiB, tail_bytes 8 MiB: $json" >&2
+  # The tail window is 4 MiB plus the part of a page its start was rounded down by.
+  if [ "${pieces:-0}" -le 0 ] || [ "${hb:-0}" -ne $((16 * 1048576)) ] ||
+    [ "${tb:-0}" -lt $((4 * 1048576)) ] || [ "${tb:-0}" -ge $((4 * 1048576 + 4096)) ]; then
+    echo "FAIL ($v): [Warm] line wants delivered_pieces > 0, head_bytes 16 MiB, tail_bytes 4 MiB to 4 MiB + 4095: $json" >&2
     dump_diagnostics
     return 1
   fi

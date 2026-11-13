@@ -48,6 +48,7 @@ type env struct {
 	recs     []Update
 	reads    []read
 	removed  []string
+	queued   []warmup.FileKey
 	logs     []string
 	now      time.Time
 }
@@ -103,6 +104,7 @@ func newEnv(t *testing.T, tweak func(*Deps)) *env {
 			return fn != nil && fn(k, since)
 		},
 		Record: func(u Update) { e.mu.Lock(); e.recs = append(e.recs, u); e.mu.Unlock() },
+		Queued: func(ks []warmup.FileKey) { e.mu.Lock(); e.queued = append(e.queued, ks...); e.mu.Unlock() },
 		SwarmRead: func(hash string, at time.Time) {
 			e.mu.Lock()
 			e.reads = append(e.reads, read{hash, at})
@@ -877,5 +879,119 @@ func TestProtectIgnoresTheCaseOfTheHash(t *testing.T) {
 	e.until("the fill", func() bool { return e.nRecs() == 1 })
 	if !got {
 		t.Fatal("an upper-case hash is not protected")
+	}
+}
+
+// ---- the queued record (roadmap step 8) ----
+
+func (e *env) queuedKeys() []warmup.FileKey {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]warmup.FileKey(nil), e.queued...)
+}
+
+func TestAddMarksEveryValidFileQueuedBeforeItEnqueues(t *testing.T) {
+	e := newEnv(t, nil)
+	gate := make(chan struct{})
+	e.set(func() {
+		e.fill = func(int, warmup.FillRequest) (warmup.FillResult, error) {
+			<-gate
+			return warmup.FillResult{HeadBytes: 1}, nil
+		}
+	})
+	t.Cleanup(func() { close(gate) })
+	e.w.Add("AA", []File{f(1), {Index: 2, Size: 0}, {Index: -1, Size: 5}, f(3)})
+	got := e.queuedKeys()
+	if len(got) != 2 || got[0] != (warmup.FileKey{Hash: "aa", FileIdx: 1}) || got[1] != (warmup.FileKey{Hash: "aa", FileIdx: 3}) {
+		t.Fatalf("queued = %+v, want aa/1 and aa/3", got)
+	}
+}
+
+func TestAddWithTheSwitchOffMarksNothingQueued(t *testing.T) {
+	e := newEnv(t, nil)
+	e.set(func() { e.enabled = false })
+	e.w.Add("aa", []File{f(1)})
+	if got := e.queuedKeys(); len(got) != 0 {
+		t.Fatalf("queued = %+v with the switch off", got)
+	}
+}
+
+// A file the full queue drops is still marked: nothing records it, and the mark is what
+// lets catch-up retry it.
+func TestAFileDroppedForAFullQueueStaysQueued(t *testing.T) {
+	e := newEnv(t, func(d *Deps) { d.MaxQueued = 1; d.Workers = 1 })
+	gate := make(chan struct{})
+	e.set(func() {
+		e.fill = func(int, warmup.FillRequest) (warmup.FillResult, error) {
+			<-gate
+			return warmup.FillResult{HeadBytes: 1}, nil
+		}
+	})
+	t.Cleanup(func() { close(gate) })
+	e.w.Add("aa", []File{f(1)})
+	e.until("the first fill", func() bool { return e.nFills() == 1 })
+	e.w.Add("bb", []File{f(1)}) // takes the one slot
+	e.w.Add("cc", []File{f(1)}) // dropped: the queue is full
+	if e.fills(OutcomeDroppedQueueFull) != 1 {
+		t.Fatalf("dropped = %d", e.fills(OutcomeDroppedQueueFull))
+	}
+	var cc bool
+	for _, k := range e.queuedKeys() {
+		cc = cc || k.Hash == "cc"
+	}
+	if !cc {
+		t.Fatalf("queued = %+v: the dropped file must be marked", e.queuedKeys())
+	}
+	e.quiet(1, 0) // and nothing was recorded for it
+}
+
+func TestEveryRecordedOutcomeClearsTheQueuedMark(t *testing.T) {
+	cases := []struct {
+		name  string
+		fill  func(int, warmup.FillRequest) (warmup.FillResult, error)
+		tweak func(*env)
+	}{
+		{"warmed", func(int, warmup.FillRequest) (warmup.FillResult, error) { return warmup.FillResult{HeadBytes: 1}, nil }, nil},
+		{"already warm", func(int, warmup.FillRequest) (warmup.FillResult, error) {
+			return warmup.FillResult{AlreadyWarm: true}, nil
+		}, nil},
+		{"failed", func(int, warmup.FillRequest) (warmup.FillResult, error) {
+			return warmup.FillResult{}, warmup.ErrTimeout
+		}, nil},
+		{"dropped for quota", func(int, warmup.FillRequest) (warmup.FillResult, error) { return warmup.FillResult{}, warmup.ErrNoRoom }, nil},
+		{"lost", func(int, warmup.FillRequest) (warmup.FillResult, error) {
+			return warmup.FillResult{}, warmup.ErrEvicted
+		}, nil},
+		{"write failed", func(int, warmup.FillRequest) (warmup.FillResult, error) {
+			return warmup.FillResult{}, errors.New("disk")
+		}, nil},
+		{"evicted", func(int, warmup.FillRequest) (warmup.FillResult, error) {
+			return warmup.FillResult{}, warmup.ErrEvicted
+		},
+			func(e *env) { e.evicted = func(warmup.FileKey, time.Time) bool { return true } }},
+	}
+	for _, c := range cases {
+		e := newEnv(t, nil)
+		e.set(func() { e.fill = c.fill })
+		if c.tweak != nil {
+			e.set(func() { c.tweak(e) })
+		}
+		e.w.Add("aa", []File{f(1)})
+		e.until(c.name+" record", func() bool { return e.nRecs() >= 1 })
+		if u := e.rec(0); !u.ClearQueued {
+			t.Errorf("%s: record %+v does not clear the queued mark", c.name, u)
+		}
+	}
+}
+
+// A wake error records nothing, so the queued mark stays: that is how catch-up finds it.
+func TestAWakeErrorRecordsNothingAndLeavesTheMark(t *testing.T) {
+	e := newEnv(t, nil)
+	e.set(func() { e.live = false; e.wakeErr = errors.New("busy") })
+	e.w.Add("aa", []File{f(1)})
+	e.until("the wake error", func() bool { return e.fills(OutcomeWakeError) == 1 })
+	e.quiet(0, 0)
+	if len(e.queuedKeys()) != 1 {
+		t.Fatalf("queued = %+v", e.queuedKeys())
 	}
 }

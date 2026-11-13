@@ -72,3 +72,62 @@ func TestConfigExampleCarriesTheCatchupPace(t *testing.T) {
 		t.Fatal(`config.json.example must carry "warm_catchup_per_hour": 20`)
 	}
 }
+
+// warm_catchup_scope (roadmap step 8): "all" by default, "retries" the opt-in, and an
+// unknown value falls back to "all".
+
+func TestWarmCatchupScopeDefaultsToAll(t *testing.T) {
+	if got := LoadConfig().WarmCatchupScope; got != "all" {
+		t.Fatalf("warm_catchup_scope = %q, want all", got)
+	}
+	if got := loadWith(t, `{"warm_on_add": true}`).WarmCatchupScope; got != "all" {
+		t.Fatalf("an absent key became %q", got)
+	}
+}
+
+func TestWarmCatchupScopeAcceptsRetriesAndRefusesTheRest(t *testing.T) {
+	if got := loadWith(t, `{"warm_catchup_scope": "retries"}`).WarmCatchupScope; got != "retries" {
+		t.Fatalf("retries became %q", got)
+	}
+	if got := loadWith(t, `{"warm_catchup_scope": "all"}`).WarmCatchupScope; got != "all" {
+		t.Fatalf("all became %q", got)
+	}
+	for _, bad := range []string{"Retries", "everything", "", " retries"} {
+		if got := loadWith(t, `{"warm_catchup_scope": "`+bad+`"}`).WarmCatchupScope; got != "all" {
+			t.Fatalf("%q became %q, want all", bad, got)
+		}
+	}
+}
+
+func TestWarmCatchupScopeSurvivesThePanelRoundTrip(t *testing.T) {
+	in := Config{WarmCatchupScope: "retries"}
+	b, err := json.Marshal(in.Redacted())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"warm_catchup_scope":"retries"`) {
+		t.Fatalf("GET /api/config would not carry the key: %s", b)
+	}
+	var out Config
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	b, _ = json.Marshal(out)
+	if out.WarmCatchupScope != "retries" || !strings.Contains(string(b), `"warm_catchup_scope":"retries"`) {
+		t.Fatalf("lost in the round trip: %q, %s", out.WarmCatchupScope, b)
+	}
+}
+
+func TestConfigExampleCarriesTheCatchupScope(t *testing.T) {
+	raw, err := os.ReadFile("../../config.json.example")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c Config
+	if err := json.Unmarshal(raw, &c); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"warm_catchup_scope": "all"`) || c.WarmCatchupScope != "all" {
+		t.Fatal(`config.json.example must carry "warm_catchup_scope": "all"`)
+	}
+}

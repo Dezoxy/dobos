@@ -282,8 +282,9 @@ finished.
 
 These came out of reviews of the removal path, the cache directory and the
 file mapping. Steps 1 to 4 should land before a deployment depends on
-Flodni; steps 5 to 7 can land at any time. All are designed; step 1 is partly
-built (its text says what), the others are not built.
+Flodni; steps 5 to 7 can land at any time. Step 8 is owner-ordered ahead of
+the move to a deployment. Step 1 is partly built (its text says what); the
+steps marked [FINISHED] are built, the others are designed, not built.
 
 1. **One wake path, and removals that stay removed.** Partly built, see the end
    of this item. The mount's open and its read-time rewake used to wake a closed
@@ -328,6 +329,19 @@ built (its text says what), the others are not built.
    page-aligned starts a page before an N MiB tail window, and that page
    comes from the engine instead of the cache. The end-to-end test measured
    12 KiB so. The tail window's start is rounded down to a page boundary.
+5. **End-to-end variants as parallel jobs.** [FINISHED] CI runs each variant
+   on its own runner, so wall time stays near the longest variant as variants
+   are added, and variants can no longer collide on container names.
+4. **Align the tail window to a page.** [FINISHED] The kernel reads whole
+   4 KiB pages, so a read of exactly the last N MiB of a file whose size is
+   not page-aligned starts a page before an N MiB tail window, and that page
+   came from the engine instead of the cache. The end-to-end test measured
+   12 KiB so. The tail window's start is rounded down to a page boundary
+   (`warmup.TailStart`, used by the writers, the readers, the fills and the
+   reader budget), so the window grows by up to 4095 bytes. Covers written
+   before (exactly the configured size from the end) still load and serve
+   their own window as complete; they lack the leading page, which comes from
+   the engine as before.
 5. **End-to-end variants as parallel jobs.** CI runs each variant on its
    own runner, so wall time stays near the longest variant as variants are
    added, and variants can no longer collide on container names.
@@ -335,10 +349,31 @@ built (its text says what), the others are not built.
    lower quota evicts only when a new head is written. A call evicts down to
    a given size now, in the normal order: never-played files first, oldest
    first, and played files only after them.
+7. **Remove by the full hash.** [FINISHED] Removal by hash matched stub names
+   on eight hex digits; stubs from older tools carry the first or the last
+   eight, so some were missed, and a stub of another torrent could match. It
+   matches the full hash in the stub's own link instead, as do the
+   already-present check of an add and the reference check before a torrent is
+   dropped.
 7. **Remove by the full hash.** Removal by hash matches stub names on eight
    hex digits; stubs from older tools carry the first or the last eight, so
    some are missed, and a stub of another torrent could match. It matches
    the full hash in the stub's own link instead.
+8. **Catch-up scope: retries only.** [FINISHED] `warm_catchup_scope` is
+   `"all"` (the default: every library file not warm, evicted or failing) or
+   `"retries"`. With warm on add on and no backlog to walk, a file warm on add
+   timed out on, dropped for quota, failed to wake or lost to a restart was
+   never tried again. With `"retries"`, catch-up feeds only files warm on add
+   attempted and did not finish: a failed read (the same 20 hour wait and 4
+   failed attempts), `dropped_quota`, `dropped_no_evidence`, `lost`,
+   `write_failed`, and a file warm on add queued over an hour ago with no
+   outcome recorded (a restart mid-warm, a wake error, a full queue). The
+   queued time is `file_state.queued_at` (schema 16), written when warm on add
+   enqueues and cleared when any attempt records an outcome. Files never
+   attempted are left alone. The evidence rules do not change: a retried read
+   the swarm served, failed or not, counts as today; `dropped_quota`,
+   `write_failed`, `lost` and a refused wake never count as swarm evidence and
+   never touch the readability or the per-torrent streak.
 
 ## Done
 
@@ -578,3 +613,29 @@ built (its text says what), the others are not built.
   the file under 1 s while a reader is held. The test found that a held read
   froze every new open of the file; #133 fixed it. The pump park rests on
   fake-engine tests only.
+- 2026-11-13, readiness step 5: CI runs each end-to-end variant on its own
+  runner (a matrix after the image job, which hands over both images as an
+  artifact), and one job named `End-to-end` fails if any variant failed; it is
+  the check to require.
+- 2026-11-13, before a deployment relies on it, step 4: the tail window's start
+  is rounded down to a 4 KiB boundary, so a read of exactly the last N MiB of
+  a file that is not page-aligned stays inside the window. Existing tail covers
+  keep loading. The `warm-on-add` end-to-end variant is back to a 4 MiB tail
+  window with the same assertion: 0 bytes through `fetch_block` for the 4 MiB
+  tail read.
+- 2026-11-13, before a deployment relies on it, step 7: removal by hash
+  (`POST /api/library/remove`), the already-present check of an add and the
+  reference check before a torrent is dropped match the full 40-hex hash in each
+  stub's own link, not the eight digits in its name. Legacy stubs tagged with
+  the first or the last eight are found in either folder, and a stub of another
+  torrent that shares the digits is left alone. The walk reads every stub under
+  the folder (a few hundred bytes each); a stub with no readable hash is skipped
+  and logged once per walk.
+- 2026-11-13, before a deployment, step 8: `warm_catchup_scope` (`"all"` by
+  default, `"retries"`) limits catch-up to the files warm on add attempted and
+  did not finish, so a deployment with warm on add and no backlog walk retries
+  its own failures, drops and restarts at a low pace. New: the queued time
+  (`file_state.queued_at`, schema 16, additive), the state `out_of_scope` of
+  `flodni_warm_catchup_files`, `flodni_warm_catchup_scope{scope}`, and
+  `scope` on the `[WarmCatchup]` lines. Tested against fakes and the migration;
+  the end-to-end variant `catch-up` runs scope `"all"`.

@@ -472,10 +472,10 @@ switch off it never refuses or slows a read.
     15 s hold, and every new open of a refused file waits 15 s again. A stop
     webhook un-confirms the file for every reader, so a second client, or a
     stop that arrives after the next play, is cut after margin plus hold.
-    Windows are exempt by byte, not by page: a page that straddles the
-    tail-window start is refused when the file size is not page-aligned, and
-    kernel read-ahead across the head edge can stall a head read 15 s once per
-    open. A parked pump resumes when its session closes (no session, no
+    Windows are exempt by byte, not by page: the tail window starts on a 4 KiB
+    boundary, so the page that straddles the file's size minus the tail size is
+    inside it, but kernel read-ahead across the head edge can stall a head read
+    15 s once per open. A parked pump resumes when its session closes (no session, no
     refusal); for inferred playback it can then fetch up to the read-ahead
     budget once.
 - **End-to-end test.** The `budget-refusal` variant (margin 16 MiB, windows
@@ -550,7 +550,8 @@ are off by default.
   13): the last play and whether the quota evicted the file. Schema 14 adds
   the experimental per-file record (see "Per-file records") to the same
   rows; schema 15 adds `daemon_marks`, three daemon times (see "Play
-  webhook"). Eviction removes bytes only; the readability record stays. A torrent
+  webhook"); schema 16 adds `queued_at` (see "Scope" under catch-up).
+  Eviction removes bytes only; the readability record stays. A torrent
   removed from the library loses its marks, and a startup prune after a
   complete library scan drops the marks of torrents that left it.
 - **Log line.** Each evicted file logs one line, `[WarmupEvict] ` followed by
@@ -570,6 +571,16 @@ are off by default.
   so the rate is a lower bound. Neither counts a play whose webhook matches
   no open file.
 
+## Removing a title
+
+`POST /api/library/remove` takes a `path` or a `hash`. A hash removes every
+stub whose own link carries that full 40-hex hash, whatever its file name: the
+eight digits older tools put in the name (first eight for episodes, last eight
+for movies) are not used, so a stub of another torrent that shares them is
+left alone. The call reads each stub under both folders. A stub with no
+readable hash is skipped and logged once per call. The torrent is dropped once
+no stub links to it.
+
 ## Warm on add
 
 **Experimental, off by default.** With `warm_on_add` set (and `warmup_dir`
@@ -583,7 +594,10 @@ while queued are covered by unit tests only (the `catch-up` variant does wake a
 closed torrent and reports the engine's state for it before the pass).
 
 - **Cost.** It downloads the windows (by default 64 MiB of head and 16 MiB of
-  tail per file, `warmup_head_size_mb` and `warmup_tail_size_mb`) from the
+  tail per file, `warmup_head_size_mb` and `warmup_tail_size_mb`; the tail
+  window is page-aligned: its start is rounded down to a 4 KiB boundary, so it
+  is up to 4095 bytes longer, and a read of exactly the last N MiB of a file
+  stays inside it) from the
   swarm for every file of every title added, played or not. A private tracker
   may count that download against the account; that is why it is off by
   default. A pack added episode by episode warms each episode. Catch-up (below)
@@ -680,6 +694,33 @@ closed torrent and reports the engine's state for it before the pass).
     restart. A pass feeds one title at a time, newest stub first, only while
     the warmer is idle, so it holds at most one of the two workers: an add is
     never queued behind a backlog, and a playback pauses it like any fill.
+  - **Scope.** `warm_catchup_scope` is `"all"` (the default; the rule below
+    unchanged) or `"retries"`. Use `"retries"` with `warm_on_add` on and no
+    backlog to walk: catch-up then feeds only files warm on add attempted
+    and did not finish, so a failure there is tried again and the titles
+    filed before warm on add was on are left alone. The files are: a failed
+    read (the same 20-hour wait and 4 failed attempts as below);
+    `dropped_quota`, `dropped_no_evidence`, `lost` and `write_failed`; and a
+    file warm on add queued over an hour ago with no outcome recorded, which
+    covers a restart in the middle of a warm, a wake error and a queue that
+    was full (`file_state.queued_at`, schema 16: written when warm on add
+    queues the file, cleared when an attempt records any outcome, and read
+    after a restart). A file never attempted by warm on add (no record, or
+    only `cached`), an evicted file and a file warm on disk are never fed,
+    and the gauge counts the never-attempted ones as `out_of_scope`. The
+    rest of the rules below (20 hours, the cap, never evicting, the quota
+    stop) apply in both scopes. An unknown value is logged and replaced by
+    `"all"`. Evidence does not change with the scope: a retried read the
+    swarm served, failed or not, counts as it does today, and
+    `dropped_quota`, `write_failed`, `lost` and a refused wake never do and
+    never touch the readability or the title's streak. The pass logs its
+    scope (`"scope"` in both `[WarmCatchup]` lines) and
+    `flodni_warm_catchup_scope{scope}` says which one the last pass ran.
+    Recommended pace for `"retries"`: `warm_catchup_per_hour` 6. The
+    retries are few, a handful of files a day, and each one wakes a torrent
+    and reads a swarm that already failed or a cache that was full, so
+    there is nothing to hurry; at 6 an hour the first pass starts 10 minutes
+    after the daemon starts. The default 20 is sized for walking a backlog.
   - **Which files.** A file is skipped when both windows are complete on disk
     (the disk decides, not the record; a record without `cache: cached` is
     written, with no wake). It is never warmed when its `cache` is `evicted`,
@@ -715,8 +756,10 @@ closed torrent and reports the engine's state for it before the pass).
   `flodni_warm_paused` and `flodni_warm_catchup_files{state}`, the backlog as
   of the last pass: `pending` (also what a pass left because it was stopped, the
   pace was set to 0 or its disk failed), `retry_wait`, `gave_up`, `evicted`,
-  `not_stored` and `left_no_room`. Already warm files and files a pass found
-  no longer candidates are not counted.
+  `not_stored`, `out_of_scope` (scope `retries` only) and `left_no_room`.
+  Already warm files and files a pass found no longer candidates are not
+  counted. `flodni_warm_catchup_scope{scope}` says which scope the last pass
+  ran.
 - **Limits.** The queue and the retries are in memory. The eviction time is
   kept in whole seconds. Without the state database the add warmer still fills,
   evicts nothing, and its records stay in memory and are not served; catch-up
@@ -818,7 +861,8 @@ scraper on the same host or Docker network.
 | `flodni_warm_cache_failures_total` | counter | `reason` | Warm on add and catch-up attempts that lost a window or could not write it: `lost` or `write_failed`. |
 | `flodni_warm_queue_files` | gauge | none | Files waiting for warm on add or catch-up. |
 | `flodni_warm_paused` | gauge | none | 1 while warm on add and catch-up are paused for a playback. |
-| `flodni_warm_catchup_files` | gauge | `state` | Library files catch-up has not warmed, as of the last pass: `pending`, `retry_wait`, `gave_up`, `evicted`, `not_stored`, `left_no_room`; every state present from 0. See "Warm on add". |
+| `flodni_warm_catchup_files` | gauge | `state` | Library files catch-up has not warmed, as of the last pass: `pending`, `retry_wait`, `gave_up`, `evicted`, `not_stored`, `out_of_scope`, `left_no_room`; every state present from 0. See "Warm on add". |
+| `flodni_warm_catchup_scope` | gauge | `scope` | The `warm_catchup_scope` the last catch-up pass ran with: 1 for `all` or `retries`, 0 for the other; both 0 before the first pass. |
 | `flodni_warmup_files` | gauge | `window` | Media files with a warm window on disk now: `head` counts heads at or above the 1 MiB ready floor, `tail` counts tails fully covered. Only with the cache enabled. |
 | `flodni_playback_starts_total` | counter | none | Playbacks the media server webhook confirmed (not playing to playing). |
 | `flodni_torrent_idle_closes_total` | counter | `confirmed` | Torrents the engine closed because no reader had them for the idle timeout. `confirmed` is `true` when a file of the torrent had a webhook-confirmed playback; the label is refreshed once a second. Both values present from 0. Counts only; nothing is held open yet (Reliability step 8, phase a). |

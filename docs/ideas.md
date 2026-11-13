@@ -24,14 +24,6 @@ then nothing here is a commitment. Line numbers are as of 2026-11-10.
   tracker for the wake of a closed private torrent, and a removal while a
   title is queued or paused, need a second title held open; the seeder has
   no such mode.
-- **Align the tail window to a page (not planned).** The kernel reads whole
-  4 KiB pages, so a read of exactly the last N MiB of a file whose size is
-  not page-aligned starts a page before an N MiB tail window, and up to one
-  page is served from the engine instead of the cache. Found by the
-  `warm-on-add` end-to-end variant (12 KiB through `fetch_block` with a
-  4 MiB tail window and a 4 MiB read); the variant uses an 8 MiB tail
-  window for that reason. Rounding the tail window's start down to a page
-  boundary would fix it.
 
 ## Must fix
 
@@ -61,8 +53,6 @@ Bugs and data-loss risks. None open.
     letters starts with `_`.
   - `EpisodeKey` drops non-ASCII letters (`Élite` → `lite_s01e01`), so two
     shows can share a key.
-  - Episode stubs are matched by the first 8 hash characters; two releases
-    with the same prefix are treated as one.
 
 - **Stalls after a tail probe: fixed, two gaps left.** Both stalls of
   Reliability step 6 are fixed in the cache (see the Done lines of

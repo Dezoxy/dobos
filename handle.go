@@ -165,7 +165,7 @@ func writeWarmupFromFetch(h *MkvHandle, off int64, data []byte) {
 		warmup.DiskWarmup.WriteChunk(h.hash, h.fileID, data, off)
 		return
 	}
-	if h.size <= warmup.TailWarmupSize || off < h.size-warmup.TailWarmupSize {
+	if h.size <= warmup.TailWarmupSize || off < warmup.TailStart(h.size) {
 		return
 	}
 	if val, ok := playbackRegistry.Load(h.path); ok {

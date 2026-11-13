@@ -21,6 +21,29 @@ var FileSize int64 = 64 * 1024 * 1024
 // TailWarmupSize is the per-file tail window (V265: Cues/seek index). Set at init.
 var TailWarmupSize int64 = 16 * 1024 * 1024
 
+// tailPage is the unit the tail window's start is rounded to: the kernel reads whole
+// 4 KiB pages, so a read of the last N bytes of a file whose size is not page-aligned
+// starts on the page before size-N, and that page must be in the window.
+const tailPage = 4096
+
+// TailStart is where the tail window of a file of this size begins: size minus
+// TailWarmupSize rounded down to a 4 KiB boundary, 0 for a file that fits the window.
+// The window grows by up to 4095 bytes. Every place that needs the window's start or
+// length uses this, so the writers, the readers and the budget agree.
+func TailStart(size int64) int64 { return TailStartFor(size, TailWarmupSize) }
+
+// TailStartFor is TailStart for a window of this configured size.
+func TailStartFor(size, window int64) int64 {
+	if size <= window || window <= 0 {
+		return 0
+	}
+	return (size - window) &^ (tailPage - 1)
+}
+
+// legacyTailStart is where a tail window begun before the start was aligned: exactly
+// the configured size from the end. Covers written then still load (see loadCoverage).
+func legacyTailStart(size int64) int64 { return max(0, size-TailWarmupSize) }
+
 // headBoundaryChunk lets the chunk that starts exactly at FileSize be written in full
 // (upstream: instant start serves up to FileSize plus one pump chunk). Index mode turns
 // it off so every file costs at most its two windows.
@@ -151,17 +174,35 @@ type tailRange struct {
 	mu     sync.Mutex
 	ranges []tailSpan // disjoint, merged, sorted by start
 	window int64      // length of the tail window; 0 means TailWarmupSize (a short file has less)
+	start  int64      // where the window begins in the media file; set with window
 	size   int64      // the media file's size, 0 until a write or a restored cover file says
 }
 
 // setWindow records the length of the file's tail window, so a file shorter than
 // TailWarmupSize can complete, and the file's size, which is what the head's target
 // depends on (the head cache does not know it).
-func (tr *tailRange) setWindow(n, fileSize int64) {
+func (tr *tailRange) setWindow(start, n, fileSize int64) {
 	tr.mu.Lock()
+	tr.start = start
 	tr.window = n
 	tr.size = fileSize
 	tr.mu.Unlock()
+}
+
+// windowFor returns the start and length of the tail window of a file of fileSize that
+// this tracker's bytes are laid out for. It is the aligned window, except for a cover
+// written before the start was aligned (exactly TailWarmupSize from the end): its file
+// holds the bytes from that start, so it keeps it. That window lacks the aligned
+// window's leading page, which a read leaves to the engine; the cover is complete for
+// the window it covers.
+func (tr *tailRange) windowFor(fileSize int64) (start, length int64) {
+	start = TailStart(fileSize)
+	tr.mu.Lock()
+	if tr.window > 0 && tr.size == fileSize && tr.start == legacyTailStart(fileSize) {
+		start = tr.start
+	}
+	tr.mu.Unlock()
+	return start, fileSize - start
 }
 
 // fileSize returns the recorded size of the media file, 0 if unknown.
@@ -770,6 +811,32 @@ func (d *DiskWarmupCache) TailReady(hash string, fileID int) bool {
 	return ok && val.(*tailRange).complete()
 }
 
+// tailWindow returns the tail window of the file at path: its start and length in the
+// media file, taken from the tracker when there is one.
+func (d *DiskWarmupCache) tailWindow(path string, fileSize int64) (start, length int64) {
+	if val, ok := d.tailCoverage.Load(path); ok {
+		return val.(*tailRange).windowFor(fileSize)
+	}
+	start = TailStart(fileSize)
+	return start, fileSize - start
+}
+
+// clipToTail maps a write at absoluteOffset onto the window [start, start+length): the
+// offset relative to the window and the part of data inside it, false if none is.
+func clipToTail(data []byte, absoluteOffset, start, length int64) (rel int64, clipped []byte, ok bool) {
+	if absoluteOffset < start {
+		return 0, nil, false
+	}
+	rel = absoluteOffset - start
+	if rel >= length {
+		return 0, nil, false
+	}
+	if rel+int64(len(data)) > length {
+		data = data[:length-rel]
+	}
+	return rel, data, len(data) > 0
+}
+
 // tailRangeFor returns the coverage tracker for path, creating it if absent.
 func (d *DiskWarmupCache) tailRangeFor(path string) *tailRange {
 	if val, ok := d.tailCoverage.Load(path); ok {
@@ -829,23 +896,9 @@ func (d *DiskWarmupCache) WriteTail(hash string, fileID int, data []byte, absolu
 func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absoluteOffset, fileSize int64) {
 	path := d.tailPath(hash, fileID)
 
-	tailStart := fileSize - TailWarmupSize
-	if tailStart < 0 {
-		tailStart = 0
-	}
-	if absoluteOffset < tailStart {
-		return
-	}
-
-	tailLen := fileSize - tailStart
-	relOffset := absoluteOffset - tailStart
-	if relOffset >= tailLen {
-		return
-	}
-	if relOffset+int64(len(data)) > tailLen {
-		data = data[:tailLen-relOffset]
-	}
-	if len(data) == 0 {
+	tailStart, tailLen := d.tailWindow(path, fileSize)
+	relOffset, clipped, ok := clipToTail(data, absoluteOffset, tailStart, tailLen)
+	if !ok {
 		return
 	}
 
@@ -855,7 +908,7 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 	defer d.tailMu.Unlock()
 
 	tr := d.tailRangeFor(path)
-	tr.setWindow(tailLen, fileSize)
+	tr.setWindow(tailStart, tailLen, fileSize)
 	if tr.complete() {
 		return
 	}
@@ -874,8 +927,15 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 		// carry over, in memory or on disk.
 		d.tailCoverage.Delete(path)
 		removeFile(path + coverSuffix)
+		// ...and the new file takes the aligned window, whatever the old one had.
+		tailStart = TailStart(fileSize)
+		tailLen = fileSize - tailStart
+		if relOffset, clipped, ok = clipToTail(data, absoluteOffset, tailStart, tailLen); !ok {
+			_ = f.Close()
+			return
+		}
 		tr = d.tailRangeFor(path)
-		tr.setWindow(tailLen, fileSize)
+		tr.setWindow(tailStart, tailLen, fileSize)
 		tailCh := &cachedHandle{f: f}
 		tailCh.lastUsedNano.Store(time.Now().UnixNano())
 		if old, loaded := d.handles.Swap(path, tailCh); loaded {
@@ -905,7 +965,7 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 	if fi, serr := ch.f.Stat(); serr == nil {
 		prevSize = fi.Size()
 	}
-	n, _ := ch.f.WriteAt(data, relOffset)
+	n, _ := ch.f.WriteAt(clipped, relOffset)
 	if n <= 0 {
 		return
 	}
@@ -920,17 +980,12 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 }
 
 func (d *DiskWarmupCache) ReadTail(hash string, fileID int, buf []byte, absoluteOffset, fileSize int64) (int, error) {
-	tailStart := fileSize - TailWarmupSize
-	if tailStart < 0 {
-		tailStart = 0
-	}
+	path := d.tailPath(hash, fileID)
+	tailStart, tailLen := d.tailWindow(path, fileSize)
 	if absoluteOffset < tailStart {
 		return 0, nil
 	}
-
-	tailLen := fileSize - tailStart
 	relOffset := absoluteOffset - tailStart
-	path := d.tailPath(hash, fileID)
 
 	// Clamp to the tail window: a buffer overhanging EOF still hits if the bytes it can
 	// actually return were written.
@@ -1077,13 +1132,9 @@ func (d *DiskWarmupCache) EnsureTail(hash string, fileID int, fileSize int64) {
 	go func() {
 		defer d.tailFills.Delete(path)
 
-		tailStart := fileSize - TailWarmupSize
-		if tailStart < 0 {
-			tailStart = 0
-		}
-		tailLen := fileSize - tailStart
+		tailStart, tailLen := d.tailWindow(path, fileSize)
 		tr := d.tailRangeFor(path)
-		tr.setWindow(tailLen, fileSize)
+		tr.setWindow(tailStart, tailLen, fileSize)
 
 		started := time.Now()
 		var fetched int64
@@ -1250,14 +1301,18 @@ func (d *DiskWarmupCache) loadCoverage(path string) bool {
 	if json.Unmarshal(raw, &cf) != nil || cf.TailLen <= 0 || cf.TailStart < 0 {
 		return false
 	}
-	if cf.TailLen != TailWarmupSize && !(cf.TailStart == 0 && cf.TailLen < TailWarmupSize) {
+	// The window this build would write for that file size, or the exact one from the
+	// end that earlier builds wrote (a deployment's covers are in that format; they keep
+	// loading and lack only the aligned window's leading page).
+	size := cf.TailStart + cf.TailLen
+	if cf.TailStart != TailStart(size) && !(cf.TailLen == TailWarmupSize && cf.TailStart == legacyTailStart(size)) {
 		return false
 	}
 	fi, err := os.Stat(path)
 	if err != nil {
 		return false
 	}
-	tr := &tailRange{window: cf.TailLen, size: cf.TailStart + cf.TailLen}
+	tr := &tailRange{window: cf.TailLen, start: cf.TailStart, size: size}
 	for _, sp := range cf.Spans {
 		if sp[0] < 0 || sp[1] <= sp[0] || sp[1] > cf.TailLen || sp[1] > fi.Size() {
 			return false
@@ -1313,11 +1368,7 @@ func (d *DiskWarmupCache) fillIndexTail(job tailJob) {
 	if d.TailReady(job.hash, job.fileID) || TailFetch == nil {
 		return
 	}
-	tailStart := job.fileSize - TailWarmupSize
-	if tailStart < 0 {
-		tailStart = 0
-	}
-	tailLen := job.fileSize - tailStart
+	tailStart, tailLen := d.tailWindow(job.path, job.fileSize)
 	if RangeVerified != nil {
 		if RequestPieces != nil {
 			RequestPieces(job.hash, job.fileID, tailStart, tailLen)

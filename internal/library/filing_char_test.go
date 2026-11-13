@@ -1,8 +1,10 @@
 package library
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -875,5 +877,165 @@ func TestListReportsStubsWithTheirParsedFields(t *testing.T) {
 	b, err := json.Marshal(items[0])
 	if err != nil || strings.Contains(string(b), "ModTime") || strings.Contains(strings.ToLower(string(b)), "mod_time") {
 		t.Fatalf("the API output must not change, got %s (err %v)", b, err)
+	}
+}
+
+// ---- matching by the stub's own link ----
+
+// legacyStub writes a stub under dir with the given file name whose link points at hash,
+// as the older tools did: the name carries a tag of the hash, the link the whole of it.
+func (e *charEnv) legacyStub(t *testing.T, path, hash string) string {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteStub(path, e.m.streamURL(hash, 1), 1, "m", ""); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestFindByHashMatchesLegacyStubsOfBothTagsByTheirLink(t *testing.T) {
+	e := newCharEnv(t)
+	// charPackHash: first 8 = 11111111, last 8 = 55555555. Each kind of folder holds
+	// stubs tagged either way, and a name that carries no tag at all.
+	want := []string{
+		e.legacyStub(t, filepath.Join(e.movies, "A_2000_1080p_55555555.mkv"), charPackHash),
+		e.legacyStub(t, filepath.Join(e.movies, "B_2000_1080p_11111111.mkv"), charPackHash),
+		e.legacyStub(t, filepath.Join(e.tv, "Show", "Season.01", "Show_S01E01_1080p_11111111.mkv"), charPackHash),
+		e.legacyStub(t, filepath.Join(e.tv, "Show", "Season.01", "Show_S01E02_1080p_55555555.mkv"), charPackHash),
+		e.legacyStub(t, filepath.Join(e.movies, "C_2000_1080p_untagged.mkv"), strings.ToUpper(charPackHash)),
+	}
+	for _, kind := range []string{"movie", "tv"} {
+		found, err := e.m.findByHash(kind, charPackHash)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, f := range found {
+			got = append(got, f.Path)
+		}
+		var exp []string
+		for _, p := range want {
+			if strings.HasPrefix(p, map[string]string{"movie": e.movies, "tv": e.tv}[kind]) {
+				exp = append(exp, p)
+			}
+		}
+		sort.Strings(got)
+		sort.Strings(exp)
+		if !reflect.DeepEqual(got, exp) {
+			t.Errorf("%s: found %v, want %v", kind, got, exp)
+		}
+	}
+}
+
+func TestRemoveByHashSparesAStubOfAnotherTorrentWhoseNameSharesTheTag(t *testing.T) {
+	e := newCharEnv(t)
+	mine := e.legacyStub(t, filepath.Join(e.movies, "Mine_2000_1080p_55555555.mkv"), charPackHash)
+	// Another torrent whose stub name carries the same eight digits.
+	foreign := e.legacyStub(t, filepath.Join(e.movies, "Foreign_2000_1080p_55555555.mkv"), charOtherHash)
+	foreignEp := e.legacyStub(t, filepath.Join(e.tv, "Show", "Season.01", "Show_S01E01_1080p_11111111.mkv"), charOtherHash)
+
+	resp, err := e.m.Remove(context.Background(), RemoveRequest{Hash: charPackHash})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resp.Removed, []string{mine}) {
+		t.Fatalf("removed = %v, want only %s", resp.Removed, mine)
+	}
+	if !exists(foreign) || !exists(foreignEp) {
+		t.Fatal("a stub of another torrent was deleted on a name match")
+	}
+	if !reflect.DeepEqual(e.eng.removed, []string{charPackHash}) {
+		t.Fatalf("removed torrents = %v, want only the one asked for", e.eng.removed)
+	}
+}
+
+func TestRemoveByHashFindsAStubWhoseNameCarriesTheOtherTag(t *testing.T) {
+	e := newCharEnv(t)
+	movie := e.legacyStub(t, filepath.Join(e.movies, "Old_2000_1080p_11111111.mkv"), charPackHash)
+	ep := e.legacyStub(t, filepath.Join(e.tv, "Show", "Season.01", "Show_S01E01_1080p_55555555.mkv"), charPackHash)
+
+	resp, err := e.m.Remove(context.Background(), RemoveRequest{Hash: strings.ToUpper(charPackHash)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := append([]string(nil), resp.Removed...)
+	sort.Strings(got)
+	want := []string{ep, movie}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("removed = %v, want %v", got, want)
+	}
+}
+
+func TestAlreadyPresentUsesTheStubsLink(t *testing.T) {
+	e := newCharEnv(t)
+	// A movie stub of this torrent under a name that carries neither tag of it.
+	mine := e.legacyStub(t, filepath.Join(e.movies, "Mine_2000_1080p_cafe0000.mkv"), charPackHash)
+	// A stub of another torrent that carries this torrent's last eight digits.
+	e.legacyStub(t, filepath.Join(e.movies, "Foreign_2000_1080p_55555555.mkv"), charOtherHash)
+
+	found, err := e.m.alreadyPresent("movie", charPackHash, AddRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Path != mine {
+		t.Fatalf("movie already present = %+v, want only %s", found, mine)
+	}
+
+	// A single episode: the stub at the expected path belongs to another torrent.
+	req := AddRequest{Type: "tv", Title: "Show", Season: 1, Episode: 1}
+	path := filepath.Join(e.tv, ShowFolderName(req.Title, req.FirstAirDate), "Season.01",
+		EpisodeFilename(req.Title, 1, 1, HashPrefix(charPackHash)))
+	e.legacyStub(t, path, charOtherHash)
+	found, err = e.m.alreadyPresent("tv", charPackHash, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 0 {
+		t.Fatalf("episode already present = %+v, want none: the stub links to another torrent", found)
+	}
+	e.legacyStub(t, path, charPackHash)
+	if found, err = e.m.alreadyPresent("tv", charPackHash, req); err != nil || len(found) != 1 {
+		t.Fatalf("episode already present = %+v, %v, want the stub of this torrent", found, err)
+	}
+}
+
+func TestDropTorrentIfUnusedChecksReferencesByLink(t *testing.T) {
+	// A stub of another torrent that shares the name tag does not keep this one.
+	e := newCharEnv(t)
+	e.legacyStub(t, filepath.Join(e.movies, "Foreign_2000_1080p_55555555.mkv"), charOtherHash)
+	if !e.m.dropTorrentIfUnused(context.Background(), charPackHash) {
+		t.Fatal("torrent kept alive by a stub of another torrent")
+	}
+
+	// A legacy stub that links to it under any name does.
+	e = newCharEnv(t)
+	e.legacyStub(t, filepath.Join(e.movies, "Mine_2000_1080p_cafe0000.mkv"), charPackHash)
+	if e.m.dropTorrentIfUnused(context.Background(), charPackHash) || len(e.eng.removed) != 0 {
+		t.Fatalf("torrent dropped while a stub links to it: %v", e.eng.removed)
+	}
+}
+
+func TestFindByHashSkipsAMalformedStubAndLogsOnce(t *testing.T) {
+	e := newCharEnv(t)
+	var buf bytes.Buffer
+	e.m.cfg.Logger = log.New(&buf, "", 0)
+	good := e.legacyStub(t, filepath.Join(e.movies, "Good_2000_1080p_55555555.mkv"), charPackHash)
+	for _, name := range []string{"Bad1_2000_1080p_55555555.mkv", "Bad2_2000_1080p_55555555.mkv"} {
+		if err := os.WriteFile(filepath.Join(e.movies, name), []byte("{ not json"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	found, err := e.m.findByHash("movie", charPackHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Path != good {
+		t.Fatalf("found = %+v, want only the good stub", found)
+	}
+	if n := strings.Count(buf.String(), "\n"); n != 1 || !strings.Contains(buf.String(), "skipped 2 stub(s)") {
+		t.Fatalf("log = %q, want one line naming 2 skipped stubs", buf.String())
 	}
 }
