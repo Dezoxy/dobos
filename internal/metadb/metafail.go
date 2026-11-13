@@ -29,6 +29,26 @@ func (d *DB) RecordMetadataFailure(hash, reason, source string, at time.Time) er
 	return err
 }
 
+// RecordNotStored notes that a wake was refused because the engine keeps no record of
+// the torrent. It is not a failed swarm read: fail_count and first_fail stay as they
+// are (a row it inserts has both 0), so no streak starts and no dead-swarm threshold
+// is ever reached by it. Only the last failure's time, reason and source are set, so
+// the record says why the torrent is not readable.
+func (d *DB) RecordNotStored(hash, source string, at time.Time) error {
+	_, err := d.db.Exec(`
+		INSERT INTO metadata_failures (hash, fail_count, first_fail, last_fail, last_fail_reason, last_fail_source)
+		VALUES (?, 0, 0, ?, ?, ?)
+		ON CONFLICT(hash) DO UPDATE SET
+			last_fail        = excluded.last_fail,
+			last_fail_reason = excluded.last_fail_reason,
+			last_fail_source = excluded.last_fail_source`,
+		strings.ToLower(hash), at.Unix(), NotStoredReason, source)
+	return err
+}
+
+// NotStoredReason is the last_fail_reason RecordNotStored writes.
+const NotStoredReason = "not_stored"
+
 // RecordSwarmRead notes that the swarm served a read: the streak ends and the time
 // is stamped. The row is kept (inserted when absent) so the time survives; the last
 // failure, its reason and its source stay as history.

@@ -604,6 +604,40 @@ func TestRemovalStopsTheFillRecordsNothingAndWakesNothing(t *testing.T) {
 	e.until("the new add", func() bool { return e.nRecs() == 1 })
 }
 
+// Removals that come in a burst (a library clean-out) each stop their own running fill:
+// every fill ends, nothing is recorded or woken for them, and each hash is cleaned up.
+func TestManyRemovalsStopManyRunningFills(t *testing.T) {
+	const n = 8
+	e := newEnv(t, func(d *Deps) { d.Workers = n })
+	e.set(func() {
+		e.live = false
+		e.fill = func(_ int, req warmup.FillRequest) (warmup.FillResult, error) { return stoppable(req) }
+	})
+	hashes := make([]string, n)
+	for i := range hashes {
+		hashes[i] = strings.Repeat(string(rune('a'+i)), 2)
+		e.w.Add(hashes[i], []File{f(1), f(2)})
+	}
+	e.until("every fill to start", func() bool { return e.nFills() == n })
+	wakes := e.nWakes()
+
+	var wg sync.WaitGroup
+	for _, h := range hashes {
+		wg.Add(1)
+		go func() { defer wg.Done(); e.w.Cancel(h) }()
+	}
+	wg.Wait()
+
+	e.until("every hash cleaned up", func() bool { e.mu.Lock(); defer e.mu.Unlock(); return len(e.removed) == n })
+	e.quiet(n, 0)
+	if e.nWakes() != wakes {
+		t.Fatalf("woke %d times after the removals, want none", e.nWakes()-wakes)
+	}
+	if got := e.w.Stats().QueueFiles; got != 0 {
+		t.Fatalf("queue = %d after the removals", got)
+	}
+}
+
 func TestRemovalDuringTheWakeStopsBeforeAndAfterIt(t *testing.T) {
 	e := newEnv(t, func(d *Deps) { d.Workers = 1 })
 	entered, release := make(chan struct{}), make(chan struct{})

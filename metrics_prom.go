@@ -215,6 +215,9 @@ func collectPlaybackProm(w *promtext.Writer) {
 		"Closed torrents a read on an open handle woke again. confirmed as in flodni_torrent_idle_closes_total.",
 		promSample(keepaliveCounters.reopens[1].Load(), lbl("confirmed", "true")),
 		promSample(keepaliveCounters.reopens[0].Load(), lbl("confirmed", "false")))
+	w.Counter("flodni_wake_refused_total",
+		"Wakes the engine refused because it keeps no record of the torrent: one per handle at a read, one per open. Not a failed read and not a dead swarm; 0 from start.",
+		promSample(wakeRefusedCount.Load()))
 	w.Counter("flodni_read_stalls_total",
 		"Served reads that took longer than one second. Failed reads are not counted. confirmed as in flodni_torrent_idle_closes_total.",
 		promSample(keepaliveCounters.stalls[1].Load(), lbl("confirmed", "true")),

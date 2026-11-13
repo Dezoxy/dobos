@@ -59,6 +59,7 @@ type fakeEngine struct {
 	aheads  []aheadCall
 	readers []*fakeReader
 	woke    []string
+	wakeFn  func(ctx context.Context, magnet string, fileIdx int) error // scripts Wake's answer; nil = success
 
 	blockFn func(i int, off int64, p []byte) (int, error)
 	aheadFn func(i int, off int64, buf, dest []byte, onFill func(int, bool, error)) (int, error)
@@ -112,11 +113,21 @@ func (f *fakeEngine) NewStreamReader(string, int, int64) streamReader {
 	return r
 }
 
-func (f *fakeEngine) Wake(_ context.Context, magnet string, _ int) error {
+func (f *fakeEngine) Wake(ctx context.Context, magnet string, fileIdx int) error {
 	f.mu.Lock()
 	f.woke = append(f.woke, magnet)
+	fn := f.wakeFn
 	f.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, magnet, fileIdx)
+	}
 	return nil
+}
+
+func (f *fakeEngine) wakeCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.woke)
 }
 
 func (f *fakeEngine) ListTorrents() ([]native.TorrentStats, error) { return f.torrents, nil }

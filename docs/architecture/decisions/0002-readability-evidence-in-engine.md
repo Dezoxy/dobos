@@ -110,6 +110,9 @@ a read gave up, the swarm served nothing and the session lasted at least
 `sessionVerdictFloor` (25 s). A read Flodni refuses on purpose is not a
 failure: a budget refusal never counts as a failed read, as a cancelled
 read and a full read slot do not count today.
+A wake the engine refuses because it keeps no record of the torrent is not a
+failure either: it is recorded as the reason `not_stored`, without touching the
+failure count, and never becomes a verdict.
 
 **Defaults.** Warming and budget enforcement are off by default:
 

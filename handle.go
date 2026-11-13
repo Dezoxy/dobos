@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flodni/internal/gostorm/native"
 	"flodni/internal/gostorm/torr"
 	torrstor "flodni/internal/gostorm/torr/storage/torrstor"
 	"flodni/internal/gostorm/web"
@@ -75,6 +77,7 @@ type MkvHandle struct {
 	isPrimaryHandle atomic.Bool  // pump creator, primary reconnects (refCount 0→1), proven readers
 	seqAdvances     atomic.Int32 // consecutive sequential streaming reads, feeds the promotion below
 	budgetHold      budgetHold   // reader budget: this handle's wait for a webhook (reader_budget.go)
+	wakeRefused     atomic.Bool  // the engine refused to wake this handle's torrent: every read answers EIO
 }
 
 // Compile-time interface checks for MkvHandle
@@ -98,7 +101,7 @@ var readInnerCall = (*MkvHandle).readInner
 // cache, so the read is retried instead of a hole being made permanent.
 func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
 	res, errno := readInnerCall(h, fuseCtx, dest, off)
-	if errno == errnoBudgetRefused {
+	if errno == errnoBudgetRefused || errno == errnoWakeRefused {
 		return nil, syscall.EIO // before the failure accounting below: not the swarm failing
 	}
 	if errno != 0 || res == nil {
@@ -123,7 +126,7 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 			break // a blocked FUSE read puts smbd in D-state; bail out rather than hang
 		}
 		sub, subErrno := readInnerCall(h, fuseCtx, dest[total:], off+int64(total))
-		if subErrno == errnoBudgetRefused {
+		if subErrno == errnoBudgetRefused || subErrno == errnoWakeRefused {
 			return nil, syscall.EIO // a refused sub-read is not an unfillable gap: no repair accounting
 		}
 		if subErrno == syscall.EINTR && fuseCtx.Err() != nil {
@@ -187,6 +190,12 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 
 	if off >= h.size {
 		return fuse.ReadResultData(nil), 0
+	}
+
+	// The engine refused to wake this torrent: it is not stored, and asking again
+	// would not change that. Read maps this to EIO; the handle must be reopened.
+	if h.wakeRefused.Load() {
+		return nil, errnoWakeRefused
 	}
 
 	h.mu.Lock()
@@ -718,7 +727,22 @@ pumpSlotResolved:
 
 	if h.hash != "" {
 		if woke, err := rewake(fuseCtx, h.hash, h.magnet, h.fileID, torrentLive, h.wake); err != nil {
+			if errors.Is(err, native.ErrNotStored) {
+				// Not the swarm failing: no fetch follows, no failed read is marked and
+				// no dead-swarm verdict can come of it. Latched so a second read makes
+				// no engine call.
+				if h.wakeRefused.CompareAndSwap(false, true) {
+					noteWakeRefused(h.path, h.hash, "read")
+				}
+				return nil, errnoWakeRefused
+			}
 			logger.Printf("[VFS] Re-activation failed for %s: %v", filepath.Base(h.path), err)
+			if !torrentLive(h.hash) {
+				// The wake is stored-only now, so a failed one (engine busy, not
+				// connected) says nothing about the swarm: no fetches, no failed-read
+				// mark, no dead-swarm verdict.
+				return nil, syscall.EIO
+			}
 		} else if woke {
 			countReopen(h.path, h.hash)
 			logger.Printf("[VFS] Re-activated %s after the engine closed it as idle", filepath.Base(h.path))
