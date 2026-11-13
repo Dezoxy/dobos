@@ -198,6 +198,14 @@ type TTFFSession struct {
 	callerPid        atomic.Uint32 // the latest Open's caller, from the FUSE context
 	callerUID        atomic.Uint32
 
+	// budgetFloor is the tally when a webhook last confirmed the file: refusal counts
+	// from there, so a stopped play does not leave the next reader pre-spent.
+	// refusedReads is how many reads the gate refused; confirmedAfterRefusal makes the
+	// confirmed-after-refusal counter once per session.
+	budgetFloor           atomic.Int64
+	refusedReads          atomic.Int64
+	confirmedAfterRefusal atomic.Bool
+
 	closeOnce sync.Once
 	closed    atomic.Bool
 }
