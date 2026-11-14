@@ -113,7 +113,8 @@ func quarantineCorruptSettings(jsonDB GoStormDB) bool {
 		log.TLogln("Settings file is corrupt and could not be set aside:", err)
 		return false
 	}
-	log.TLogln("Settings file was corrupt, moved to", dest, "- restoring from the BBolt copy or defaults")
+	SettingsQuarantined.Store(true)
+	log.TLogln(settingsCorruptMsg, dest, "- restoring from the BBolt copy or defaults")
 	return true
 }
 
@@ -190,7 +191,10 @@ func safeMigrate(source, target GoStormDB, xpath, name, targetName string, clear
 	}
 
 	if migrated {
-		log.TLogln(fmt.Sprintf("Successfully migrated %s/%s to %s", xpath, name, targetName))
+		log.TLogln(fmt.Sprintf(settingsMigratedFmt, xpath, name, targetName))
+		if xpath == "Settings" {
+			SettingsMigrated.Store(true)
+		}
 		// Clear source if requested
 		if clearSource && source.Get(xpath, name) != nil {
 			source.Rem(xpath, name)

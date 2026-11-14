@@ -64,6 +64,8 @@ for dir in "$ROOT_PATH" "$STATE_DIR"; do
     "$ROOT_PATH"|"$ROOT_PATH"/*) [ "$dir" = "$ROOT_PATH" ] || continue ;;
   esac
   if ! path_is_persistent "$dir"; then
+    # The daemon reports it as an alarm in GET /api/startup.
+    export FLODNI_STATE_UNMOUNTED=1
     echo "===============================================================" >&2
     echo "WARNING: $dir is NOT on a mounted volume." >&2
     echo "" >&2

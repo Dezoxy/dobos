@@ -54,6 +54,13 @@ import (
 // Note: Configuration is now handled entirely by config.go via globalConfig
 // Constants removed to ensure single source of truth
 
+// Startup log lines operators grep for; tests pin them.
+const (
+	stateDBActiveFmt     = "[StateDB] Active: %s"
+	stateDBOpenFailedFmt = "WARNING: Failed to open StateDB: %v (falling back to JSON)"
+	fuseMountedFmt       = "FUSE mounted at %s with VirtualMkvRoot, all systems active"
+)
+
 var logger = log.New(os.Stdout, "[GoProxy] ", log.LstdFlags)
 
 // masterDataSemaphore limits concurrent data operations (Native, HTTP, Prefetch).
@@ -83,6 +90,10 @@ func gc() *config.Config { return globalConfig.Load() }
 func GetEffectiveConcurrencyLimit() int {
 	return gc().MasterConcurrencyLimit
 }
+
+// controlToken is the bearer token the control server enforces, fixed at start-up.
+// Empty means the port is open. Never read gc().APIToken to decide that.
+var controlToken string
 
 var tailFillTargets sync.Map // path -> tailFillTarget
 
@@ -248,9 +259,12 @@ func Run() {
 	// The mounted paths are the only paths: the library writes stubs under
 	// PhysicalSourcePath, so it must be the one FUSE serves.
 	effCfg := *gc()
-	for _, w := range applyEffectivePaths(&effCfg, source, mount) {
+	pathWarnings := applyEffectivePaths(&effCfg, source, mount)
+	for _, w := range pathWarnings {
 		logger.Printf("WARNING: %s", w)
 	}
+	startupRep.logf = logger.Printf
+	startupRep.noteConfigLoad(pathWarnings)
 	globalConfig.Store(&effCfg)
 
 	gc().LogConfig(logger)
@@ -284,6 +298,7 @@ func Run() {
 	// torrent's records are forgotten.
 	addWarmer = warmer.New(addWarmerDeps(fileStates, backgroundStopChan))
 	warmup.OnHashRemoved = onHashRemoved(addWarmer, fileStates)
+	warmup.SetEvictionOrder(gc().WarmupEvictionOrder) // "written" unless the owner opted in
 	warmup.InitDiskWarmup(warmup.Options{
 		QuotaGB: gc().DiskWarmupQuotaGB,
 		Dir:     gc().WarmupDir,
@@ -367,18 +382,23 @@ func Run() {
 		if dbPath == "" {
 			dbPath = filepath.Join(GetStateDir(), "tiramisu.db")
 		}
+		startupRep.note(func(f *startupFacts) { f.stateDBEnabled, f.stateDBPath = true, dbPath })
 		var err error
 		stateDB, err = metadb.New(dbPath, logger)
 		if err != nil {
-			logger.Printf("WARNING: Failed to open StateDB: %v (falling back to JSON)", err)
+			logger.Printf(stateDBOpenFailedFmt, err)
 			stateDB = nil
+			startupRep.note(func(f *startupFacts) { f.stateDBOpenFailed, f.stateDBMigration = true, migrationFailed })
 		} else {
 			// Migrate JSON files if needed
 			if err := stateDB.MigrateFromJSON(GetStateDir()); err != nil {
 				logger.Printf("WARNING: StateDB migration failed: %v (falling back to JSON)", err)
 				_ = stateDB.Close() // already falling back to JSON
 				stateDB = nil
+				startupRep.note(func(f *startupFacts) { f.stateDBMigration = migrationFailed })
 			} else {
+				migration := stateDB.MigrationResult()
+				startupRep.note(func(f *startupFacts) { f.stateDBMigration = migration })
 				// Wire up DB to InodeMap, then reload from DB (covers boot 2+ where JSON is gone)
 				globalInodeMap.SetDB(stateDB)
 				if err := globalInodeMap.LoadFromDisk(); err != nil {
@@ -398,7 +418,7 @@ func Run() {
 				// V750: Restore playback states from previous sessions
 				restorePlaybackStates(stateDB)
 				registry.SetStateDir(GetStateDir())
-				logger.Printf("[StateDB] Active: %s", dbPath)
+				logger.Printf(stateDBActiveFmt, dbPath)
 
 				// V304 ban persistence: restore prior bans (30-day TTL) and persist new ones.
 				if ips, err := stateDB.LoadV304Bans(30 * 24 * time.Hour); err != nil {
@@ -424,8 +444,16 @@ func Run() {
 
 	startWebhookStatus(webhookStatus, backgroundStopChan)
 	startSwarmSnapshot(engineSwarmSource, backgroundStopChan, logger)
+	if net, err := torr.ScrapeNetwork(); err != nil {
+		// Fail closed: with a proxy that cannot be used, a scrape would leave from the real address.
+		logger.Printf("[Scrape] tracker scrape not started: %v", err)
+	} else {
+		startTrackerScraper(gc(), storedScrapeTargets, torr.ScrapeReady, net, backgroundStopChan, logger)
+	}
 
 	finishGlobalInodeMapInit(logger)
+	loadedFiles, _, _, _ := GetInodeMapStats()
+	startupRep.note(func(f *startupFacts) { f.inodeFilesLoaded = int(loadedFiles) })
 
 	// The dir cache must exist before the startup builder runs: a nil cache there
 	// is a panic in a bare goroutine that would kill the process before mount.
@@ -433,6 +461,7 @@ func Run() {
 
 	// Pre-populate cache at startup to improve Plex scan performance.
 	cacheBuilder := NewStartupCacheBuilder(source, metaCache, logger)
+	cacheBuilder.onDone = startupRep.markScanned
 	cacheBuilder.Start()
 
 	globalCleanupManager = NewCleanupManager(logger, metaCache, nativeBridge)
@@ -549,7 +578,10 @@ func Run() {
 		healthStore = stateDB
 	}
 	mux.HandleFunc("/api/torrents/health", newTorrentsHealthHandler(healthStore, fileStates.WarmSnapshot, logger))
+	mux.HandleFunc("/api/torrents/scrape", handleScrapeTrigger)
+	mux.HandleFunc("/api/torrents/scrape/status", handleScrapeStatus)
 	mux.HandleFunc("/api/health", newHealthChecks().handler)
+	mux.HandleFunc("/api/startup", startupRep.handler)
 	mux.HandleFunc("/api/warmup/evict", newWarmupEvictHandler(evictWarmupTo))
 
 	mux.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
@@ -668,6 +700,10 @@ func Run() {
 	// torrent, wait for its file list, write the stub. It exists so an agent that has
 	// no access to the filesystem can still file a title into the library.
 	{
+		// One token for both the bearer gate and the routes that fail closed without
+		// one: read once here, because the middleware enforces the start-up value and a
+		// later POST /api/config must not make the two disagree.
+		controlToken = gc().APIToken
 		var registry library.EpisodeRegistry
 		if stateDB != nil {
 			registry = stateDB
@@ -679,6 +715,9 @@ func Run() {
 			GoStorm:        library.NewGoStormClient(gc().GoStormBaseURL, gc().APIToken),
 			Registry:       registry,
 			StoredFiles:    func(hash string) []library.TorrentFile { return storedFileList(hash) },
+			FileState:      libraryFileFacts,
+			Confirm:        confirmPlayByHand,
+			TokenSet:       apiTokenSet,
 			InvalidatePath: invalidateSyncRemovedPath,
 			// Read-only view of the holes the reaper left, for a client that can decide
 			// what to do about them.
@@ -729,12 +768,16 @@ func Run() {
 		}
 		// Catch-up (idle unless warm_on_add is on): warms the titles already filed.
 		startCatchup(libMgr)
+		// Next episode (idle unless warm_next_episode is on): see warm_next.go.
+		startWarmNext(libMgr)
 		libHandler := library.NewHandler(libMgr)
 		mux.HandleFunc("/api/library/add", libHandler.Add)
 		mux.HandleFunc("/api/library/remove", libHandler.Remove)
 		mux.HandleFunc("/api/library/list", libHandler.List)
 		mux.HandleFunc("/api/library/inspect", libHandler.Inspect)
 		mux.HandleFunc("/api/library/audit", libHandler.Audit)
+		mux.HandleFunc("/api/library/file", libHandler.File)
+		mux.HandleFunc("/api/library/confirm", libHandler.Confirm)
 	}
 
 	// Control server: metrics, dashboard API and the library API.
@@ -754,7 +797,7 @@ func Run() {
 	}
 	controlSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", gc().MetricsPort),
-		Handler:           apiauth.Middleware(gc().APIToken, logger, mux),
+		Handler:           apiauth.Middleware(controlToken, logger, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      600 * time.Second,
@@ -855,7 +898,8 @@ func Run() {
 		log.Fatal(err)
 	}
 
-	logger.Printf("FUSE mounted at %s with VirtualMkvRoot, all systems active", mount)
+	logger.Printf(fuseMountedFmt, mount)
+	startupRep.markMounted(mount)
 
 	go ttffCleanupLoop()
 

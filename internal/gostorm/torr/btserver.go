@@ -205,13 +205,16 @@ func (bt *BTServer) Disconnect() {
 	}
 }
 
+// trackerUserAgent is what the engine sends to HTTP trackers; the scrape sends the same.
+const trackerUserAgent = "qBittorrent/5.0.3"
+
 func (bt *BTServer) configure(ctx context.Context) {
 	bt.config = torrent.NewDefaultClientConfig()
 
 	bt.storage = torrstor.NewStorage(settings.BTsets.CacheSize)
 	bt.config.DefaultStorage = bt.storage
 
-	userAgent := "qBittorrent/5.0.3"
+	userAgent := trackerUserAgent
 	peerID := "-qB5030-"
 	upnpID := "GoStorm/" + version.Version
 	cliVers := userAgent
