@@ -506,9 +506,11 @@ against a real tracker.
 - **Secrets.** Announce URLs carry a passkey. No log line, health field,
   status field or metric holds an announce or scrape URL, a path or a query;
   they name the host only, and text a tracker sends back has every token of
-  the announce URL (case-insensitively, longest first, and the first and last 8 characters of a long one) replaced by `***` and is cut to 80 characters.
+  the announce URL (case-insensitively, longest first, and the first and last
+  8 characters of a long one) replaced by `***` and is cut to 80 characters.
 - **Metrics.** `flodni_tracker_scrapes_total{result}` (`ok`, `error`,
-  `skipped`, counted per torrent and tracker; a hash a tracker omitted counts as `error`), `flodni_torrents_by_seeders{bucket}`
+  `skipped`, counted per torrent and tracker; a hash a tracker omitted
+  counts as `error`), `flodni_torrents_by_seeders{bucket}`
   (`0`, `1-2`, `3+`, torrents with numbers only),
   `flodni_tracker_scrape_pass_running` (0 or 1) and
   `flodni_tracker_scrape_last_pass_finished_timestamp_seconds` (absent before
