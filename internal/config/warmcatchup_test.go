@@ -131,3 +131,39 @@ func TestConfigExampleCarriesTheCatchupScope(t *testing.T) {
 		t.Fatal(`config.json.example must carry "warm_catchup_scope": "all"`)
 	}
 }
+
+// warmup_eviction_order (roadmap step 22): "written" by default, "read" the opt-in, and an
+// unknown value falls back to "written".
+
+func TestWarmupEvictionOrderDefaultsToWritten(t *testing.T) {
+	if got := LoadConfig().WarmupEvictionOrder; got != "written" {
+		t.Fatalf("warmup_eviction_order = %q, want written", got)
+	}
+	if got := loadWith(t, `{"disk_warmup_quota_gb": 5}`).WarmupEvictionOrder; got != "written" {
+		t.Fatalf("an absent key became %q", got)
+	}
+}
+
+func TestWarmupEvictionOrderAcceptsReadAndRefusesTheRest(t *testing.T) {
+	if got := loadWith(t, `{"warmup_eviction_order": "read"}`).WarmupEvictionOrder; got != "read" {
+		t.Fatalf("read became %q", got)
+	}
+	for _, bad := range []string{"Read", "lru", "", " read"} {
+		if got := loadWith(t, `{"warmup_eviction_order": "`+bad+`"}`).WarmupEvictionOrder; got != "written" {
+			t.Fatalf("%q became %q, want written", bad, got)
+		}
+	}
+}
+
+// warm_next_episode (roadmap step 23) and its same-torrent switch are off by default.
+
+func TestWarmNextEpisodeIsOffByDefault(t *testing.T) {
+	c := LoadConfig()
+	if c.WarmNextEpisode || c.WarmNextEpisodeSameTorrent {
+		t.Fatalf("warm_next_episode = %v, same_torrent = %v, want both false", c.WarmNextEpisode, c.WarmNextEpisodeSameTorrent)
+	}
+	c = loadWith(t, `{"warm_next_episode": true, "warm_next_episode_same_torrent": true}`)
+	if !c.WarmNextEpisode || !c.WarmNextEpisodeSameTorrent {
+		t.Fatalf("explicit true became %v / %v", c.WarmNextEpisode, c.WarmNextEpisodeSameTorrent)
+	}
+}

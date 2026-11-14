@@ -36,6 +36,43 @@ const (
 	EvictNone
 )
 
+// Eviction orders (warmup_eviction_order). Both take files never played first; they
+// differ in how the files of one class rank.
+const (
+	// EvictOrderWritten ranks a class by the newer of a file's two write times, oldest
+	// first. The default.
+	EvictOrderWritten = "written"
+	// EvictOrderRead ranks a class by the file's last cache hit, least recently read
+	// first. The hit time is kept in memory only; a file not read since the process
+	// started ranks by its write time. Opt-in (roadmap step 22).
+	EvictOrderRead = "read"
+)
+
+var evictByRead atomic.Bool
+
+// SetEvictionOrder selects the order inside each class: EvictOrderRead, or anything
+// else for EvictOrderWritten. Read at each quota walk, so it takes effect at once.
+func SetEvictionOrder(order string) { evictByRead.Store(order == EvictOrderRead) }
+
+// noteRead stamps a cache hit. It does nothing, and costs one atomic load, unless the
+// "read" order is on, so the default order pays nothing on the read path.
+func (d *DiskWarmupCache) noteRead(hash string, fileID int) {
+	if !evictByRead.Load() {
+		return
+	}
+	k := FileKey{Hash: hash, FileIdx: fileID}
+	now := time.Now().UnixNano()
+	if v, ok := d.lastRead.Load(k); ok {
+		v.(*atomic.Int64).Store(now)
+		return
+	}
+	n := new(atomic.Int64)
+	n.Store(now)
+	if v, loaded := d.lastRead.LoadOrStore(k, n); loaded {
+		v.(*atomic.Int64).Store(now)
+	}
+}
+
 // TriggerHeadCreate is the trigger of an eviction made to make room for a new head file.
 const TriggerHeadCreate = "head_create"
 
@@ -115,6 +152,7 @@ type evictUnit struct {
 	headBytes int64
 	tailBytes int64
 	newest    time.Time
+	rank      time.Time // what a class is sorted by: newest, or a later cache hit with the "read" order
 	played    bool
 }
 
@@ -138,7 +176,8 @@ func splitCacheName(stem string) FileKey {
 // with reportEvictions once it has released it.
 //
 // A victim is a whole media file, head and tail together. Files never played go first,
-// then played files, each class oldest first by the newer of its two windows. The file
+// then played files, each class oldest first by the newer of its two windows (or, with
+// the "read" order, least recently read first, see SetEvictionOrder). The file
 // in opts.exclude is never a victim. The verdict follows the disk walk, which also
 // resyncs totalSize.
 // maxEvictFailures is how many units one quota check may fail to remove before it gives
@@ -204,7 +243,18 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 
 	var victims []*evictUnit
 	var neverPlayedBytes int64
+	byRead := evictByRead.Load()
 	for _, u := range units {
+		u.rank = u.newest
+		if byRead {
+			// No lock is taken for this: lastRead is a sync.Map, so the quota walk's
+			// order (d.mu, then tailMu) is untouched.
+			if v, ok := d.lastRead.Load(u.key); ok {
+				if t := time.Unix(0, v.(*atomic.Int64).Load()); t.After(u.rank) {
+					u.rank = t
+				}
+			}
+		}
 		if u.key == opts.exclude || (opts.protect != nil && u.key.FileIdx >= 0 && opts.protect(u.key)) {
 			continue
 		}
@@ -226,8 +276,8 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 		if a.played != b.played {
 			return !a.played
 		}
-		if !a.newest.Equal(b.newest) {
-			return a.newest.Before(b.newest)
+		if !a.rank.Equal(b.rank) {
+			return a.rank.Before(b.rank)
 		}
 		return a.key.Hash+"-"+strconv.Itoa(a.key.FileIdx) < b.key.Hash+"-"+strconv.Itoa(b.key.FileIdx)
 	})
@@ -268,6 +318,9 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 			}
 		}
 		diskTotal -= headGone + tailGone
+		if allGone {
+			d.lastRead.Delete(u.key)
+		}
 		if headGone+tailGone > 0 {
 			// Reported with the bytes actually removed: a head gone with its tail stuck
 			// is still an eviction of that head.
