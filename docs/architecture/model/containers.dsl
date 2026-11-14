@@ -4,7 +4,7 @@
 
 flodni = softwareSystem "Flodni" "Presents torrents as ordinary media files and streams their bytes on demand, without downloading whole files to disk." {
 
-    daemon = container "Flodni Daemon" "Single Go binary: mounts the virtual library, runs the torrent engine and serves the control API." "Go 1.26, cgo FUSE" "Layer Runtime" {
+    daemon = container "Flodni Daemon" "Single Go binary: mounts the virtual library, runs the torrent engine and serves the control API." "Go 1.27, cgo FUSE" "Layer Runtime" {
         vfs = component "Virtual Filesystem" "Serves reads on stub files by asking the engine for the byte range. internal/vfs." "Go, libfuse3" "Layer Runtime"
         engine = component "Torrent Engine" "GoStorm on a vendored anacrolix/torrent: sessions, piece priority, read-ahead and the piece cache. Its HTTP server on port 8090 takes the same optional bearer token. internal/gostorm." "Go" "Layer Runtime"
         library = component "Library Manager" "Turns a torrent into named stub files, and replaces or removes them. internal/library." "Go" "Layer Runtime"
