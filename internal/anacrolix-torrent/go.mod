@@ -3,7 +3,6 @@ module github.com/anacrolix/torrent
 go 1.26.0
 
 require (
-	github.com/RoaringBitmap/roaring v1.9.4
 	github.com/RoaringBitmap/roaring/v2 v2.30.0
 	github.com/ajwerner/btree v0.3.0
 	github.com/alexflint/go-arg v1.6.1
@@ -16,7 +15,7 @@ require (
 	github.com/anacrolix/log v0.17.0
 	github.com/anacrolix/missinggo v1.3.0
 	github.com/anacrolix/missinggo/perf v1.0.0
-	github.com/anacrolix/missinggo/v2 v2.10.0
+	github.com/anacrolix/missinggo/v2 v2.11.0
 	github.com/anacrolix/multiless v0.4.0
 	github.com/anacrolix/possum/go v0.4.0
 	github.com/anacrolix/squirrel v0.6.4
@@ -55,11 +54,9 @@ require (
 	github.com/bradfitz/iter v0.0.0-20191230175014-e8f45d346db8 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/felixge/fgprof v0.9.5 // indirect
-	github.com/glycerine/go-unsnap-stream v0.0.0-20190901134440-81cf024a9e0a // indirect
 	github.com/go-llsqlite/crawshaw v0.4.0 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
-	github.com/golang/snappy v0.0.1 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/pprof v0.0.0-20240227163752-401108e1b7e7 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -68,7 +65,6 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-isatty v0.0.16 // indirect
 	github.com/mschoch/smat v0.2.0 // indirect
-	github.com/philhofer/fwd v1.0.0 // indirect
 	github.com/pion/dtls/v2 v2.2.12 // indirect
 	github.com/pion/ice/v2 v2.3.38 // indirect
 	github.com/pion/interceptor v0.1.29 // indirect
@@ -87,8 +83,6 @@ require (
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/rs/dnscache v0.0.0-20211102005908-e0241e321417 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
-	github.com/tinylib/msgp v1.1.2 // indirect
-	github.com/willf/bitset v1.1.10 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
