@@ -6,3 +6,6 @@ f69b768a325f2f3222cb4a223e9557c784ee7c1e:internal/library/audio_test.go:generic-
 # theirs to rotate. Rewriting upstream history in the fork would break every later sync.
 8d5bb22e447144bac32d61542a2a2cefb1b4fb5e:scripts/prowlarr_client.py:generic-api-key:18
 5d51de693a406b2a3d92dfcf37e958b0610464d3:scripts/prowlarr_client.py:generic-api-key:14
+# Fake fixtures in the tracker scrape tests, replaced by low-entropy values
+80c81733f303eec2ba7a0e3ede21bedca853e066:internal/daemon/tracker_scrape_test.go:generic-api-key:334
+80c81733f303eec2ba7a0e3ede21bedca853e066:internal/scrape/scraper_test.go:generic-api-key:468
