@@ -803,12 +803,14 @@ func (d *DiskWarmupCache) writeHeadLocked(path string, off int64, data []byte) (
 	return
 }
 
+// filePath and tailPath keep every cache path inside d.dir: a hash is hex, and Base strips
+// any directory part a caller-supplied hash could carry ("../x" stays a name in d.dir).
 func (d *DiskWarmupCache) filePath(hash string, fileID int) string {
-	return filepath.Join(d.dir, hash+"-"+strconv.Itoa(fileID)+warmupSuffix)
+	return filepath.Join(d.dir, filepath.Base(hash+"-"+strconv.Itoa(fileID)+warmupSuffix))
 }
 
 func (d *DiskWarmupCache) tailPath(hash string, fileID int) string {
-	return filepath.Join(d.dir, hash+"-"+strconv.Itoa(fileID)+tailSuffix)
+	return filepath.Join(d.dir, filepath.Base(hash+"-"+strconv.Itoa(fileID)+tailSuffix))
 }
 
 // GetAvailableRange returns the contiguous bytes cached from offset 0. Callers treat the
