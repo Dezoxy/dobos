@@ -71,6 +71,27 @@ After a run, build and fix what the compiler reports, then run the tests.
 The receivers it treats as a logger are in `recvRE` in `main.go`; a new
 logger variable with another name needs a line there.
 
+## Hand edits after the tool
+
+What the first conversion needed by hand, so a rerun on a newer tree can
+repeat it (the compiler finds each one):
+
+- `internal/metadb/db.go` and `internal/vfs/inodemap.go`: the `Logger`
+  interface becomes `*slog.Logger` (nil means discard); `vfs.loggerWrapper`
+  and `daemon.vfsLogger` go away.
+- `internal/daemon/main.go`: `log.Fatal(err)` after the FUSE mount becomes an
+  `Error` line and `os.Exit(1)`; `applyLogConfig` (new) sets format and level
+  after each config load; the now-unused `log` import goes.
+- `internal/daemon/warm_add.go`: the warmer's `Log` callback uses
+  `flog.Printf(logger, "%s", line)` so a `WARNING:` line from the warmer is a
+  Warn and a `[Warm]` line stays Info.
+- `internal/config/config.go`: the `log_format` key, its env var and its
+  validation.
+- Tests that swapped a logger's output (`internal/warmup/cache_dir_test.go`,
+  `evict_test.go`) assign `flog.New(buf, name, true)` to the package variable
+  instead; test doubles with a `Printf` method (`nopLogger`, `discardLogger`)
+  become `slog.New(slog.DiscardHandler)`.
+
 ## Tests
 
 `go test ./scripts/slogify` covers each rewrite above, the import handling,

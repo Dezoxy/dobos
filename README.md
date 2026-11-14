@@ -1038,6 +1038,53 @@ file of that length (by name if several); else the open fails with `EIO`.
   stored list whose stale stub shares its index with another file's warm head
   of a plausible length (`docs/ideas.md`).
 
+## Logging
+
+The daemon logs through `log/slog` (`internal/flog`). The default output is
+the text it has always printed, one line per event: an optional `[Name] `
+prefix, the time (`2006/01/02 15:04:05`), then the message. There is no
+level token in the line; the level only filters. A line that carries
+structured fields appends the ones its message does not already show, as
+`key=value`.
+
+| Key | Env | Values | Default |
+| --- | --- | --- | --- |
+| `log_format` | `MKV_PROXY_LOG_FORMAT` | `text`, `json` | `text` |
+| `log_level` | `MKV_PROXY_LOG_LEVEL` | `DEBUG`, `INFO`, `WARN`, `ERROR` | `INFO` |
+
+`log_format` `json` prints one JSON object per line instead: `time`,
+`level`, `msg`, `logger` (the `[Name]` prefix, when there is one) and the
+line's fields. `msg` is the same text the default format prints, so a
+documented line keeps its wording and payload in both formats. An unknown
+`log_format` falls back to `text` with a warning. Both keys apply at start
+and on a save from the Control Panel.
+
+`log_level` is a threshold. A line whose text starts with `[DEBUG]` is
+Debug (hidden unless the level is `DEBUG`), one with `WARNING` or `Warning`
+near its start is Warn, one with `ERROR` or `[PANIC]` is Error, everything
+else is Info. Setting `WARN` or `ERROR` hides the Info lines too, the
+documented `[Session]`, `[Warm]` and `[WarmupEvict]` lines among them; leave
+the level at `INFO` if you read those.
+
+**Stable lines.** The text of these lines does not change without a note
+here, in either format; match them by substring: `[DiskWarmup] Initial
+size`, `[DiskWarmup] Active`, `[StateDB] Active:`, `[StateDB] Migration
+complete:`, `[StateDB] Migration already completed`, `Failed to open
+StateDB`, `InodeMap: Loaded`, `FUSE mounted at`, `Library torrents with no
+stored engine record with metainfo`, `Failed to parse`, `physical_source_path
+... differs`, `CORRUPT CACHE`, `prune skipped`, `Startup GC: Pruned`, and,
+from the GoStorm engine, `Successfully migrated`, `Settings file was corrupt`
+and `Migrate torrent`. The container entrypoint's `is NOT on a mounted
+volume` warning is printed by the shell and is not affected. The JSON
+contract lines, `[Session]`, `[Warm]`, `[WarmupEvict]` and the `[Webhook]`
+status line, are described in their own sections and are byte-identical in
+both formats; `[DeadSwarm]` and `[TTFF]` wording is not a contract. The
+GoStorm engine's own log lines still use the standard logger, so they keep
+their old shape in both formats.
+
+The conversion from `log.Printf` is `scripts/slogify` (see its README); it
+can be run again on a newer tree.
+
 ## Metrics
 
 `GET /metrics/prometheus` on the control port serves the Prometheus text

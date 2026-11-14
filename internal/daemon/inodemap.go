@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"flodni/internal/flog"
 	"flodni/internal/vfs"
 	"fmt"
 	"log/slog"
@@ -19,7 +18,7 @@ func InitGlobalInodeMap(stateDir string, logger *slog.Logger) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create inode map directory: %w", err)
 	}
-	globalInodeMap = vfs.NewInodeMap(savePath, &vfsLogger{logger})
+	globalInodeMap = vfs.NewInodeMap(savePath, logger)
 	return nil
 }
 
@@ -82,11 +81,4 @@ func GetInodeMapStats() (files, dirs, hits, misses int64) {
 		return 0, 0, 0, 0
 	}
 	return globalInodeMap.Stats()
-}
-
-// vfsLogger adapts *log.Logger to the vfs.Logger interface.
-type vfsLogger struct{ logger *slog.Logger }
-
-func (l *vfsLogger) Printf(format string, args ...interface{}) {
-	flog.Printf(l.logger, format, args...)
 }

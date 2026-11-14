@@ -14,7 +14,7 @@ import (
 
 func cleanupInodeEnv(t *testing.T, root string) (*CleanupManager, *vfs.InodeMap) {
 	t.Helper()
-	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), &vfsLogger{flog.NewText(io.Discard)})
+	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), flog.NewText(io.Discard))
 	prev := globalInodeMap
 	globalInodeMap = im
 	t.Cleanup(func() { globalInodeMap = prev })

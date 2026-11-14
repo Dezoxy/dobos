@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flodni/internal/flog"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -19,10 +20,6 @@ import (
 	"flodni/internal/metadb"
 )
 
-type discardLogger struct{}
-
-func (discardLogger) Printf(string, ...interface{}) {}
-
 const rHash = "0123456789abcdef0123456789abcdef01234567"
 
 // readabilityEnv wires a real SQLite file to the recorder and fixes the engine
@@ -30,7 +27,7 @@ const rHash = "0123456789abcdef0123456789abcdef01234567"
 func readabilityEnv(t *testing.T, peers int, live bool) *metadb.DB {
 	t.Helper()
 	resetSessionState(t)
-	db, err := metadb.New(filepath.Join(t.TempDir(), "state.db"), discardLogger{})
+	db, err := metadb.New(filepath.Join(t.TempDir(), "state.db"), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

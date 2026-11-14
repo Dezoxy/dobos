@@ -27,7 +27,8 @@ type Config struct {
 	MetadataCacheSizeMB    int64  `json:"metadata_cache_size_mb"`   // Size of metadata LRU cache in MB (V178)
 	FuseBlockSize          int    `json:"fuse_block_size_bytes"`
 	StreamingThresholdKB   int64  `json:"streaming_threshold_kb"`
-	LogLevel               string `json:"log_level"`
+	LogLevel               string `json:"log_level"`  // DEBUG, INFO (default), WARN or ERROR
+	LogFormat              string `json:"log_format"` // "text" (default) or "json"
 
 	// --- FUSE Timing ---
 	AttrTimeoutSeconds     float64 `json:"attr_timeout_seconds"`
@@ -230,6 +231,7 @@ func LoadConfig() Config {
 		StreamingThresholdKB:   128,
 		PumpOnOpen:             true,
 		LogLevel:               "INFO",
+		LogFormat:              "text",
 
 		AttrTimeoutSeconds:     1.0,
 		EntryTimeoutSeconds:    1.0,
@@ -373,6 +375,9 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("MKV_PROXY_LOG_LEVEL"); v != "" {
 		c.LogLevel = v
 	}
+	if v := os.Getenv("MKV_PROXY_LOG_FORMAT"); v != "" {
+		c.LogFormat = v
+	}
 	if v := os.Getenv("MKV_PROXY_UID"); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
 			c.UID = uint32(n)
@@ -395,6 +400,15 @@ func firstEnv(keys ...string) string {
 }
 
 func (c *Config) finalize() {
+	switch strings.ToLower(strings.TrimSpace(c.LogFormat)) {
+	case "", "text":
+		c.LogFormat = "text"
+	case "json":
+		c.LogFormat = "json"
+	default:
+		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: log_format %q is not \"text\" or \"json\"; using \"text\"", c.LogFormat), "log_format", c.LogFormat)
+		c.LogFormat = "text"
+	}
 	if c.MediaServerType != "" && c.MediaServerType != "plex" {
 		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: media_server_type %q: Jellyfin is no longer supported and Flodni uses Plex", c.MediaServerType), "media_server_type", c.MediaServerType)
 	}
@@ -543,6 +557,7 @@ func (c *Config) LogConfig(logger *slog.Logger) {
 	logger.Info(fmt.Sprintf("FUSE Block Size: %d", c.FuseBlockSize), "fuse_block_size", c.FuseBlockSize)
 	logger.Info(fmt.Sprintf("StreamingThreshold: %d KB", c.StreamingThresholdKB), "streaming_threshold_k_b", c.StreamingThresholdKB)
 	logger.Info(fmt.Sprintf("LogLevel: %s", c.LogLevel), "log_level", c.LogLevel)
+	logger.Info(fmt.Sprintf("LogFormat: %s", c.LogFormat), "log_format", c.LogFormat)
 	logger.Info(fmt.Sprintf("GoStormBaseURL: %s", c.GoStormBaseURL), "go_storm_base_u_r_l", c.GoStormBaseURL)
 	logger.Info(fmt.Sprintf("FUSE Timeouts (Attr/Entry/Neg): %.1f/%.1f/%.1f", c.AttrTimeoutSeconds, c.EntryTimeoutSeconds, c.NegativeTimeoutSeconds))
 	if c.FuseMaxInflightMB > 0 {

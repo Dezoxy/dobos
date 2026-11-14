@@ -3,6 +3,7 @@ package vfs
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -53,7 +54,7 @@ type InodeMap struct {
 	hits   int64
 	misses int64
 
-	logger Logger
+	logger *slog.Logger
 }
 
 type inodeShard struct {
@@ -83,18 +84,16 @@ type InodeMapDataV1 struct {
 	LastUpdated   string            `json:"last_updated"`
 }
 
-// Logger interface for compatibility
-type Logger interface {
-	Printf(format string, v ...interface{})
-}
-
 // NewInodeMap creates a new sharded inode map
-func NewInodeMap(savePath string, logger Logger) *InodeMap {
+func NewInodeMap(savePath string, logger *slog.Logger) *InodeMap {
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 	im := &InodeMap{
 		shardMask: 31,
 		savePath:  savePath,
 		stopChan:  make(chan struct{}),
-		logger:    &loggerWrapper{logger},
+		logger:    logger,
 	}
 
 	for i := range im.shards {
@@ -137,17 +136,6 @@ func (im *InodeMap) setDirty(isDirty bool) {
 // IsDirty returns whether the map has unsaved changes
 func (im *InodeMap) IsDirty() bool {
 	return atomic.LoadInt32(&im.dirty) == 1
-}
-
-// loggerWrapper wraps the external logger
-type loggerWrapper struct {
-	l Logger
-}
-
-func (w *loggerWrapper) Printf(format string, v ...interface{}) {
-	if w.l != nil {
-		w.l.Printf(format, v...)
-	}
 }
 
 // LoadFromDisk loads the inode map and distributes entries across shards.

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"flodni/internal/flog"
 	"flodni/internal/gostorm/native"
 	"flodni/internal/gostorm/torr"
 	"flodni/internal/library"
@@ -117,7 +118,7 @@ func addWarmerDeps(x *fileStateIndex, stop <-chan struct{}) warmer.Deps {
 			}
 			x.ForgetHash(hash)
 		},
-		Log:  func(line string) { logger.Info(fmt.Sprint(line)) },
+		Log:  func(line string) { flog.Printf(logger, "%s", line) },
 		Stop: stop,
 	}
 }

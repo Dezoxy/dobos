@@ -1,6 +1,7 @@
 package warmup
 
 import (
+	"flodni/internal/flog"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -306,9 +307,9 @@ func TestEvictToRecordsLikeAQuotaEviction(t *testing.T) {
 	var got []Eviction
 	OnEvicted = func(evs []Eviction) { got = append(got, evs...) }
 	var logged strings.Builder
-	oldOut := evictLog.Writer()
-	evictLog.SetOutput(&logged)
-	t.Cleanup(func() { evictLog.SetOutput(oldOut) })
+	oldLog := evictLog
+	evictLog = flog.New(&logged, "WarmupEvict", true)
+	t.Cleanup(func() { evictLog = oldLog })
 
 	before := CounterStats()
 	d.EvictTo(600 * mb)

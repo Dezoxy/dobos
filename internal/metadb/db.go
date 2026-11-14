@@ -3,6 +3,7 @@ package metadb
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,21 +11,16 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Logger interface for optional logging.
-type Logger interface {
-	Printf(format string, v ...interface{})
-}
-
 // DB wraps a SQLite database connection for flodni state persistence.
 type DB struct {
 	db     *sql.DB
 	path   string
-	logger Logger
+	logger *slog.Logger
 }
 
 // New opens or creates a SQLite database at dbPath, applies pragmas,
 // creates tables, and returns a ready-to-use DB instance.
-func New(dbPath string, logger Logger) (*DB, error) {
+func New(dbPath string, logger *slog.Logger) (*DB, error) {
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return nil, fmt.Errorf("metadb: create dir: %w", err)
 	}
@@ -36,6 +32,9 @@ func New(dbPath string, logger Logger) (*DB, error) {
 
 	d.SetMaxOpenConns(1)
 
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 	db := &DB{
 		db:     d,
 		path:   dbPath,
@@ -88,7 +87,7 @@ func (d *DB) addColumn(table, column, ddl string) error {
 }
 
 // SetLogger sets a custom logger for the database.
-func (d *DB) SetLogger(l Logger) {
+func (d *DB) SetLogger(l *slog.Logger) {
 	if l != nil {
 		d.logger = l
 	}

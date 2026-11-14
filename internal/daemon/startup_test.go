@@ -3,6 +3,7 @@ package daemon
 import (
 	"flodni/internal/flog"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,7 +24,7 @@ const (
 
 func pruneEnv(t *testing.T) (*StartupCacheBuilder, *metadb.DB) {
 	t.Helper()
-	db, err := metadb.New(filepath.Join(t.TempDir(), "state.db"), discardLogger{})
+	db, err := metadb.New(filepath.Join(t.TempDir(), "state.db"), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +283,7 @@ func TestUnstoredGaugeIsAbsentUntilCountedThenExported(t *testing.T) {
 // pruneInodeEnv registers two files in the inode map; the builder's walk found one.
 func pruneInodeEnv(t *testing.T) (*StartupCacheBuilder, *vfs.InodeMap) {
 	t.Helper()
-	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), &vfsLogger{flog.NewText(io.Discard)})
+	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), flog.NewText(io.Discard))
 	prev := globalInodeMap
 	globalInodeMap = im
 	t.Cleanup(func() { globalInodeMap = prev })

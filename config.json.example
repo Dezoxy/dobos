@@ -5,6 +5,7 @@
   "fuse_block_size_bytes": 1048576,
   "streaming_threshold_kb": 128,
   "log_level": "INFO",
+  "log_format": "text",
   "attr_timeout_seconds": 1,
   "entry_timeout_seconds": 1,
   "negative_timeout_seconds": 0,

@@ -2,6 +2,7 @@ package metadb
 
 import (
 	"database/sql"
+	"log/slog"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,13 +11,9 @@ import (
 // The library manager asserts this signature on its registry at run time.
 var _ interface{ ClearMetadataFailure(string) error } = (*DB)(nil)
 
-type nopLogger struct{}
-
-func (nopLogger) Printf(string, ...interface{}) {}
-
 func openTest(t *testing.T) *DB {
 	t.Helper()
-	d, err := New(filepath.Join(t.TempDir(), "state.db"), nopLogger{})
+	d, err := New(filepath.Join(t.TempDir(), "state.db"), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +220,7 @@ func TestMigrationFromTheFourColumnTable(t *testing.T) {
 	_ = raw.Close()
 
 	for i := 0; i < 2; i++ {
-		d, err := New(path, nopLogger{})
+		d, err := New(path, slog.New(slog.DiscardHandler))
 		if err != nil {
 			t.Fatalf("open %d: %v", i, err)
 		}

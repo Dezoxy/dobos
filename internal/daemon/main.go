@@ -33,7 +33,6 @@ import (
 	"fmt"
 	"golang.org/x/sys/cpu"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -80,6 +79,15 @@ var globalTorrentRemover *TorrentRemover
 var globalConfig atomic.Pointer[config.Config]
 
 func gc() *config.Config { return globalConfig.Load() }
+
+// applyLogConfig sets the process-wide log level and format from the
+// configuration (log_level, log_format). Config validation already turns an
+// unknown format into "text", so an error here is only a belt.
+func applyLogConfig() {
+	if err := flog.Configure(gc().LogFormat, gc().LogLevel); err != nil {
+		logger.Warn("WARNING: " + err.Error())
+	}
+}
 
 func GetEffectiveConcurrencyLimit() int {
 	return gc().MasterConcurrencyLimit
@@ -231,6 +239,7 @@ func Run() {
 	}
 
 	globalConfig.Store(&cfg)
+	applyLogConfig()
 
 	// CLI args take precedence; fall back to config.json values if omitted
 	if source == "" {
@@ -592,6 +601,7 @@ func Run() {
 			// GetStateDir falls back to /home/pi/STATE after every save.
 			cfg.RootPath = gc().RootPath
 			globalConfig.Store(&cfg)
+			applyLogConfig()
 			logger.Info("[Config] Updated via Dashboard API")
 			w.WriteHeader(200)
 		}
@@ -848,7 +858,8 @@ func Run() {
 		GID: gc().GID, // Default file ownership: pi group (1000)
 	})
 	if err != nil {
-		log.Fatal(err)
+		logger.Error("FUSE mount failed", "err", err)
+		os.Exit(1)
 	}
 
 	logger.Info(fmt.Sprintf("FUSE mounted at %s with VirtualMkvRoot, all systems active", mount), "mount", mount)

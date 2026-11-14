@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flodni/internal/flog"
 	"io"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,7 +42,7 @@ func TestCountReadabilityBuckets(t *testing.T) {
 }
 
 func TestCountReadabilityResetRowIsNeverRead(t *testing.T) {
-	db, err := metadb.New(filepath.Join(t.TempDir(), "state.db"), discardLogger{})
+	db, err := metadb.New(filepath.Join(t.TempDir(), "state.db"), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
