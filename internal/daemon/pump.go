@@ -54,14 +54,14 @@ func (h *MkvHandle) attachToExistingPump(ps *NativePumpState) bool {
 // uses it when pruning a zombie registry entry: without it the pump keeps its slot and keeps
 // fetching until the reader idle timeout (V262, up to 2h with an open handle).
 func terminateOrphanPump(path string) bool {
-	val, ok := activePumps.Load(path)
+	val, ok := app.activePumps.Load(path)
 	if !ok {
 		return false
 	}
 	if ps, ok := val.(*NativePumpState); ok && ps.cancel != nil {
 		ps.cancel()
 	}
-	activePumps.Delete(path)
+	app.activePumps.Delete(path)
 	return true
 }
 
@@ -88,7 +88,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 	}
 
 	isHealthy := false
-	if val, ok := playbackRegistry.Load(h.path); ok {
+	if val, ok := app.playbackRegistry.Load(h.path); ok {
 		if ps, ok := val.(*PlaybackState); ok && ps.GetStatus() {
 			isHealthy = true
 		}
@@ -101,7 +101,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 	canTakeSlot := true
 	if !isHealthy {
 		anyHealthyPlayback := false
-		playbackRegistry.Range(func(_, v interface{}) bool {
+		app.playbackRegistry.Range(func(_, v interface{}) bool {
 			if ps, ok := v.(*PlaybackState); ok && ps.GetStatus() {
 				anyHealthyPlayback = true
 				return false
@@ -121,7 +121,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 
 	pumpCreationMu.Lock()
 
-	if val, ok := activePumps.Load(h.path); ok {
+	if val, ok := app.activePumps.Load(h.path); ok {
 		ps := val.(*NativePumpState)
 		newRefs := atomic.AddInt32(&ps.refCount, 1)
 		h.mu.Lock()
@@ -152,7 +152,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 	case masterDataSemaphore <- struct{}{}:
 		// Double-check activePumps after acquiring semaphore (another goroutine may have created it).
 		pumpCreationMu.Lock()
-		if val, ok := activePumps.Load(h.path); ok {
+		if val, ok := app.activePumps.Load(h.path); ok {
 			<-masterDataSemaphore
 			ps := val.(*NativePumpState)
 			newRefs := atomic.AddInt32(&ps.refCount, 1)
@@ -198,7 +198,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 			path:     h.path,
 			refCount: 1,
 		}
-		activePumps.Store(h.path, sharedState)
+		app.activePumps.Store(h.path, sharedState)
 		h.pumpState = sharedState
 		globalOpenTracker.Inc(h.hash, h.path)
 		pumpCreationMu.Unlock() // SUCCESS: Shared state registered, global lock released
@@ -214,7 +214,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 		// up. >2MB matches the existing real-playback-vs-scanner threshold (main.go IsInferredPlayback).
 		if atomic.LoadInt64(&h.lastOff) < 0 {
 			seeded := false
-			if val, ok := playbackRegistry.Load(h.path); ok {
+			if val, ok := app.playbackRegistry.Load(h.path); ok {
 				if pbs, ok := val.(*PlaybackState); ok {
 					pbs.mu.RLock()
 					lastSeekOff := pbs.LastSeekOff
@@ -335,7 +335,7 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 		// V306: Check if pump exited during confirmed healthy playback — this is
 		// unexpected and usually indicates an I/O error or cancellation. Log for diagnosis.
 		pumpExitedHealthy := false
-		if val, ok := playbackRegistry.Load(h.path); ok {
+		if val, ok := app.playbackRegistry.Load(h.path); ok {
 			if ps, ok := val.(*PlaybackState); ok && ps.GetStatus() {
 				pumpExitedHealthy = true
 			}
@@ -343,8 +343,8 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 
 		h.mu.Lock()
 		// Only delete if our sharedState is still the registered one (prevents pump A's defer from deleting pump B).
-		if val, ok := activePumps.Load(h.path); ok && val == sharedState {
-			activePumps.Delete(h.path)
+		if val, ok := app.activePumps.Load(h.path); ok && val == sharedState {
+			app.activePumps.Delete(h.path)
 			// Purge the adaptive chunk size set at this pump's start (SetPieceLen, main.go:1075):
 			// otherwise pieceLens keeps growing with entries for paths no pump is streaming
 			// anymore, and a future pump for the same path with a different piece length would
@@ -392,7 +392,7 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 		// Release idle slot: confirmed playback gets 2h, background scans get 45s.
 		// Check all handles for this path, not just the pump creator.
 		lastAct := time.Time{}
-		activeHandles.Range(func(key, value interface{}) bool {
+		app.activeHandles.Range(func(key, value interface{}) bool {
 			handle := key.(*MkvHandle)
 			if handle.path == h.path {
 				handle.mu.Lock()
@@ -412,7 +412,7 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 
 		timeoutLimit := 45 * time.Second
 		playbackConfirmedOrInferred := false
-		if val, ok := playbackRegistry.Load(h.path); ok {
+		if val, ok := app.playbackRegistry.Load(h.path); ok {
 			if ps, ok := val.(*PlaybackState); ok {
 				if ps.GetStatus() {
 					timeoutLimit = 2 * time.Hour
@@ -441,7 +441,7 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 		// Sync to primary handles only; secondary metadata probes cause false 10GB+ jumps.
 		now := time.Now()
 		playerOff := int64(0)
-		activeHandles.Range(func(key, value interface{}) bool {
+		app.activeHandles.Range(func(key, value interface{}) bool {
 			handle := key.(*MkvHandle)
 			if handle.path == h.path && handle.isPrimaryHandle.Load() {
 				if off := atomic.LoadInt64(&handle.lastOff); off > playerOff {
@@ -510,7 +510,7 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 		// Throttle background pump after 64MB grace period.
 		if pumpedBytes > 64*1024*1024 {
 			isHealthy := false
-			if val, ok := playbackRegistry.Load(h.path); ok {
+			if val, ok := app.playbackRegistry.Load(h.path); ok {
 				if ps, ok := val.(*PlaybackState); ok && (ps.GetStatus() || ps.IsInferredPlayback()) {
 					isHealthy = true
 				}
@@ -718,7 +718,7 @@ func (h *MkvHandle) promoteIfStreaming(prevOff, off int64, readLen int) {
 	}
 	// Only during real playback: a background scan reads sequentially too, and outside a
 	// confirmed session there is no player for the pump to follow anyway.
-	val, ok := playbackRegistry.Load(h.path)
+	val, ok := app.playbackRegistry.Load(h.path)
 	if !ok {
 		return
 	}
@@ -826,7 +826,7 @@ func primaryProofFor(challengerOff, incumbentOff, budget int64) int32 {
 // primaryOffsetFor returns the offset of the current primary handle on path, or 0 if there is none.
 func primaryOffsetFor(path string, except *MkvHandle) int64 {
 	var off int64
-	activeHandles.Range(func(key, _ interface{}) bool {
+	app.activeHandles.Range(func(key, _ interface{}) bool {
 		other, ok := key.(*MkvHandle)
 		if ok && other != except && other.path == path && other.isPrimaryHandle.Load() {
 			if o := atomic.LoadInt64(&other.lastOff); o > off {
@@ -850,7 +850,7 @@ func becomePrimary(h *MkvHandle) bool {
 	if !h.isPrimaryHandle.CompareAndSwap(false, true) {
 		return false
 	}
-	activeHandles.Range(func(key, _ interface{}) bool {
+	app.activeHandles.Range(func(key, _ interface{}) bool {
 		other, ok := key.(*MkvHandle)
 		if ok && other != h && other.path == h.path && other.isPrimaryHandle.CompareAndSwap(true, false) {
 			other.seqAdvances.Store(0)

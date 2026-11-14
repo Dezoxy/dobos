@@ -13,17 +13,18 @@ import (
 // playedEnv opens one episode the way Open leaves it: a registry entry, a resolved
 // target and a session. It returns the key the webhook should mark.
 func playedEnv(t *testing.T) (path string, key warmup.FileKey) {
+	newTestApp(t)
 	t.Helper()
 	oldStates := fileStates
 	fileStates = newFileStateIndex(nil, 90)
 	path = "/mnt/tv/Some Show/Some.Show.S01E02.1080p.mkv"
 	key = warmup.FileKey{Hash: "abc123", FileIdx: 4}
-	playbackRegistry.Store(path, &PlaybackState{Path: path, OpenedAt: time.Now()})
+	app.playbackRegistry.Store(path, &PlaybackState{Path: path, OpenedAt: time.Now()})
 	tailFillTargets.Store(path, tailFillTarget{hash: key.Hash, fileID: key.FileIdx, size: 1 << 30})
 	ttffRegister(path, 1<<30, key.Hash, key.FileIdx, false, false)
 	t.Cleanup(func() {
 		fileStates = oldStates
-		playbackRegistry.Delete(path)
+		app.playbackRegistry.Delete(path)
 		tailFillTargets.Delete(path)
 		sessions.Delete(path)
 	})

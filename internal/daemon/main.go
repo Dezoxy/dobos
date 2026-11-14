@@ -100,10 +100,6 @@ func GetEffectiveConcurrencyLimit() int {
 	return gc().MasterConcurrencyLimit
 }
 
-// controlToken is the bearer token the control server enforces, fixed at start-up.
-// Empty means the port is open. Never read gc().APIToken to decide that.
-var controlToken string
-
 var tailFillTargets sync.Map // path -> tailFillTarget
 
 // StateDB is the optional SQLite backend for persistent state.
@@ -125,12 +121,6 @@ var restartRequested atomic.Bool
 // readBufferPool size matches Config.ReadAheadBase (set in main).
 var readBufferPool *sync.Pool
 
-var activeHandles sync.Map      // key: *MkvHandle, value: bool
-var inFlightPrefetches sync.Map // key: "path:offset", value: bool
-
-// inFlightFetches dedups the sync FetchBlock fallback: concurrent misses in the same chunk
-// share one fetch instead of each running FetchBlock independently.
-var inFlightFetches sync.Map // key: "path:chunkAlignedOffset", value: *fetchFlight
 var fetchFlightDedupCount atomic.Int64
 
 // fuseShortReadCount counts reads served to FUSE with fewer bytes than requested, away from EOF.
@@ -154,10 +144,6 @@ const (
 type fetchFlight struct {
 	done chan struct{} // closed by the leader once its result is in raCache
 }
-
-var activePumps sync.Map    // Map[string]*NativePumpState — one pump per file path
-var pumpTimers sync.Map     // key: path, value: *time.Timer
-var priorityTimers sync.Map // key: path, value: *time.Timer
 
 // OpenTracker: contatori O(1) per handle aperti (per hash e per path).
 // Permette query rapide da cleanup e priority timer senza scansionare activeHandles.
@@ -200,6 +186,8 @@ func checkHardwareSupport() {
 }
 
 func Run() {
+	app = newApp()
+
 	// `flodni healthcheck` is the container health probe: before anything else
 	// runs, and without the daemon, the mount or the flags below.
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
@@ -273,8 +261,8 @@ func Run() {
 	for _, w := range pathWarnings {
 		logger.Warn(fmt.Sprintf("WARNING: %s", w), "w", w)
 	}
-	startupRep.logf = flog.Logf(logger)
-	startupRep.noteConfigLoad(pathWarnings)
+	app.startup.logf = flog.Logf(logger)
+	app.startup.noteConfigLoad(pathWarnings)
 	globalConfig.Store(&effCfg)
 
 	gc().LogConfig(logger)
@@ -392,23 +380,23 @@ func Run() {
 		if dbPath == "" {
 			dbPath = filepath.Join(GetStateDir(), "tiramisu.db")
 		}
-		startupRep.note(func(f *startupFacts) { f.stateDBEnabled, f.stateDBPath = true, dbPath })
+		app.startup.note(func(f *startupFacts) { f.stateDBEnabled, f.stateDBPath = true, dbPath })
 		var err error
 		stateDB, err = metadb.New(dbPath, logger)
 		if err != nil {
 			flog.Printf(logger, stateDBOpenFailedFmt, err)
 			stateDB = nil
-			startupRep.note(func(f *startupFacts) { f.stateDBOpenFailed, f.stateDBMigration = true, migrationFailed })
+			app.startup.note(func(f *startupFacts) { f.stateDBOpenFailed, f.stateDBMigration = true, migrationFailed })
 		} else {
 			// Migrate JSON files if needed
 			if err := stateDB.MigrateFromJSON(GetStateDir()); err != nil {
 				logger.Warn(fmt.Sprintf("WARNING: StateDB migration failed: %v (falling back to JSON)", err), "err", err)
 				_ = stateDB.Close() // already falling back to JSON
 				stateDB = nil
-				startupRep.note(func(f *startupFacts) { f.stateDBMigration = migrationFailed })
+				app.startup.note(func(f *startupFacts) { f.stateDBMigration = migrationFailed })
 			} else {
 				migration := stateDB.MigrationResult()
-				startupRep.note(func(f *startupFacts) { f.stateDBMigration = migration })
+				app.startup.note(func(f *startupFacts) { f.stateDBMigration = migration })
 				// Wire up DB to InodeMap, then reload from DB (covers boot 2+ where JSON is gone)
 				globalInodeMap.SetDB(stateDB)
 				if err := globalInodeMap.LoadFromDisk(); err != nil {
@@ -463,7 +451,7 @@ func Run() {
 
 	finishGlobalInodeMapInit(logger)
 	loadedFiles, _, _, _ := GetInodeMapStats()
-	startupRep.note(func(f *startupFacts) { f.inodeFilesLoaded = int(loadedFiles) })
+	app.startup.note(func(f *startupFacts) { f.inodeFilesLoaded = int(loadedFiles) })
 
 	// The dir cache must exist before the startup builder runs: a nil cache there
 	// is a panic in a bare goroutine that would kill the process before mount.
@@ -471,7 +459,7 @@ func Run() {
 
 	// Pre-populate cache at startup to improve Plex scan performance.
 	cacheBuilder := NewStartupCacheBuilder(source, metaCache, logger)
-	cacheBuilder.onDone = startupRep.markScanned
+	cacheBuilder.onDone = app.startup.markScanned
 	cacheBuilder.Start()
 
 	globalCleanupManager = NewCleanupManager(logger, metaCache, nativeBridge)
@@ -591,7 +579,7 @@ func Run() {
 	mux.HandleFunc("/api/torrents/scrape", handleScrapeTrigger)
 	mux.HandleFunc("/api/torrents/scrape/status", handleScrapeStatus)
 	mux.HandleFunc("/api/health", newHealthChecks().handler)
-	mux.HandleFunc("/api/startup", startupRep.handler)
+	mux.HandleFunc("/api/startup", app.startup.handler)
 	mux.HandleFunc("/api/warmup/evict", newWarmupEvictHandler(evictWarmupTo))
 
 	mux.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
@@ -714,7 +702,7 @@ func Run() {
 		// One token for both the bearer gate and the routes that fail closed without
 		// one: read once here, because the middleware enforces the start-up value and a
 		// later POST /api/config must not make the two disagree.
-		controlToken = gc().APIToken
+		app.controlToken = gc().APIToken
 		var registry library.EpisodeRegistry
 		if stateDB != nil {
 			registry = stateDB
@@ -808,7 +796,7 @@ func Run() {
 	}
 	controlSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", gc().MetricsPort),
-		Handler:           apiauth.Middleware(controlToken, logger, mux),
+		Handler:           apiauth.Middleware(app.controlToken, logger, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      600 * time.Second,
@@ -911,7 +899,7 @@ func Run() {
 	}
 
 	flog.Printf(logger, fuseMountedFmt, mount)
-	startupRep.markMounted(mount)
+	app.startup.markMounted(mount)
 
 	go ttffCleanupLoop()
 
@@ -926,7 +914,7 @@ func startHandleGC() {
 	safeGo(func() {
 		for range ticker.C {
 			count := 0
-			activeHandles.Range(func(key, value interface{}) bool {
+			app.activeHandles.Range(func(key, value interface{}) bool {
 				h := key.(*MkvHandle)
 				h.mu.Lock()
 				idle := time.Since(h.lastActivityTime)

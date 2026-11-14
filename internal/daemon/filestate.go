@@ -362,7 +362,7 @@ func confirmPlayByHand(hash string, fileIdx int) {
 // apiTokenSet reports whether the control server enforces a bearer token: the start-up
 // value the middleware was built with (controlToken), not the live config, which a
 // POST /api/config can change on an open port without any enforcement following.
-func apiTokenSet() bool { return controlToken != "" }
+func apiTokenSet() bool { return app.controlToken != "" }
 
 // libraryFileFacts is library.Config.FileState: the per-file facts GET /api/library/file
 // reports, read from the process-wide index and the live sessions.
@@ -395,7 +395,7 @@ func (x *fileStateIndex) facts(k warmup.FileKey) library.FileFacts {
 // restored at start stay confirmed with no handle, so the handle is what says it is open.
 func confirmedSessionOn(k warmup.FileKey) bool {
 	found := false
-	playbackRegistry.Range(func(p, v any) bool {
+	app.playbackRegistry.Range(func(p, v any) bool {
 		ps, ok := v.(*PlaybackState)
 		if !ok || !ps.GetStatus() {
 			return true

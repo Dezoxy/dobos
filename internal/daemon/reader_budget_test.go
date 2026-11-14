@@ -16,6 +16,7 @@ const rbPrefix = "[ReaderBudget] "
 // budgetEnv gives a test a fresh session at /m/x.mkv (1 GiB), the given margin and
 // no live peers, and restores what it touched.
 func budgetEnv(t *testing.T, margin int64) *TTFFSession {
+	newTestApp(t)
 	t.Helper()
 	prevM, prevP := unconfirmedMargin, sessionActivePeers
 	unconfirmedMargin = func() int64 { return margin }
@@ -24,14 +25,14 @@ func budgetEnv(t *testing.T, margin int64) *TTFFSession {
 	t.Cleanup(func() {
 		unconfirmedMargin, sessionActivePeers = prevM, prevP
 		sessions.Delete(s.path)
-		playbackRegistry.Delete(s.path)
+		app.playbackRegistry.Delete(s.path)
 	})
 	return s
 }
 
 func confirmPlayback(path string) {
-	playbackRegistry.Store(path, &PlaybackState{Path: path, OpenedAt: time.Now()})
-	v, _ := playbackRegistry.Load(path)
+	app.playbackRegistry.Store(path, &PlaybackState{Path: path, OpenedAt: time.Now()})
+	v, _ := app.playbackRegistry.Load(path)
 	v.(*PlaybackState).SetHealthy(true)
 }
 
@@ -67,6 +68,7 @@ func TestBytesOutsideWindows(t *testing.T) {
 }
 
 func TestCountUnconfirmedSourcesAndConfirmation(t *testing.T) {
+	newTestApp(t)
 	s := budgetEnv(t, 1<<40)
 	b0, _, _ := rbCounts()
 
@@ -94,7 +96,7 @@ func TestCountUnconfirmedSourcesAndConfirmation(t *testing.T) {
 	}
 
 	s.closed.Store(true)
-	playbackRegistry.Delete(s.path)
+	app.playbackRegistry.Delete(s.path)
 	s.recordRead(srcFetchBlock, time.Millisecond, 5<<20, 300<<20)
 	if b3, _, _ := rbCounts(); b3 != b {
 		t.Fatal("a closed session counted")
@@ -111,6 +113,7 @@ func TestRecordReadFeedsTheBudget(t *testing.T) {
 }
 
 func TestCrossingLogsOneLineUnderConcurrency(t *testing.T) {
+	newTestApp(t)
 	s := budgetEnv(t, 10<<20)
 	buf := captureSessionLog(t)
 	noteReaderCaller(s.path, 0, 1234)
@@ -158,6 +161,7 @@ func TestCrossingLogsOneLineUnderConcurrency(t *testing.T) {
 }
 
 func TestBelowMarginThenConfirmedStaysSilent(t *testing.T) {
+	newTestApp(t)
 	s := budgetEnv(t, 10<<20)
 	buf := captureSessionLog(t)
 	_, u0, l0 := rbCounts()
@@ -178,6 +182,7 @@ func TestBelowMarginThenConfirmedStaysSilent(t *testing.T) {
 }
 
 func TestConfirmedLateLogsOnceAndSessionsResolveOnceAtClose(t *testing.T) {
+	newTestApp(t)
 	for _, late := range []bool{false, true} {
 		name := "unconfirmed"
 		if late {

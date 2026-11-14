@@ -193,6 +193,7 @@ func (r *fakeReader) readCalls() []readCall {
 // test (4 MiB chunks, 8 MiB first window, 64 MiB budget), a pump slot pool, a rate
 // limiter and a cleanup manager, all restored on cleanup.
 func useEngineReadPath(t *testing.T) *fakeEngine {
+	newTestApp(t)
 	t.Helper()
 	useFreshReadPath(t)
 	fe := &fakeEngine{}
@@ -216,7 +217,7 @@ func useEngineReadPath(t *testing.T) *fakeEngine {
 	t.Cleanup(func() {
 		waitUntil(t, "background prefetches to end", func() bool {
 			idle := true
-			inFlightPrefetches.Range(func(_, _ any) bool { idle = false; return false })
+			app.inFlightPrefetches.Range(func(_, _ any) bool { idle = false; return false })
 			return idle
 		})
 	})
@@ -254,7 +255,7 @@ func cachedAcross(path string, start, end int64) bool {
 
 func flightFree(path string, chunkStart int64) func() bool {
 	return func() bool {
-		_, busy := inFlightPrefetches.Load(fmt.Sprintf("%s:%d", path, chunkStart))
+		_, busy := app.inFlightPrefetches.Load(fmt.Sprintf("%s:%d", path, chunkStart))
 		return !busy
 	}
 }
@@ -309,6 +310,7 @@ func TestAWrappedNilClientIsNotANilBridge(t *testing.T) {
 // --- fetch path ---
 
 func TestReadInnerMissFetchesTheWindowAndCachesIt(t *testing.T) {
+	newTestApp(t)
 	fe := useEngineReadPath(t)
 	const path = "/test/miss-fetch.mkv"
 	h := engineHandle(path, 100*mb)
@@ -325,7 +327,7 @@ func TestReadInnerMissFetchesTheWindowAndCachesIt(t *testing.T) {
 	if !raCache.Covered(path, off, off+8*mb-1) {
 		t.Error("the whole fetched window must be in raCache")
 	}
-	if _, busy := inFlightFetches.Load(fmt.Sprintf("%s:%d", path, 48*mb)); busy {
+	if _, busy := app.inFlightFetches.Load(fmt.Sprintf("%s:%d", path, 48*mb)); busy {
 		t.Error("the flight must be released once the fill is done")
 	}
 	if len(fe.blockCalls()) != 0 {
@@ -375,6 +377,7 @@ func TestReadInnerRetriesFetchAheadThenSucceeds(t *testing.T) {
 }
 
 func TestReadInnerGivesUpWithEIOAfterThreeFetchAheadAttempts(t *testing.T) {
+	newTestApp(t)
 	fe := useEngineReadPath(t)
 	fe.aheadFn = func(_ int, _ int64, _, _ []byte, onFill func(int, bool, error)) (int, error) {
 		err := errors.New("stalled")
@@ -391,7 +394,7 @@ func TestReadInnerGivesUpWithEIOAfterThreeFetchAheadAttempts(t *testing.T) {
 	if n := len(fe.aheadCalls()); n != 3 {
 		t.Errorf("FetchAhead calls = %d, want exactly 3 (bounded)", n)
 	}
-	if _, busy := inFlightFetches.Load(fmt.Sprintf("%s:%d", path, 48*mb)); busy {
+	if _, busy := app.inFlightFetches.Load(fmt.Sprintf("%s:%d", path, 48*mb)); busy {
 		t.Error("a failed fetch must release its flight so the next read can lead")
 	}
 }
@@ -529,6 +532,7 @@ func TestFollowerFetchesItselfWhenTheLeaderFailsWithoutCoveringIt(t *testing.T) 
 // --- FetchBlock prefetch ---
 
 func TestReadInnerPrefetchesTheNextChunkNearTheBoundary(t *testing.T) {
+	newTestApp(t)
 	fe := useEngineReadPath(t)
 	const path = "/test/prefetch.mkv"
 	h := engineHandle(path, 100*mb)
@@ -553,6 +557,7 @@ func TestReadInnerPrefetchesTheNextChunkNearTheBoundary(t *testing.T) {
 }
 
 func TestReadInnerPrefetchErrorCachesNothing(t *testing.T) {
+	newTestApp(t)
 	fe := useEngineReadPath(t)
 	fe.blockFn = func(int, int64, []byte) (int, error) { return 0, errors.New("timeout") }
 	const path = "/test/prefetch-err.mkv"
@@ -570,6 +575,7 @@ func TestReadInnerPrefetchErrorCachesNothing(t *testing.T) {
 }
 
 func TestReadInnerPrefetchesAfterAFetchWhenThePumpIsAbsent(t *testing.T) {
+	newTestApp(t)
 	fe := useEngineReadPath(t)
 	const path = "/test/post-fetch-prefetch.mkv"
 	h := engineHandle(path, 100*mb)
@@ -585,6 +591,7 @@ func TestReadInnerPrefetchesAfterAFetchWhenThePumpIsAbsent(t *testing.T) {
 }
 
 func TestNewHandleReadingPastTheHeadWarmsTheLandingChunk(t *testing.T) {
+	newTestApp(t)
 	fe := useEngineReadPath(t)
 	const path = "/test/warm-landing.mkv"
 	h := engineHandle(path, 100*mb) // lastOff -1: a new handle resuming deep in the file
@@ -604,6 +611,7 @@ func TestNewHandleReadingPastTheHeadWarmsTheLandingChunk(t *testing.T) {
 }
 
 func TestSeekInterruptsThePumpReaderAndWarmsTheTarget(t *testing.T) {
+	newTestApp(t)
 	cases := []struct {
 		name        string
 		pendingFlag bool
@@ -623,8 +631,8 @@ func TestSeekInterruptsThePumpReaderAndWarmsTheTarget(t *testing.T) {
 			h.lastOff = 10 * mb
 			ps := &NativePumpState{}
 			ps.interruptPending.Store(c.pendingFlag)
-			activePumps.Store(path, ps)
-			t.Cleanup(func() { activePumps.Delete(path) })
+			app.activePumps.Store(path, ps)
+			t.Cleanup(func() { app.activePumps.Delete(path) })
 			off := int64(10*mb + 64*mb + mb) // one MiB past the budget
 
 			readBytes(t, h, 256*1024, off)
@@ -654,6 +662,7 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	app = newApp() // fallback for tests that reach the read path without newTestApp
 	code := m.Run()
 	if warmDir != "" {
 		_ = os.RemoveAll(warmDir)
@@ -739,6 +748,7 @@ func TestReadInnerTailMissFetchesBlockThenServesFromTheSSD(t *testing.T) {
 }
 
 func TestReadInnerTailFetchBlockErrorFallsBackToFetchAhead(t *testing.T) {
+	newTestApp(t)
 	cases := []struct {
 		name      string
 		confirmed bool
@@ -755,8 +765,8 @@ func TestReadInnerTailFetchBlockErrorFallsBackToFetchAhead(t *testing.T) {
 			const size = 100 * mb
 			path := fmt.Sprintf("/test/ssd-tail-fallback-%d.mkv", i)
 			if c.confirmed {
-				playbackRegistry.Store(path, &PlaybackState{Path: path, ConfirmedAt: time.Now()})
-				t.Cleanup(func() { playbackRegistry.Delete(path) })
+				app.playbackRegistry.Store(path, &PlaybackState{Path: path, ConfirmedAt: time.Now()})
+				t.Cleanup(func() { app.playbackRegistry.Delete(path) })
 			}
 			h := engineHandle(path, size)
 			h.hash, h.usesWarmup = hash, true
@@ -805,14 +815,15 @@ func TestNativePumpWithoutAReaderReturnsItsSlot(t *testing.T) {
 }
 
 func TestNativePumpFillsTheCacheUpToEOFAndTearsDown(t *testing.T) {
+	newTestApp(t)
 	useEngineReadPath(t)
 	const path = "/test/pump-eof.mkv"
 	h, ps := pumpHandle(path, 10*mb) // chunks at 0, 4 and 8 MiB (2 MiB last)
 	h.hash = ""                      // exercises the late-resolution warning (no link in the URL)
 	rd := &fakeReader{}
 	takeSlot(h)
-	activePumps.Store(path, ps)
-	t.Cleanup(func() { activePumps.Delete(path) })
+	app.activePumps.Store(path, ps)
+	t.Cleanup(func() { app.activePumps.Delete(path) })
 
 	h.nativePump(context.Background(), rd, 0, ps)
 
@@ -832,7 +843,7 @@ func TestNativePumpFillsTheCacheUpToEOFAndTearsDown(t *testing.T) {
 	if rd.closes.Load() != 1 {
 		t.Errorf("reader closed %d times, want 1", rd.closes.Load())
 	}
-	if _, ok := activePumps.Load(path); ok {
+	if _, ok := app.activePumps.Load(path); ok {
 		t.Error("the pump must deregister itself at EOF")
 	}
 	if h.hasSlot.Load() || len(masterDataSemaphore) != 0 {
@@ -841,17 +852,18 @@ func TestNativePumpFillsTheCacheUpToEOFAndTearsDown(t *testing.T) {
 }
 
 func TestNativePumpLeavesAReplacementPumpRegistered(t *testing.T) {
+	newTestApp(t)
 	useEngineReadPath(t)
 	const path = "/test/pump-replaced.mkv"
 	h, ps := pumpHandle(path, 1*mb)
 	rd := &fakeReader{}
 	takeSlot(h)
 	replacement := &NativePumpState{path: path}
-	activePumps.Store(path, replacement)
-	t.Cleanup(func() { activePumps.Delete(path) })
+	app.activePumps.Store(path, replacement)
+	t.Cleanup(func() { app.activePumps.Delete(path) })
 
 	h.nativePump(context.Background(), rd, 0, ps)
-	if v, ok := activePumps.Load(path); !ok || v != replacement {
+	if v, ok := app.activePumps.Load(path); !ok || v != replacement {
 		t.Error("an old pump's exit must not deregister the pump that replaced it")
 	}
 	if rd.closes.Load() != 1 {
@@ -924,6 +936,7 @@ func TestNativePumpRetriesAChunkAfterAReaderErrorAndResetsTheInterruptFlag(t *te
 }
 
 func TestNativePumpSnapsToThePlayerAfterASeek(t *testing.T) {
+	newTestApp(t)
 	cases := []struct {
 		name          string
 		start, player int64
@@ -1037,6 +1050,7 @@ func TestNativePumpChunkWritesTheHeadWarmup(t *testing.T) {
 }
 
 func TestStartNativePumpRegistersTheReaderAndRunsToEOF(t *testing.T) {
+	newTestApp(t)
 	fe := useEngineReadPath(t)
 	const path = "/test/pump-start.mkv"
 	h, _ := pumpHandle(path, 10*mb)
@@ -1048,13 +1062,13 @@ func TestStartNativePumpRegistersTheReaderAndRunsToEOF(t *testing.T) {
 			return len(p), nil
 		}}
 	}
-	t.Cleanup(func() { activePumps.Delete(path) })
+	t.Cleanup(func() { app.activePumps.Delete(path) })
 
 	h.startNativePump(testHash, 3)
 	if !h.hasSlot.Load() || len(masterDataSemaphore) != 1 {
 		t.Fatal("the pump must hold a master slot")
 	}
-	v, ok := activePumps.Load(path)
+	v, ok := app.activePumps.Load(path)
 	if !ok {
 		t.Fatal("the pump must be registered before it starts reading")
 	}
@@ -1076,6 +1090,7 @@ func TestStartNativePumpRegistersTheReaderAndRunsToEOF(t *testing.T) {
 }
 
 func TestStartNativePumpResumesFromTheCachedOffsetAndAnchorsToThePlayer(t *testing.T) {
+	newTestApp(t)
 	cases := []struct {
 		name      string
 		cached    bool // a stale high-water mark in raCache
@@ -1094,7 +1109,7 @@ func TestStartNativePumpResumesFromTheCachedOffsetAndAnchorsToThePlayer(t *testi
 			if c.cached {
 				raCache.Put(path, 0, 4*mb-1, wantPattern(int(4*mb), 0))
 			}
-			t.Cleanup(func() { activePumps.Delete(path) })
+			t.Cleanup(func() { app.activePumps.Delete(path) })
 
 			h.startNativePump(testHash, 3)
 			waitUntil(t, "the pump to finish", func() bool { return !h.hasSlot.Load() && fe.readerCount() == 1 })
@@ -1107,6 +1122,7 @@ func TestStartNativePumpResumesFromTheCachedOffsetAndAnchorsToThePlayer(t *testi
 }
 
 func TestStartNativePumpAttachesToARunningPump(t *testing.T) {
+	newTestApp(t)
 	cases := []struct {
 		name         string
 		refs         int32
@@ -1126,8 +1142,8 @@ func TestStartNativePumpAttachesToARunningPump(t *testing.T) {
 			h.lastOff = -1
 			rd := &fakeReader{}
 			ps := &NativePumpState{path: path, refCount: c.refs, reader: rd, cancel: func() {}, playerOff: c.playerOff}
-			activePumps.Store(path, ps)
-			t.Cleanup(func() { activePumps.Delete(path) })
+			app.activePumps.Store(path, ps)
+			t.Cleanup(func() { app.activePumps.Delete(path) })
 
 			h.startNativePump(testHash, 3)
 			if !h.hasSlot.Load() || h.pumpState != ps || h.nativeReader != streamReader(rd) {
@@ -1171,10 +1187,11 @@ func TestStartNativePumpReturnsAtOnceForAHandleThatHoldsASlot(t *testing.T) {
 }
 
 func TestReadUpgradesToAPumpOnTheFlyForConfirmedPlayback(t *testing.T) {
+	newTestApp(t)
 	fe := useEngineReadPath(t)
 	const path = "/test/pump-upgrade.mkv"
-	playbackRegistry.Store(path, &PlaybackState{Path: path, IsHealthy: true})
-	t.Cleanup(func() { playbackRegistry.Delete(path); activePumps.Delete(path) })
+	app.playbackRegistry.Store(path, &PlaybackState{Path: path, IsHealthy: true})
+	t.Cleanup(func() { app.playbackRegistry.Delete(path); app.activePumps.Delete(path) })
 	h := engineHandle(path, 10*mb)
 	h.hasSlot.Store(false)
 	h.lastActivityTime = time.Now()
@@ -1191,7 +1208,7 @@ func TestReadUpgradesToAPumpOnTheFlyForConfirmedPlayback(t *testing.T) {
 	if !bytes.Equal(got, wantPattern(256*1024, 1*mb)) {
 		t.Error("wrong bytes")
 	}
-	v, ok := activePumps.Load(path)
+	v, ok := app.activePumps.Load(path)
 	if !ok || fe.readerCount() != 1 || v.(*NativePumpState).reader != streamReader(fe.readers[0]) || !h.hasSlot.Load() {
 		t.Fatal("a streaming read during confirmed playback must start a pump with a slot")
 	}
@@ -1200,12 +1217,13 @@ func TestReadUpgradesToAPumpOnTheFlyForConfirmedPlayback(t *testing.T) {
 }
 
 func TestReadAttachesToTheRunningPumpInsteadOfUpgrading(t *testing.T) {
+	newTestApp(t)
 	fe := useEngineReadPath(t)
 	const path = "/test/pump-attach-on-read.mkv"
 	rd := &fakeReader{}
 	ps := &NativePumpState{path: path, refCount: 1, reader: rd, cancel: func() {}}
-	activePumps.Store(path, ps)
-	t.Cleanup(func() { activePumps.Delete(path) })
+	app.activePumps.Store(path, ps)
+	t.Cleanup(func() { app.activePumps.Delete(path) })
 	h := engineHandle(path, 100*mb)
 	h.hasSlot.Store(false)
 	registerHandle(t, h)

@@ -117,8 +117,6 @@ type startupReporter struct {
 	doc   atomic.Pointer[[]byte]
 }
 
-var startupRep = &startupReporter{}
-
 // note records facts from a stage.
 func (r *startupReporter) note(f func(*startupFacts)) {
 	r.mu.Lock()

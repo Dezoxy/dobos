@@ -275,27 +275,27 @@ func collectReaderBudgetProm(w *promtext.Writer) {
 		promSample(unconfirmedSessions[rbConfirmedLate].Load(), lbl("outcome", "confirmed_late")))
 	w.Counter("flodni_unconfirmed_read_refused_reads_total",
 		"Reads the reader budget refused with EIO (refuse_unconfirmed_reads on only).",
-		promSample(unconfirmedRefusedReads.Load()))
+		promSample(app.unconfirmedRefusedReads.Load()))
 	w.Counter("flodni_unconfirmed_read_holds_total",
 		"Holds of a refused handle, counted when they end: lifted by a confirmation, or refused when the time ran out.",
-		promSample(unconfirmedHolds[rbHoldLifted].Load(), lbl("result", "lifted")),
-		promSample(unconfirmedHolds[rbHoldRefused].Load(), lbl("result", "refused")))
+		promSample(app.unconfirmedHolds[rbHoldLifted].Load(), lbl("result", "lifted")),
+		promSample(app.unconfirmedHolds[rbHoldRefused].Load(), lbl("result", "refused")))
 	w.Counter("flodni_unconfirmed_read_confirmed_after_refusal_total",
 		"Sessions that had a read refused and were then confirmed by a playback webhook, counted once each (plays the budget broke).",
-		promSample(unconfirmedConfirmedAfterRefusal.Load()))
+		promSample(app.unconfirmedConfirmedAfterRefusal.Load()))
 	w.Counter("flodni_reader_budget_readahead_overshoot_bytes_total",
 		"Bytes the engine was asked to fetch as read-ahead past the head window edge, for a read that started inside the window of a file with no confirmed playback. Asked for, not downloaded. With unconfirmed_readahead_clamp on it stays at 0.",
-		promSample(readaheadOvershootBytes.Load()))
+		promSample(app.readaheadOvershootBytes.Load()))
 	w.Counter("flodni_reader_budget_attributed_fill_bytes_total",
 		"Bytes the pump and the prefetches filled past the head and tail windows of a file with a session and no confirmed playback. They count toward the margin only with attribute_fills_to_reader on.",
-		promSample(attributedFillBytes.Load()))
+		promSample(app.attributedFillBytes.Load()))
 	w.Counter("flodni_playback_webhooks_received_total",
 		"Playback start and resume webhooks for a movie or an episode, matched to one file or not.",
 		promSample(playbackWebhooksMatched.Load(), lbl("matched", "true")),
 		promSample(playbackWebhooksUnmatched.Load(), lbl("matched", "false")))
 	rules := make([]promtext.Sample, 0, numWebhookRules)
 	for i, name := range webhookRuleNames {
-		rules = append(rules, promSample(playbackWebhookRules[i].Load(), lbl("rule", name)))
+		rules = append(rules, promSample(app.playbackWebhookRules[i].Load(), lbl("rule", name)))
 	}
 	w.Counter("flodni_playback_webhook_match_rule_total",
 		"Playback start and resume webhooks by the rule that resolved them: basename, path_map, imdb, fuzzy, or none.",

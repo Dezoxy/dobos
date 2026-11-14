@@ -71,7 +71,7 @@ func TestManualConfirmRepeatRenewsThePlayedTime(t *testing.T) {
 // unconfirmed and keeps being refused until a webhook confirms it.
 func TestManualConfirmDoesNotLiftAReaderBudgetHold(t *testing.T) {
 	path, key := playedEnv(t)
-	ps, ok := playbackRegistry.Load(path)
+	ps, ok := app.playbackRegistry.Load(path)
 	if !ok {
 		t.Fatal("no session")
 	}
@@ -110,9 +110,9 @@ func TestWebhookPlayCountsAsAWebhookMark(t *testing.T) {
 // the control token fixed at start-up the way main fixes it.
 func confirmServer(t *testing.T, startToken string) (http.Handler, warmup.FileKey) {
 	t.Helper()
-	old := controlToken
-	controlToken = startToken
-	t.Cleanup(func() { controlToken = old })
+	old := app.controlToken
+	app.controlToken = startToken
+	t.Cleanup(func() { app.controlToken = old })
 
 	const hash = "0123456789abcdef0123456789abcdef01234567"
 	tv := t.TempDir()
@@ -123,7 +123,7 @@ func confirmServer(t *testing.T, startToken string) (http.Handler, warmup.FileKe
 	m := library.New(library.Config{TVDir: tv, Confirm: confirmPlayByHand, TokenSet: apiTokenSet})
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/library/confirm", library.NewHandler(m).Confirm)
-	return apiauth.Middleware(controlToken, nil, mux), warmup.FileKey{Hash: hash, FileIdx: 3}
+	return apiauth.Middleware(app.controlToken, nil, mux), warmup.FileKey{Hash: hash, FileIdx: 3}
 }
 
 func postConfirm(h http.Handler, key warmup.FileKey, bearer string) int {

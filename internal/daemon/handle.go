@@ -167,7 +167,7 @@ func writeWarmupFromFetch(h *MkvHandle, off int64, data []byte) {
 	if h.size <= warmup.TailWarmupSize || off < warmup.TailStart(h.size) {
 		return
 	}
-	if val, ok := playbackRegistry.Load(h.path); ok {
+	if val, ok := app.playbackRegistry.Load(h.path); ok {
 		ps := val.(*PlaybackState)
 		ps.mu.RLock()
 		confirmed := !ps.ConfirmedAt.IsZero()
@@ -215,7 +215,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 	h.lastActivityTime = now
 
 	// V750: Update PlaybackState inference tracking
-	if val, ok := playbackRegistry.Load(h.path); ok {
+	if val, ok := app.playbackRegistry.Load(h.path); ok {
 		if ps, ok := val.(*PlaybackState); ok {
 			ps.mu.Lock()
 			ps.ReadCount++
@@ -278,7 +278,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 				warmStart := (off / warmChunk) * warmChunk
 				// Unified with predictive-prefetch key format to avoid double-fetching the same chunk.
 				warmKey := fmt.Sprintf("%s:%d", h.path, warmStart)
-				if _, loaded := inFlightPrefetches.LoadOrStore(warmKey, true); !loaded {
+				if _, loaded := app.inFlightPrefetches.LoadOrStore(warmKey, true); !loaded {
 					// Non-blocking slot check before spawning: under a saturated semaphore (e.g.
 					// a Plex scan burst touching hundreds of files), spawning first and waiting
 					// inside the goroutine meant a goroutine was created only to sit blocked for
@@ -288,7 +288,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 					case masterDataSemaphore <- struct{}{}:
 						goOff, goKey, goHash, goFileID, goSize := warmStart, warmKey, h.hash, h.fileID, h.size
 						safeGo(func() {
-							defer inFlightPrefetches.Delete(goKey)
+							defer app.inFlightPrefetches.Delete(goKey)
 							defer func() { <-masterDataSemaphore }()
 							fetchEnd := goOff + warmChunk - 1
 							if fetchEnd >= goSize {
@@ -311,7 +311,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 							}
 						})
 					default:
-						inFlightPrefetches.Delete(warmKey)
+						app.inFlightPrefetches.Delete(warmKey)
 					}
 				}
 			}
@@ -333,14 +333,14 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 		// persistence (see nativePump) pick it up instead of only the original primary handle,
 		// which may be an idle stale probe by now.
 		if !h.isPrimaryHandle.Load() {
-			if val, ok := playbackRegistry.Load(h.path); ok {
+			if val, ok := app.playbackRegistry.Load(h.path); ok {
 				if pbs, ok := val.(*PlaybackState); ok && (pbs.GetStatus() || pbs.IsInferredPlayback()) {
 					becomePrimary(h)
 				}
 			}
 		}
 		var ps *NativePumpState
-		if val, ok := activePumps.Load(h.path); ok {
+		if val, ok := app.activePumps.Load(h.path); ok {
 			ps = val.(*NativePumpState)
 		}
 		if ps == nil || !ps.interruptPending.Swap(true) {
@@ -357,14 +357,14 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 				warmStart := (off / warmChunk) * warmChunk
 				// Unified with predictive-prefetch key format to avoid double-fetching the same chunk.
 				warmKey := fmt.Sprintf("%s:%d", h.path, warmStart)
-				if _, loaded := inFlightPrefetches.LoadOrStore(warmKey, true); !loaded {
+				if _, loaded := app.inFlightPrefetches.LoadOrStore(warmKey, true); !loaded {
 					// See the matching comment on the other WarmLanding site above: non-blocking
 					// slot check before spawning avoids creating a goroutine that just blocks.
 					select {
 					case masterDataSemaphore <- struct{}{}:
 						goOff, goKey, goHash, goFileID, goSize := warmStart, warmKey, h.hash, h.fileID, h.size
 						safeGo(func() {
-							defer inFlightPrefetches.Delete(goKey)
+							defer app.inFlightPrefetches.Delete(goKey)
 							defer func() { <-masterDataSemaphore }()
 							fetchEnd := goOff + warmChunk - 1
 							if fetchEnd >= goSize {
@@ -387,7 +387,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 							}
 						})
 					default:
-						inFlightPrefetches.Delete(warmKey)
+						app.inFlightPrefetches.Delete(warmKey)
 					}
 				}
 			}
@@ -475,7 +475,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 		if !isScanRead(h) && (!h.hasSlot.Load() || (nextChunkStart-off < chunkSize/4)) && !raCache.Exists(h.path, nextChunkStart) &&
 			!budgetBlocksFetch(h.path, nextChunkStart, chunkSize, h.size) {
 			prefetchKey := fmt.Sprintf("%s:%d", h.path, nextChunkStart)
-			if _, loaded := inFlightPrefetches.LoadOrStore(prefetchKey, true); !loaded {
+			if _, loaded := app.inFlightPrefetches.LoadOrStore(prefetchKey, true); !loaded {
 				goStart, goKey, goHash, goFileID := nextChunkStart, prefetchKey, h.hash, h.fileID
 				fetchEnd := goStart + chunkSize - 1
 				if fetchEnd >= h.size {
@@ -485,12 +485,12 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 				// blocks up to 500ms waiting on a saturated semaphore during a Plex scan burst
 				// (same reasoning as the WarmLanding sites above).
 				if fetchEnd <= goStart {
-					inFlightPrefetches.Delete(prefetchKey)
+					app.inFlightPrefetches.Delete(prefetchKey)
 				} else {
 					select {
 					case masterDataSemaphore <- struct{}{}:
 						safeGo(func() {
-							defer inFlightPrefetches.Delete(goKey)
+							defer app.inFlightPrefetches.Delete(goKey)
 							defer func() { <-masterDataSemaphore }()
 
 							if goHash != "" {
@@ -511,7 +511,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 							// HTTP Fallback REMOVED
 						})
 					default:
-						inFlightPrefetches.Delete(prefetchKey)
+						app.inFlightPrefetches.Delete(prefetchKey)
 					}
 				}
 			}
@@ -575,7 +575,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 			goto pumpSlotResolved
 		}
 		// Attach to existing pump if one is already running for this path.
-		if val, ok := activePumps.Load(h.path); ok {
+		if val, ok := app.activePumps.Load(h.path); ok {
 			ps := val.(*NativePumpState)
 			if h.attachToExistingPump(ps) {
 				logger.Info(fmt.Sprintf("[V258] Handle ATTACHED to existing active pump (Refs: %d): %s", atomic.LoadInt32(&ps.refCount), filepath.Base(h.path)), "file", filepath.Base(h.path))
@@ -587,7 +587,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 		} else {
 			// On-the-fly pump upgrade for confirmed playback with available slot.
 			if isStreaming && h.hash != "" {
-				if val, ok := playbackRegistry.Load(h.path); ok {
+				if val, ok := app.playbackRegistry.Load(h.path); ok {
 					if ps, ok := val.(*PlaybackState); ok && (ps.GetStatus() || ps.IsInferredPlayback()) {
 						select {
 						case masterDataSemaphore <- struct{}{}:
@@ -603,7 +603,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 								path:     h.path,
 								refCount: 1,
 							}
-							activePumps.Store(h.path, sharedState)
+							app.activePumps.Store(h.path, sharedState)
 							h.pumpState = sharedState
 							globalOpenTracker.Inc(h.hash, h.path)
 
@@ -681,7 +681,7 @@ pumpSlotResolved:
 		flightChunk := raCache.ChunkSize(h.path)
 		flightKey := fmt.Sprintf("%s:%d", h.path, (off/flightChunk)*flightChunk)
 		newFlight := &fetchFlight{done: make(chan struct{})}
-		if val, loaded := inFlightFetches.LoadOrStore(flightKey, newFlight); loaded {
+		if val, loaded := app.inFlightFetches.LoadOrStore(flightKey, newFlight); loaded {
 			fl := val.(*fetchFlight)
 			copyStart := time.Now()
 			// The leader re-caches its window as it fills, so poll instead of waiting for the
@@ -717,7 +717,7 @@ pumpSlotResolved:
 			var once sync.Once
 			releaseFlight = func() {
 				once.Do(func() {
-					inFlightFetches.Delete(flightKey)
+					app.inFlightFetches.Delete(flightKey)
 					close(newFlight.done)
 				})
 			}
@@ -844,10 +844,10 @@ DATA_READY:
 		if isStreaming && (!h.hasSlot.Load() || isLagging) && !budgetBlocksFetch(h.path, nextChunkStart, chunkSize, h.size) {
 			if distanceToNext < chunkSize/4 {
 				prefetchKey := fmt.Sprintf("%s:%d", h.path, nextChunkStart)
-				if _, loaded := inFlightPrefetches.LoadOrStore(prefetchKey, true); !loaded {
+				if _, loaded := app.inFlightPrefetches.LoadOrStore(prefetchKey, true); !loaded {
 					goStart, goSize, goKey, goHash, goFileID := nextChunkStart, chunkSize, prefetchKey, h.hash, h.fileID
 					safeGo(func() {
-						defer inFlightPrefetches.Delete(goKey)
+						defer app.inFlightPrefetches.Delete(goKey)
 
 						// Check if already in cache to avoid useless work
 						if raCache.Exists(h.path, goStart) {
@@ -943,9 +943,9 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 	// Delete from activeHandles here, not at the end: the early returns below (probe
 	// without slot, replaced pump) would otherwise leak this entry, and both the live
 	// handle checks (anyLiveHandleFor*) and cleanup's activePaths trust the map.
-	activeHandles.Delete(h)
+	app.activeHandles.Delete(h)
 
-	if val, ok := activePumps.Load(h.path); ok {
+	if val, ok := app.activePumps.Load(h.path); ok {
 		ps := val.(*NativePumpState)
 		// Only primary handles persist position; secondary probes have arbitrary offsets.
 		if h.isPrimaryHandle.Load() {
@@ -970,11 +970,11 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 			// The pump stays alive until media.stop webhook sets IsHealthy=false and kills it.
 			// This survives long pauses, buffering gaps, and Apple TV re-reads without
 			// killing the pump and causing freeze on resume.
-			if pbVal, ok := playbackRegistry.Load(h.path); ok {
+			if pbVal, ok := app.playbackRegistry.Load(h.path); ok {
 				if pbState := pbVal.(*PlaybackState); pbState.IsHealthy {
 					logger.Info(fmt.Sprintf("[V306] Healthy playback — pump stays alive (no grace period) for %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 					// Stop any pending grace timer from a previous release cycle
-					if oldTimer, ok := pumpTimers.LoadAndDelete(h.path); ok {
+					if oldTimer, ok := app.pumpTimers.LoadAndDelete(h.path); ok {
 						oldTimer.(*time.Timer).Stop()
 					}
 					goto skipGrace
@@ -983,7 +983,7 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 
 			// Grace period: 30s for unconfirmed probes/scans.
 			graceDuration := 30 * time.Second
-			if pbVal, ok := playbackRegistry.Load(h.path); ok {
+			if pbVal, ok := app.playbackRegistry.Load(h.path); ok {
 				if pbState := pbVal.(*PlaybackState); !pbState.ConfirmedAt.IsZero() {
 					graceDuration = 90 * time.Second
 					if pbState.IsInferredPlayback() {
@@ -995,24 +995,24 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 					logger.Info(fmt.Sprintf("[V750] Inferred playback — extended grace (5m) for %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 				}
 			}
-			if oldTimer, ok := pumpTimers.LoadAndDelete(h.path); ok {
+			if oldTimer, ok := app.pumpTimers.LoadAndDelete(h.path); ok {
 				oldTimer.(*time.Timer).Stop()
 			}
 			var t *time.Timer
 			t = time.AfterFunc(graceDuration, func() {
-				pumpTimers.CompareAndDelete(h.path, t)
-				if val, ok := activePumps.Load(h.path); ok {
+				app.pumpTimers.CompareAndDelete(h.path, t)
+				if val, ok := app.activePumps.Load(h.path); ok {
 					psNow := val.(*NativePumpState)
 					if atomic.LoadInt32(&psNow.refCount) <= 0 {
 						if psNow.cancel != nil {
 							psNow.cancel()
 						}
-						activePumps.Delete(h.path)
+						app.activePumps.Delete(h.path)
 						logger.Info(fmt.Sprintf("[V420] Shared Pump Terminated (Grace Period Expired): %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 					}
 				}
 			})
-			pumpTimers.Store(h.path, t)
+			app.pumpTimers.Store(h.path, t)
 			logger.Info(fmt.Sprintf("[V420] Last handle closed: Shared Pump entering %s grace period for %s", graceDuration, filepath.Base(h.path)), "grace_duration", graceDuration, "file", filepath.Base(h.path))
 		}
 
@@ -1027,7 +1027,7 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 	lastOffset := atomic.LoadInt64(&h.lastOff)
 	isProbeOnly := lastOffset < 2*1024*1024 // < 2MB = probe/scanner, not real playback
 	if h.hasWarmup && isProbeOnly {
-		if val, ok := playbackRegistry.Load(h.path); ok {
+		if val, ok := app.playbackRegistry.Load(h.path); ok {
 			state := val.(*PlaybackState)
 			state.mu.RLock()
 			stopped := state.IsStopped
@@ -1040,15 +1040,15 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 		}
 	}
 
-	if oldTimer, ok := priorityTimers.LoadAndDelete(h.path); ok {
+	if oldTimer, ok := app.priorityTimers.LoadAndDelete(h.path); ok {
 		oldTimer.(*time.Timer).Stop()
 	}
 	var t *time.Timer
 	t = time.AfterFunc(retentionDelay, func() {
-		priorityTimers.CompareAndDelete(h.path, t)
+		app.priorityTimers.CompareAndDelete(h.path, t)
 
 		// V750: Don't remove priority if pump is still active for this path
-		if _, pumpOk := activePumps.Load(h.path); pumpOk {
+		if _, pumpOk := app.activePumps.Load(h.path); pumpOk {
 			logger.Info(fmt.Sprintf("[V750] Priority retained — pump still active for %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 			return
 		}
@@ -1056,7 +1056,7 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 		// V306: Don't remove priority if playback is confirmed healthy — even if
 		// pump goroutine exited unexpectedly, the torrent must stay alive for the
 		// next Read() to create a new pump without a gap.
-		if val, ok := playbackRegistry.Load(h.path); ok {
+		if val, ok := app.playbackRegistry.Load(h.path); ok {
 			if pbState := val.(*PlaybackState); pbState.GetStatus() {
 				logger.Info(fmt.Sprintf("[V306] Priority retained — healthy playback confirmed for %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 				return
@@ -1068,7 +1068,7 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 			return
 		}
 
-		if val, ok := playbackRegistry.Load(h.path); ok {
+		if val, ok := app.playbackRegistry.Load(h.path); ok {
 			state := val.(*PlaybackState)
 			if state.Hash != "" {
 				hHash := metainfo.NewHashFromHex(state.Hash)
@@ -1108,7 +1108,7 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 		// Cleanup handled by GlobalCleanupManager (15 min timeout).
 		// playbackRegistry.Delete(h.path)
 	})
-	priorityTimers.Store(h.path, t)
+	app.priorityTimers.Store(h.path, t)
 
 	return 0
 }

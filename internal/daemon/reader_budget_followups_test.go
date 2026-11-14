@@ -41,7 +41,7 @@ func TestClampReadahead(t *testing.T) {
 		t.Cleanup(func() { unconfirmedReadaheadClamp = prev })
 	}
 	const path = "/m/clamp.mkv"
-	playbackRegistry.Delete(path)
+	app.playbackRegistry.Delete(path)
 
 	off, end := head-mb, head-mb+256<<10-1
 	on(false)
@@ -64,7 +64,7 @@ func TestClampReadahead(t *testing.T) {
 	}
 	// A confirmed file is not touched.
 	confirmPlayback(path)
-	t.Cleanup(func() { playbackRegistry.Delete(path) })
+	t.Cleanup(func() { app.playbackRegistry.Delete(path) })
 	off, end = head-mb, head-mb+256<<10-1
 	if got := clampReadahead(path, off, end, off+8*mb-1, size); got != off+8*mb-1 {
 		t.Errorf("confirmed file: fetchEnd = %d, moved", got)
@@ -85,7 +85,7 @@ func overshootRead(t *testing.T, clamp bool, confirmed bool) (fetchLen int64, co
 	}
 	h := engineHandle(s.path, s.size)
 	off := warmup.FileSize - mb
-	o0 := readaheadOvershootBytes.Load()
+	o0 := app.readaheadOvershootBytes.Load()
 	got := readBytes(t, h, 256*1024, off)
 	if !bytes.Equal(got, wantPattern(256*1024, off)) {
 		t.Fatal("wrong bytes")
@@ -95,7 +95,7 @@ func overshootRead(t *testing.T, clamp bool, confirmed bool) (fetchLen int64, co
 		t.Fatalf("FetchAhead calls = %d, want 1", len(calls))
 	}
 	waitUntil(t, "the fill to land", func() bool { return raCache.Covered(s.path, off, off+256*1024-1) })
-	return int64(calls[0].bufLen), readaheadOvershootBytes.Load() - o0
+	return int64(calls[0].bufLen), app.readaheadOvershootBytes.Load() - o0
 }
 
 func TestReadaheadOvershootIsCountedWithoutTheClamp(t *testing.T) {
@@ -125,18 +125,18 @@ func TestReadaheadOvershootAndClampSkipAConfirmedFile(t *testing.T) {
 
 func TestNoteFillAttributedCountsOnlyWhatTheBudgetSees(t *testing.T) {
 	s := budgetEnv(t, 1<<40)
-	a0 := attributedFillBytes.Load()
+	a0 := app.attributedFillBytes.Load()
 	head := warmup.FileSize
 
 	noteFillAttributed(s.path, 0, 4*mb, s.size) // inside the head window
 	noteFillAttributed(s.path, s.size-mb, mb, s.size)
 	noteFillAttributed("/m/no-session.mkv", 500*mb, 4*mb, s.size)
-	if d := attributedFillBytes.Load() - a0; d != 0 {
+	if d := app.attributedFillBytes.Load() - a0; d != 0 {
 		t.Fatalf("window fills or a file without a session counted +%d", d)
 	}
 	noteFillAttributed(s.path, head-mb, 4*mb, s.size) // straddles the edge: 3 MiB outside
 	noteFillAttributed(s.path, 500*mb, 4*mb, s.size)
-	if d := attributedFillBytes.Load() - a0; d != 7*mb {
+	if d := app.attributedFillBytes.Load() - a0; d != 7*mb {
 		t.Fatalf("counted +%d, want %d", d, 7*mb)
 	}
 	if s.unconfirmedFill.Load() != 7*mb {
@@ -144,7 +144,7 @@ func TestNoteFillAttributedCountsOnlyWhatTheBudgetSees(t *testing.T) {
 	}
 	confirmPlayback(s.path)
 	noteFillAttributed(s.path, 500*mb, 4*mb, s.size)
-	if d := attributedFillBytes.Load() - a0; d != 7*mb {
+	if d := app.attributedFillBytes.Load() - a0; d != 7*mb {
 		t.Fatalf("a confirmed file counted +%d more", d-7*mb)
 	}
 }
@@ -200,12 +200,12 @@ func TestPumpFillIsAttributedToTheSession(t *testing.T) {
 	useEngineReadPath(t)
 	s := budgetEnv(t, 1<<40)
 	h := engineHandle(s.path, s.size)
-	a0 := attributedFillBytes.Load()
+	a0 := app.attributedFillBytes.Load()
 	rd := &fakeReader{}
 	if stop, next := h.nativePumpChunk(rd, 500*mb, 4*mb, 500*mb); stop || next != 504*mb {
 		t.Fatalf("got (%v, %d)", stop, next)
 	}
-	if d := attributedFillBytes.Load() - a0; d != 4*mb {
+	if d := app.attributedFillBytes.Load() - a0; d != 4*mb {
 		t.Fatalf("pump fill attributed +%d, want %d", d, 4*mb)
 	}
 }
@@ -215,9 +215,9 @@ func TestWarmLandingPrefetchIsAttributedToTheSession(t *testing.T) {
 	s := budgetEnv(t, 1<<40)
 	h := engineHandle(s.path, s.size)
 	h.hasSlot.Store(false)
-	a0 := attributedFillBytes.Load()
+	a0 := app.attributedFillBytes.Load()
 	readBytes(t, h, 256*1024, 500*mb) // a new handle's first read past the head
-	waitUntil(t, "the prefetch to be attributed", func() bool { return attributedFillBytes.Load()-a0 >= 4*mb })
+	waitUntil(t, "the prefetch to be attributed", func() bool { return app.attributedFillBytes.Load()-a0 >= 4*mb })
 	waitUntil(t, "prefetches to end", flightFree(h.path, 500*mb))
 	if len(fe.blockCalls()) == 0 {
 		t.Fatal("no prefetch ran")
@@ -256,7 +256,7 @@ func TestFloorsAreKeptApartAcrossALiveToggle(t *testing.T) {
 	noteFillAttributed(s.path, 500*mb, 4*mb, s.size) // 4 MiB of fills
 	confirmPlayback(s.path)
 	noteConfirmedLate(s.path) // floors: served 20 MiB, fill 4 MiB
-	playbackRegistry.Delete(s.path)
+	app.playbackRegistry.Delete(s.path)
 
 	attributeFillsToReader = func() bool { return true }
 	if s.pastMargin() {

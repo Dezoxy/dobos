@@ -11,7 +11,7 @@ func cleanActiveHandles(t *testing.T, hs ...*MkvHandle) {
 	t.Helper()
 	t.Cleanup(func() {
 		for _, h := range hs {
-			activeHandles.Delete(h)
+			app.activeHandles.Delete(h)
 		}
 	})
 }
@@ -35,20 +35,21 @@ func TestOpenFlags(t *testing.T) {
 }
 
 func TestAnyLiveHandleForFlipsWhenAHandleIsStored(t *testing.T) {
+	newTestApp(t)
 	const path = "/test/live-flip.mkv"
 	h := &MkvHandle{path: path}
 	cleanActiveHandles(t, h)
 	if anyLiveHandleFor(path) {
 		t.Fatal("live before any handle is stored")
 	}
-	activeHandles.Store(h, true)
+	app.activeHandles.Store(h, true)
 	if !anyLiveHandleFor(path) {
 		t.Fatal("not live with a handle stored")
 	}
 	if anyLiveHandleFor("/test/other.mkv") {
 		t.Fatal("a handle on another path counted as live")
 	}
-	activeHandles.Delete(h)
+	app.activeHandles.Delete(h)
 	if anyLiveHandleFor(path) {
 		t.Fatal("still live after the handle was deleted")
 	}
@@ -57,6 +58,7 @@ func TestAnyLiveHandleForFlipsWhenAHandleIsStored(t *testing.T) {
 // The flag is computed before the handle is stored: stored first, every open would see
 // itself and the flag would be unconditional, which serves a replaced release's pages.
 func TestStoreOpenHandleComputesFlagsBeforeStoring(t *testing.T) {
+	newTestApp(t)
 	const path = "/test/register.mkv"
 	first, second, third := &MkvHandle{path: path}, &MkvHandle{path: path}, &MkvHandle{path: path}
 	cleanActiveHandles(t, first, second, third)
@@ -67,8 +69,8 @@ func TestStoreOpenHandleComputesFlagsBeforeStoring(t *testing.T) {
 	if got := storeOpenHandle(second); got != fuse.FOPEN_KEEP_CACHE {
 		t.Fatalf("second concurrent open flags = %#x, want FOPEN_KEEP_CACHE", got)
 	}
-	activeHandles.Delete(first)
-	activeHandles.Delete(second)
+	app.activeHandles.Delete(first)
+	app.activeHandles.Delete(second)
 	if got := storeOpenHandle(third); got != 0 {
 		t.Fatalf("open after every handle released flags = %#x, want 0", got)
 	}
