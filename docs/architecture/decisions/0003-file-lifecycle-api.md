@@ -124,7 +124,7 @@ optional fields):
 | Field | Values | Meaning |
 |---|---|---|
 | `replace` | `never`, `if-better`, `always` | What to do when the registry already holds a different release for the same `EpisodeKey`. `never`: refuse. `if-better`: replace only when the request's `quality_score` is greater than the stored one (a score of 0 is never better, which makes the unscored caller safe). `always`: replace. Omitted: `always`, which is today's behaviour. |
-| `dry_run` | bool | Run everything up to the write and report; write nothing. |
+| `dry_run` | bool | Decide from the registry only and report; no engine call, nothing written, readability `unchecked`. |
 
 The readability check stays under every policy: it is a safety gate, not a
 policy. A release that delivers no data is refused with 422 whatever `replace`
@@ -237,21 +237,24 @@ Negative / accepted trade-offs:
 
 - `add` keeps its several effects; only the replacement and the preview become
   explicit. Warm on add stays a daemon switch, not a per-call option.
-- `dry_run` is not free: past the registry check it asks the engine for the
-  torrent and reads its head, then drops it (open question).
+- `dry_run` is a registry decision only: it never asks the engine for the
+  torrent, so it cannot say whether the release reads (readability
+  `unchecked`), and a plan can still fail at the real add's readability gate.
 - The state projection reads three stores that are updated at different times;
   a reader can see `added` a moment before `warm`.
 
 ## Risks
 
-- **Private torrents.** `dry_run` and `add` start a torrent. Both must use the
-  same magnet and tracker handling, so a dry run of a private release adds no
-  public tracker, DHT or PEX path. Tests below pin it.
+- **Private torrents.** `add` starts a torrent and keeps today's magnet and
+  tracker handling. `dry_run` starts nothing: no engine call, so no announce
+  at all, private or public. A refused add (`never`, `if-better`, `kept`)
+  makes no engine call either. Tests below pin both with a recording fake.
 - **Concurrent adds.** Two adds for the same episode with different policies
   race on the registry key today and are serialised by the per-episode lock
   (`hashLocks`, `showLocks`). The policy check must run under that lock.
-- **Confirm abuse.** A manual confirm can protect any file from eviction. With
-  `api_token` unset anyone reaching the port can do it.
+- **Confirm abuse.** A manual confirm can protect any file from eviction, so
+  it fails closed: with `api_token` unset it answers 403 and records nothing.
+  With a token, anyone holding it can still protect any file.
 
 ## Migration: small pull requests
 
@@ -275,14 +278,14 @@ with its tests. All are designed, not built.
    with two concurrent adds of different policies (`-race`); omitted `replace`
    equals today's golden result. Privacy: a refused add makes no `AddTorrent`
    call (recording fake), extending `privacy_test.go`.
-3. **Dry run.** `dry_run` writes no stub or registry row, calls no `OnAdded`
-   and no refresh, drops the torrent when no other stub uses it. Tests: a
-   paired test where the dry-run plan equals what the real add then does; a
-   shared hash keeps its torrent; a failed metadata wait returns the same
-   status as a real add. Privacy: a dry run of a private `.torrent` builds the
-   same magnet as an add and appends no default tracker (`privacy_test.go`
-   helpers `torrentFile`, `hasPublicTracker`); extend the daemon-side guards
-   only if the path changes how the engine is called.
+3. **Dry run.** `dry_run` is a registry decision only: it makes no engine
+   call (no `AddTorrent`, no metadata wait, no head read), writes no stub or
+   registry row, calls no `OnAdded` and no refresh, returns no `fuse_path`,
+   and reports readability `unchecked`. Tests: a dry run makes no `AddTorrent`
+   call (recording fake, extending `privacy_test.go`), for a private
+   `.torrent` and a magnet alike; a paired test where the dry-run decision
+   (`added`, `replaced`, `kept`, `skipped` per episode) equals the registry
+   decision the real add then makes; nothing is written.
 4. **State read.** `GET /api/library/file`, with a `Config` callback from the
    daemon for the `file_state` side (as `Gaps` and `OnAdded` are wired).
    Tests: one case per fact and the summary; 404 for an unknown or dropped
