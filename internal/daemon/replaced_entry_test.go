@@ -131,3 +131,33 @@ func TestSessionClosedByReplacementKeepsTheVerdictRules(t *testing.T) {
 		})
 	}
 }
+
+// The session that closes at invalidation must not leave a resume entry: the stub is
+// gone, so a later read on the path (a handle still open on the old file) must not
+// open a session, whether the session was open or had closed on idle earlier.
+func TestInvalidationLeavesNothingToResume(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		closeFirst bool
+	}{{"open session", false}, {"already closed on idle", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetSessionState(t)
+			withDirCache(t)
+			const path = "/m/Show.S01E01_0123abcd.mkv"
+			ttffRegister(path, 100, "h", 0, false, false)
+			if tc.closeFirst {
+				mustSession(t, path).closeSession()
+			}
+
+			invalidateSyncRemovedPath(path)
+
+			if _, ok := lastClosed.Load(path); ok {
+				t.Fatal("invalidation left a resumable session")
+			}
+			ttffRead(path, srcWarmupHead, time.Millisecond, 10, 0)
+			if _, ok := sessions.Load(path); ok {
+				t.Fatal("a read after invalidation resumed a session on the removed stub")
+			}
+		})
+	}
+}

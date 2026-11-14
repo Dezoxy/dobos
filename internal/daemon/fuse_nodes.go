@@ -487,6 +487,9 @@ func invalidateSyncRemovedPath(path string) {
 		if v, ok := sessions.Load(path); ok {
 			v.(*TTFFSession).closeSession()
 		}
+		// The stub is gone: a later read on this path must not resume the session
+		// that just closed (or one that closed earlier on idle).
+		lastClosed.Delete(path)
 		registry.RemoveFromRegistry(path)
 	}
 	// The directory listing is not the only way back to a removed stub: a lookup by
