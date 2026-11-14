@@ -83,3 +83,11 @@ func RemTorrent(hash metainfo.Hash) {
 	tdb.Rem("Torrents", hash.HexString())
 	mu.Unlock()
 }
+
+// TorrentsReady says whether the torrent store is open; it opens in the engine's
+// start-up, after the daemon has begun.
+func TorrentsReady() bool {
+	mu.Lock()
+	defer mu.Unlock()
+	return tdb != nil
+}

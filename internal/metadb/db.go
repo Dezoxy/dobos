@@ -20,7 +20,15 @@ type DB struct {
 	db     *sql.DB
 	path   string
 	logger Logger
+
+	// migration is the outcome of MigrateFromJSON: "" before it runs, then
+	// "already_completed" or "migrated". A failure is the error it returned.
+	migration string
 }
+
+// MigrationResult reports what MigrateFromJSON did: "already_completed", "migrated",
+// or "" when it has not run or failed.
+func (d *DB) MigrationResult() string { return d.migration }
 
 // New opens or creates a SQLite database at dbPath, applies pragmas,
 // creates tables, and returns a ready-to-use DB instance.
