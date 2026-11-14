@@ -333,8 +333,13 @@ line below is the one log format that is).
   library API. A session still open on that torrent writes the entry back
   when it closes, and a stub deleted another way leaves it in place. Such
   entries stay until a startup prunes them. The prune runs only after a
-  complete scan: both `movies` and `tv` exist and every stub was read. It
-  is skipped otherwise, and the log says so.
+  complete scan: both `movies` and `tv` exist, at least one stub was found
+  and no read failed. It is skipped otherwise, and the log says so. A stub
+  that parses but declares a size outside the valid range is logged with
+  its path and counted separately (the start-up summary line); it does not
+  block the prune and its torrent's rows stay. An unreadable directory
+  or file, or a stub that does not parse, still blocks it. The periodic
+  inode prune applies the same test to its own walk.
 - Join from `GET /api/library/list`: an entry whose hash that list does
   not carry belongs to a torrent that left the library. Ignore it.
 - New reason and source values may appear; ignore the ones you do not
