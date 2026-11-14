@@ -59,6 +59,13 @@
       datasourceTemplate: 'docker',
     },
     {
+      description: 'The promtool image, pinned by digest in the Makefile and repeated as the default in the e2e script.',
+      customType: 'regex',
+      managerFilePatterns: ['/(^|/)Makefile$/', '/^tests/e2e/run\\.sh$/'],
+      matchStrings: ['# renovate: datasource=docker depName=(?<depName>\\S+)\\n\\s*\\w+\\s*(?:\\?=|=)\\s*\\S+?:(?<currentValue>[\\w.-]+)@(?<currentDigest>sha256:[a-f0-9]{64})'],
+      datasourceTemplate: 'docker',
+    },
+    {
       description: 'errcheck, run by `make errcheck`. A new release can add findings; its own pull request shows them in CI.',
       customType: 'regex',
       managerFilePatterns: ['/(^|/)Makefile$/'],
