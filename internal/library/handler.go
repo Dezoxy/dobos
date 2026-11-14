@@ -41,10 +41,10 @@ func (h *Handler) Add(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
-	// 201 only when the request wrote something: an already present title and a
-	// refused replace are 200.
+	// 201 only when the request wrote something: an already present title, a refused
+	// replace and a dry run are 200.
 	status := http.StatusCreated
-	if resp.AlreadyPresent || resp.Decision == DecisionKept {
+	if resp.AlreadyPresent || resp.Decision == DecisionKept || resp.DryRun {
 		status = http.StatusOK
 	}
 	writeJSON(w, status, resp)

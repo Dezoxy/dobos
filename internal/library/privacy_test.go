@@ -248,3 +248,59 @@ func TestRefusedAddMakesNoEngineCall(t *testing.T) {
 		})
 	}
 }
+
+// A dry run asks the engine nothing: no upload, no AddTorrent, no metadata wait, no
+// read. Asking what an add would decide must not announce a private torrent, whether
+// the caller sent its .torrent or a magnet (hard rule 3).
+func TestDryRunMakesNoEngineCall(t *testing.T) {
+	private := torrentFile(t, true)
+	src, err := ParseTorrentFile(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	magnet := "magnet:?xt=urn:btih:" + src.Hash + "&tr=http%3A%2F%2Fseeder.example%3A6969%2Fannounce"
+	for _, c := range []struct {
+		name   string
+		typ    string
+		policy string
+		file   []byte
+		magnet string
+		prior  bool
+	}{
+		{"private .torrent, tv, nothing filed", "tv", "", private, "", false},
+		{"magnet, tv, nothing filed", "tv", "", nil, magnet, false},
+		{"private .torrent, tv, would replace", "tv", "always", private, "", true},
+		{"magnet, tv, would be kept", "tv", "never", nil, magnet, true},
+		{"private .torrent, movie", "movie", "", private, "", false},
+		{"magnet, movie", "movie", "", nil, magnet, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			eng := &recEngine{}
+			reg := &memRegistry{rows: map[string]metadb.EpisodeEntry{}}
+			root := t.TempDir()
+			m := New(Config{MoviesDir: filepath.Join(root, "movies"), TVDir: filepath.Join(root, "tv"),
+				GoStorm: eng, Registry: reg, GoStormURL: "http://engine"})
+			if c.prior {
+				p := filepath.Join(root, "tv", "Show", "Season.01", EpisodeFilename("Show", 1, 1, oldHash[:8]))
+				if err := WriteStub(p, m.streamURL(oldHash, 1), 1000, "magnet:?xt=urn:btih:"+oldHash, ""); err != nil {
+					t.Fatal(err)
+				}
+				key := EpisodeKey("Show", 1, 1)
+				reg.rows[key] = metadb.EpisodeEntry{EpisodeKey: key, Hash: oldHash, FilePath: p}
+			}
+			resp, err := m.Add(context.Background(), AddRequest{
+				Type: c.typ, Title: "Show", Season: 1, Episode: 1, Hash: src.Hash, Magnet: c.magnet,
+				TorrentFile: c.file, Replace: c.policy, DryRun: true, MetadataWait: 1,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !resp.DryRun || resp.Readability != ReadabilityUnchecked {
+				t.Fatalf("response = %+v, want a dry run with unchecked readability", resp)
+			}
+			if calls := eng.seen(); len(calls) != 0 {
+				t.Fatalf("a dry run called the engine: %v", calls)
+			}
+		})
+	}
+}
