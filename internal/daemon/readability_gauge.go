@@ -1,7 +1,8 @@
 package daemon
 
 import (
-	"log"
+	"fmt"
+	"log/slog"
 	"sync/atomic"
 	"time"
 )
@@ -46,10 +47,10 @@ func countReadability(store readabilityLister, libraryHashes int) (readabilityCo
 }
 
 // refreshReadabilityGauge stores a fresh count. On an error it keeps the last numbers.
-func refreshReadabilityGauge(store readabilityLister, libraryHashes int, logger *log.Logger) {
+func refreshReadabilityGauge(store readabilityLister, libraryHashes int, logger *slog.Logger) {
 	c, err := countReadability(store, libraryHashes)
 	if err != nil {
-		logger.Printf("WARNING: readability gauge: %v", err)
+		logger.Warn(fmt.Sprintf("WARNING: readability gauge: %v", err), "err", err)
 		return
 	}
 	readabilityGauge.Store(&c)
@@ -57,7 +58,7 @@ func refreshReadabilityGauge(store readabilityLister, libraryHashes int, logger 
 
 // startReadabilityGauge refreshes the gauge now and then every interval until stop
 // closes. library reports the number of distinct torrents the mount lists.
-func startReadabilityGauge(store readabilityLister, library func() int, stop <-chan struct{}, logger *log.Logger) {
+func startReadabilityGauge(store readabilityLister, library func() int, stop <-chan struct{}, logger *slog.Logger) {
 	go func() {
 		refreshReadabilityGauge(store, library(), logger)
 		t := time.NewTicker(readabilityGaugeInterval)

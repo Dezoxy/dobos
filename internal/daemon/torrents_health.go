@@ -2,7 +2,8 @@ package daemon
 
 import (
 	"encoding/json"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -75,7 +76,7 @@ func strOrNil(s string) *string {
 // nulls, unless a failure filter is set: ?failing and ?min_failures keep their
 // per-torrent meaning. A nil store (state database off or failed to open) answers
 // 503, because nothing is recorded then.
-func newTorrentsHealthHandler(store readabilityLister, files func() map[string][]fileHealth, logger *log.Logger) http.HandlerFunc {
+func newTorrentsHealthHandler(store readabilityLister, files func() map[string][]fileHealth, logger *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			w.Header().Set("Allow", http.MethodGet)
@@ -107,7 +108,7 @@ func newTorrentsHealthHandler(store readabilityLister, files func() map[string][
 		}
 		rows, err := store.ListReadability(minFailures)
 		if err != nil {
-			logger.Printf("WARNING: readability record: %v", err)
+			logger.Warn(fmt.Sprintf("WARNING: readability record: %v", err), "err", err)
 			http.Error(w, "cannot read the readability record", http.StatusInternalServerError)
 			return
 		}

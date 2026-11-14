@@ -1,7 +1,8 @@
 package daemon
 
 import (
-	"log"
+	"fmt"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -80,11 +81,11 @@ func swarmFor(hash string) *swarmHealth {
 }
 
 // startSwarmSnapshot refreshes now and then every interval until stop closes.
-func startSwarmSnapshot(src swarmSource, stop <-chan struct{}, logger *log.Logger) {
+func startSwarmSnapshot(src swarmSource, stop <-chan struct{}, logger *slog.Logger) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				logger.Printf("WARNING: swarm snapshot stopped: %v", r)
+				logger.Warn(fmt.Sprintf("WARNING: swarm snapshot stopped: %v", r), "r", r)
 			}
 		}()
 		refreshSwarmSnapshot(src)

@@ -3,6 +3,7 @@ package warmup
 import (
 	"bytes"
 	"errors"
+	"flodni/internal/flog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,8 +39,9 @@ func (l *logBuf) String() string {
 func captureLog(t *testing.T) *logBuf {
 	t.Helper()
 	l := &logBuf{}
-	logf.SetOutput(l)
-	t.Cleanup(func() { logf.SetOutput(os.Stdout) })
+	old := logf
+	logf = flog.New(l, "DiskWarmup", true)
+	t.Cleanup(func() { logf = old })
 	return l
 }
 

@@ -2,7 +2,8 @@ package warmup
 
 import (
 	"encoding/json"
-	"log"
+	"flodni/internal/flog"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -114,7 +115,7 @@ type evictOpts struct {
 
 // evictLog writes one JSON line per evicted file. The prefix is stable so a log
 // search can find them.
-var evictLog = log.New(os.Stdout, "[WarmupEvict] ", log.LstdFlags)
+var evictLog = flog.New(os.Stdout, "WarmupEvict", true)
 
 type evictLine struct {
 	Hash      string `json:"hash"`
@@ -138,7 +139,7 @@ func reportEvictions(evs []Eviction) {
 		if err != nil {
 			continue
 		}
-		evictLog.Print(string(b))
+		evictLog.Info(string(b))
 	}
 	if OnEvicted != nil {
 		OnEvicted(evs)
@@ -208,7 +209,7 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 	if err != nil {
 		// A vanished or unreadable directory proves nothing about the total: keep the
 		// old one rather than store 0, which would undercount until the next restart.
-		logf.Printf("[DiskWarmup] quota walk of %s failed: %v: total kept, nothing evicted", d.dir, err)
+		logf.Info(fmt.Sprintf("[DiskWarmup] quota walk of %s failed: %v: total kept, nothing evicted", d.dir, err), "dir", d.dir, "err", err)
 		return nil, false
 	}
 	units := map[string]*evictUnit{}
@@ -247,7 +248,7 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 	d.ledger = ledger
 	// tailMu is held for the whole walk, and a head write waits on it: say when it is slow.
 	if dur := time.Since(walkStart); dur > 50*time.Millisecond {
-		logf.Printf("[DiskWarmup] quota walk held tailMu for %v over %d files", dur.Round(time.Millisecond), len(ledger))
+		logf.Info(fmt.Sprintf("[DiskWarmup] quota walk held tailMu for %v over %d files", dur.Round(time.Millisecond), len(ledger)))
 	}
 	if diskTotal+needed <= quota {
 		return nil, true
@@ -343,7 +344,7 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 		}
 		if !allGone {
 			if failed++; failed >= maxEvictFailures {
-				logf.Printf("[DiskWarmup] eviction stopped: %d units could not be removed", failed)
+				logf.Info(fmt.Sprintf("[DiskWarmup] eviction stopped: %d units could not be removed", failed), "failed", failed)
 				break
 			}
 		}

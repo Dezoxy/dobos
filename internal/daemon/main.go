@@ -13,6 +13,7 @@ import (
 	"flodni/internal/catalog"
 	"flodni/internal/catalog/mediaserver"
 	"flodni/internal/config"
+	"flodni/internal/flog"
 	server "flodni/internal/gostorm"
 	"flodni/internal/gostorm/native"
 	"flodni/internal/gostorm/settings"
@@ -32,7 +33,6 @@ import (
 	"fmt"
 	"golang.org/x/sys/cpu"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -61,7 +61,7 @@ const (
 	fuseMountedFmt       = "FUSE mounted at %s with VirtualMkvRoot, all systems active"
 )
 
-var logger = log.New(os.Stdout, "[GoProxy] ", log.LstdFlags)
+var logger = flog.New(os.Stdout, "GoProxy", true)
 
 // masterDataSemaphore limits concurrent data operations (Native, HTTP, Prefetch).
 var masterDataSemaphore chan struct{}
@@ -71,7 +71,7 @@ var metaCache *cache.LRUCache
 var raCache = readahead.New(readahead.Config{
 	Base:   func() int64 { return gc().ReadAheadBase },
 	Budget: func() int64 { return gc().ReadAheadBudget },
-	Logf:   func(format string, args ...any) { logger.Printf(format, args...) },
+	Logf:   func(format string, args ...any) { flog.Printf(logger, format, args...) },
 	Go:     safeGo,
 })
 
@@ -86,6 +86,15 @@ var globalTorrentRemover *TorrentRemover
 var globalConfig atomic.Pointer[config.Config]
 
 func gc() *config.Config { return globalConfig.Load() }
+
+// applyLogConfig sets the process-wide log level and format from the
+// configuration (log_level, log_format). Config validation already turns an
+// unknown format into "text", so an error here is only a belt.
+func applyLogConfig() {
+	if err := flog.Configure(gc().LogFormat, gc().LogLevel); err != nil {
+		logger.Warn("WARNING: " + err.Error())
+	}
+}
 
 func GetEffectiveConcurrencyLimit() int {
 	return gc().MasterConcurrencyLimit
@@ -162,7 +171,7 @@ func safeGo(fn func()) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				logger.Printf("[PANIC] Background goroutine recovered: %v\n%s", r, debug.Stack())
+				logger.Error(fmt.Sprintf("[PANIC] Background goroutine recovered: %v\n%s", r, debug.Stack()), "r", r)
 			}
 		}()
 		fn()
@@ -241,6 +250,7 @@ func Run() {
 	}
 
 	globalConfig.Store(&cfg)
+	applyLogConfig()
 
 	// CLI args take precedence; fall back to config.json values if omitted
 	if source == "" {
@@ -261,9 +271,9 @@ func Run() {
 	effCfg := *gc()
 	pathWarnings := applyEffectivePaths(&effCfg, source, mount)
 	for _, w := range pathWarnings {
-		logger.Printf("WARNING: %s", w)
+		logger.Warn(fmt.Sprintf("WARNING: %s", w), "w", w)
 	}
-	startupRep.logf = logger.Printf
+	startupRep.logf = flog.Logf(logger)
 	startupRep.noteConfigLoad(pathWarnings)
 	globalConfig.Store(&effCfg)
 
@@ -282,7 +292,7 @@ func Run() {
 	// Redial of a dropped only peer (opt-in, off by default): the engine asks when a peer drops.
 	torr.RedialDroppedPeer = func() bool { return gc().RedialDroppedPeer }
 	go func() {
-		logger.Println("Starting Embedded GoStorm Engine...")
+		logger.Info("Starting Embedded GoStorm Engine...")
 		server.Start() // Starts Web Server on 8090 and Engine
 	}()
 	// Give engine a moment to init (hash maps etc)
@@ -291,7 +301,7 @@ func Run() {
 	// Before the cache can evict: the played state it orders victims by. The state
 	// database attaches below once it is open.
 	fileStates.setProtectionDays(gc().PlayedProtectionDays)
-	fileStates.logf = logger.Printf
+	fileStates.logf = flog.Logf(logger)
 	warmup.IsPlayed = fileStates.IsPlayed
 	warmup.OnEvicted = fileStates.OnEvicted
 	// Warm on add (idle until warm_on_add is set): a removal cancels it before the
@@ -354,7 +364,7 @@ func Run() {
 			return &buf
 		},
 	}
-	logger.Printf("ReadBufferPool initialized with size: %d bytes (matches ReadAheadBase)", poolSize)
+	logger.Info(fmt.Sprintf("ReadBufferPool initialized with size: %d bytes (matches ReadAheadBase)", poolSize), "pool_size", poolSize)
 
 	// Config is loaded: anchor the raCache recycled-buffer pool to the budget now (at package
 	// init gc() was nil, so readahead.New kept the static 32-buffer default).
@@ -373,7 +383,7 @@ func Run() {
 
 	// Deterministic inode map ensures Plex doesn't see "new files" after restarts.
 	if err := InitGlobalInodeMap(GetStateDir(), logger); err != nil {
-		logger.Printf("WARNING: Failed to initialize inode map: %v (falling back to filename hash)", err)
+		logger.Warn(fmt.Sprintf("WARNING: Failed to initialize inode map: %v (falling back to filename hash)", err), "err", err)
 	}
 
 	// V1.7.1: Optional SQLite State DB for unified persistence.
@@ -386,13 +396,13 @@ func Run() {
 		var err error
 		stateDB, err = metadb.New(dbPath, logger)
 		if err != nil {
-			logger.Printf(stateDBOpenFailedFmt, err)
+			flog.Printf(logger, stateDBOpenFailedFmt, err)
 			stateDB = nil
 			startupRep.note(func(f *startupFacts) { f.stateDBOpenFailed, f.stateDBMigration = true, migrationFailed })
 		} else {
 			// Migrate JSON files if needed
 			if err := stateDB.MigrateFromJSON(GetStateDir()); err != nil {
-				logger.Printf("WARNING: StateDB migration failed: %v (falling back to JSON)", err)
+				logger.Warn(fmt.Sprintf("WARNING: StateDB migration failed: %v (falling back to JSON)", err), "err", err)
 				_ = stateDB.Close() // already falling back to JSON
 				stateDB = nil
 				startupRep.note(func(f *startupFacts) { f.stateDBMigration = migrationFailed })
@@ -402,12 +412,12 @@ func Run() {
 				// Wire up DB to InodeMap, then reload from DB (covers boot 2+ where JSON is gone)
 				globalInodeMap.SetDB(stateDB)
 				if err := globalInodeMap.LoadFromDisk(); err != nil {
-					logger.Printf("WARNING: Failed to reload InodeMap from DB: %v", err)
+					logger.Warn(fmt.Sprintf("WARNING: Failed to reload InodeMap from DB: %v", err), "err", err)
 				}
 				registry.SetRegistryDB(stateDB)
 				webhookStatus.attach(stateDB)
 				if err := fileStates.attach(stateDB); err != nil {
-					logger.Printf("WARNING: Failed to load file state: %v (played marks stay in memory, no warm records)", err)
+					logger.Warn(fmt.Sprintf("WARNING: Failed to load file state: %v (played marks stay in memory, no warm records)", err), "err", err)
 				} else if gc().WarmupDir != "" {
 					// Index mode only: elsewhere writes are not verified, so nothing is recorded.
 					// Wired only after a successful attach, so a record is never held in memory alone.
@@ -418,14 +428,14 @@ func Run() {
 				// V750: Restore playback states from previous sessions
 				restorePlaybackStates(stateDB)
 				registry.SetStateDir(GetStateDir())
-				logger.Printf(stateDBActiveFmt, dbPath)
+				flog.Printf(logger, stateDBActiveFmt, dbPath)
 
 				// V304 ban persistence: restore prior bans (30-day TTL) and persist new ones.
 				if ips, err := stateDB.LoadV304Bans(30 * 24 * time.Hour); err != nil {
-					logger.Printf("WARNING: Failed to load V304 bans: %v", err)
+					logger.Warn(fmt.Sprintf("WARNING: Failed to load V304 bans: %v", err), "err", err)
 				} else if len(ips) > 0 {
 					torrent.V304LoadBans(ips)
-					logger.Printf("[V304] Restored %d persisted peer bans", len(ips))
+					logger.Info(fmt.Sprintf("[V304] Restored %d persisted peer bans", len(ips)))
 				}
 				// Reachability outcomes: the readability record at /api/torrents/health
 				// reports the counter, so a client can tell a dead release from a slow one.
@@ -435,7 +445,7 @@ func Run() {
 				banDB := stateDB
 				torrent.V304SetOnBan(func(ip string) {
 					if err := banDB.SaveV304Ban(ip); err != nil {
-						logger.Printf("WARNING: Failed to persist V304 ban for %s: %v", ip, err)
+						logger.Warn(fmt.Sprintf("WARNING: Failed to persist V304 ban for %s: %v", ip, err), "ip", ip, "err", err)
 					}
 				})
 			}
@@ -446,7 +456,7 @@ func Run() {
 	startSwarmSnapshot(engineSwarmSource, backgroundStopChan, logger)
 	if net, err := torr.ScrapeNetwork(); err != nil {
 		// Fail closed: with a proxy that cannot be used, a scrape would leave from the real address.
-		logger.Printf("[Scrape] tracker scrape not started: %v", err)
+		logger.Info(fmt.Sprintf("[Scrape] tracker scrape not started: %v", err), "err", err)
 	} else {
 		startTrackerScraper(gc(), storedScrapeTargets, torr.ScrapeReady, net, backgroundStopChan, logger)
 	}
@@ -626,7 +636,8 @@ func Run() {
 			// GetStateDir falls back to /home/pi/STATE after every save.
 			cfg.RootPath = gc().RootPath
 			globalConfig.Store(&cfg)
-			logger.Printf("[Config] Updated via Dashboard API")
+			applyLogConfig()
+			logger.Info("[Config] Updated via Dashboard API")
 			w.WriteHeader(200)
 		}
 	})
@@ -690,7 +701,7 @@ func Run() {
 			time.Sleep(150 * time.Millisecond)
 			p, _ := os.FindProcess(os.Getpid())
 			if err := p.Signal(syscall.SIGTERM); err != nil {
-				logger.Printf("WARNING: restart requested but SIGTERM to self failed: %v", err)
+				logger.Warn(fmt.Sprintf("WARNING: restart requested but SIGTERM to self failed: %v", err), "err", err)
 			}
 		}()
 	})
@@ -793,7 +804,7 @@ func Run() {
 	// A failed listen is logged, not fatal: the FUSE mount and the engine do not
 	// depend on this port, and the process has always run on without it.
 	if gc().APIToken != "" {
-		logger.Printf("[Control] bearer-token auth enabled")
+		logger.Info("[Control] bearer-token auth enabled")
 	}
 	controlSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", gc().MetricsPort),
@@ -805,7 +816,7 @@ func Run() {
 	}
 	go func() {
 		if err := controlSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Printf("[Control] server on %s stopped: %v", controlSrv.Addr, err)
+			logger.Info(fmt.Sprintf("[Control] server on %s stopped: %v", controlSrv.Addr, err), "addr", controlSrv.Addr, "err", err)
 		}
 	}()
 
@@ -816,7 +827,7 @@ func Run() {
 	var err error           // Declare err here too
 	go func() {
 		sig := <-sigChan
-		logger.Printf("Received signal %v, initiating graceful shutdown...", sig)
+		logger.Info(fmt.Sprintf("Received signal %v, initiating graceful shutdown...", sig), "sig", sig)
 		shutdownStarted.Store(true)
 
 		code := shutdown(shutdownSteps{
@@ -827,10 +838,10 @@ func Run() {
 				}
 				if globalInodeMap.IsDirty() {
 					if err := globalInodeMap.SaveToDisk(); err != nil {
-						logger.Printf("InodeMap: Shutdown save FAILED: %v", err)
+						logger.Info(fmt.Sprintf("InodeMap: Shutdown save FAILED: %v", err), "err", err)
 					} else {
 						files, dirs, _, _ := GetInodeMapStats()
-						logger.Printf("InodeMap: Shutdown save complete (%d files, %d dirs)", files, dirs)
+						logger.Info(fmt.Sprintf("InodeMap: Shutdown save complete (%d files, %d dirs)", files, dirs), "files", files, "dirs", dirs)
 					}
 				}
 				ShutdownGlobalInodeMap()
@@ -856,9 +867,9 @@ func Run() {
 			},
 			detach:          func() error { return lazyDetach(mount) },
 			restartRequired: restartRequested.Load(),
-			logf:            logger.Printf,
+			logf:            flog.Logf(logger),
 		}, shutdownDeadline, shutdownDetachAfter)
-		logger.Printf("Graceful shutdown finished, exiting with %d", code)
+		logger.Info(fmt.Sprintf("Graceful shutdown finished, exiting with %d", code), "code", code)
 		os.Exit(code)
 	}()
 
@@ -895,10 +906,11 @@ func Run() {
 		GID: gc().GID, // Default file ownership: pi group (1000)
 	})
 	if err != nil {
-		log.Fatal(err)
+		logger.Error("FUSE mount failed", "err", err)
+		os.Exit(1)
 	}
 
-	logger.Printf(fuseMountedFmt, mount)
+	flog.Printf(logger, fuseMountedFmt, mount)
 	startupRep.markMounted(mount)
 
 	go ttffCleanupLoop()
@@ -922,7 +934,7 @@ func startHandleGC() {
 				h.mu.Unlock()
 
 				if idle > 1*time.Hour {
-					logger.Printf("[V239] Force closing orphan handle (idle 1h): %s", path)
+					logger.Info(fmt.Sprintf("[V239] Force closing orphan handle (idle 1h): %s", path), "path", path)
 					// We simulate a FUSE Release to cleanup all resources
 					_ = h.Release(context.Background())
 					count++
@@ -930,7 +942,7 @@ func startHandleGC() {
 				return true
 			})
 			if count > 0 {
-				logger.Printf("[V239] Handle GC: cleaned %d orphan handles", count)
+				logger.Info(fmt.Sprintf("[V239] Handle GC: cleaned %d orphan handles", count), "count", count)
 			}
 		}
 	})

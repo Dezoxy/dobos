@@ -144,8 +144,7 @@ func (h *MkvHandle) Read(fuseCtx context.Context, dest []byte, off int64) (fuse.
 
 	if shortAwayFromEOF(total, len(dest), off, h.size) {
 		fuseShortReadFailed.Add(1)
-		logger.Printf("[ShortRead] Unfillable %d/%d bytes at offset %d for %s - EIO (a partial read would cache zeros)",
-			total, len(dest), off, filepath.Base(h.path))
+		logger.Info(fmt.Sprintf("[ShortRead] Unfillable %d/%d bytes at offset %d for %s - EIO (a partial read would cache zeros)", total, len(dest), off, filepath.Base(h.path)), "total", total, "off", off, "file", filepath.Base(h.path))
 		ttffReadFailed(h.path)
 		return nil, syscall.EIO
 	}
@@ -204,7 +203,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 		if hash, fileID, err := resolveTargetFile(h.url, h.size, h.path); err == nil {
 			h.hash = hash
 			h.fileID = fileID
-			logger.Printf("[LateResolution] Recovered hash for %s: %s", filepath.Base(h.path), h.hash[:8])
+			logger.Info(fmt.Sprintf("[LateResolution] Recovered hash for %s: %s", filepath.Base(h.path), h.hash[:8]), "file", filepath.Base(h.path), "hash", h.hash[:8])
 			go h.pumpOnce.Do(func() {
 				h.startNativePump(h.hash, h.fileID)
 			})
@@ -266,9 +265,9 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 		if isSeek || naturalProgression {
 			h.state.Store(stateStreaming)
 			if naturalProgression {
-				logger.Printf("[Warmup] Sequential read past warmup zone (off=%dMB): %s→%s.", off/(1024*1024), stateName(stateWarmup), stateName(stateStreaming))
+				logger.Info(fmt.Sprintf("[Warmup] Sequential read past warmup zone (off=%dMB): %s→%s.", off/(1024*1024), stateName(stateWarmup), stateName(stateStreaming)))
 			} else {
-				logger.Printf("[Warmup] Seek/Resume detected (off=%dMB): %s→%s.", off/(1024*1024), stateName(stateWarmup), stateName(stateStreaming))
+				logger.Info(fmt.Sprintf("[Warmup] Seek/Resume detected (off=%dMB): %s→%s.", off/(1024*1024), stateName(stateWarmup), stateName(stateStreaming)))
 			}
 
 			// WarmLanding on new handle: pre-fetch chunk at resume position while pump catches
@@ -308,7 +307,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 							if err == nil && n > 0 {
 								raCache.Put(h.path, goOff, goOff+int64(n)-1, (*bufPtr)[:n])
 								noteFillAttributed(h.path, goOff, int64(n), goSize)
-								logger.Printf("[WarmLanding] Pre-fetched chunk at %dMB for new handle", goOff/(1024*1024))
+								logger.Info(fmt.Sprintf("[WarmLanding] Pre-fetched chunk at %dMB for new handle", goOff/(1024*1024)))
 							}
 						})
 					default:
@@ -348,8 +347,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 			seekReader.Interrupt()
 			torrstor.ResetShield()
 			h.state.Store(stateStreaming)
-			logger.Printf("[V286b] Interrupt pump for seek+shield reset: %dMB → %dMB (%s→%s)",
-				prevOff/(1024*1024), off/(1024*1024), stateName(stateWarmup), stateName(stateStreaming))
+			logger.Info(fmt.Sprintf("[V286b] Interrupt pump for seek+shield reset: %dMB → %dMB (%s→%s)", prevOff/(1024*1024), off/(1024*1024), stateName(stateWarmup), stateName(stateStreaming)))
 
 			// Warm landing zone: pre-fetch the first chunk at the seek target while the
 			// pump sleeps its 200ms retry. Starts anacrolix piece download ~200ms earlier,
@@ -385,7 +383,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 							if err == nil && n > 0 {
 								raCache.Put(h.path, goOff, goOff+int64(n)-1, (*bufPtr)[:n])
 								noteFillAttributed(h.path, goOff, int64(n), goSize)
-								logger.Printf("[WarmLanding] Pre-fetched chunk at %dMB for seek target", goOff/(1024*1024))
+								logger.Info(fmt.Sprintf("[WarmLanding] Pre-fetched chunk at %dMB for seek target", goOff/(1024*1024)))
 							}
 						})
 					default:
@@ -407,7 +405,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 				timing.UsedCache = true
 				timing.BytesRead = n
 				if off == 0 {
-					logger.Printf("[DiskWarmup] HIT %s off=0 (%dKB)", filepath.Base(h.path), n/1024)
+					logger.Info(fmt.Sprintf("[DiskWarmup] HIT %s off=0 (%dKB)", filepath.Base(h.path), n/1024), "file", filepath.Base(h.path))
 				}
 				atomic.StoreInt64(&h.lastOff, off)
 
@@ -580,7 +578,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 		if val, ok := activePumps.Load(h.path); ok {
 			ps := val.(*NativePumpState)
 			if h.attachToExistingPump(ps) {
-				logger.Printf("[V258] Handle ATTACHED to existing active pump (Refs: %d): %s", atomic.LoadInt32(&ps.refCount), filepath.Base(h.path))
+				logger.Info(fmt.Sprintf("[V258] Handle ATTACHED to existing active pump (Refs: %d): %s", atomic.LoadInt32(&ps.refCount), filepath.Base(h.path)), "file", filepath.Base(h.path))
 			}
 		}
 		// Unlock early if attached or not needed
@@ -609,12 +607,12 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 							h.pumpState = sharedState
 							globalOpenTracker.Inc(h.hash, h.path)
 
-							logger.Printf("[Pump] Upgraded on-the-fly for confirmed playback: %s", filepath.Base(h.path))
+							logger.Info(fmt.Sprintf("[Pump] Upgraded on-the-fly for confirmed playback: %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 
 							hHash := metainfo.NewHashFromHex(h.hash)
 							if t := web.BTS.GetTorrent(hHash); t != nil {
 								t.SetAggressiveMode(true, GetEffectiveConcurrencyLimit())
-								logger.Printf("[Pump] Aggressive mode enabled on-the-fly for: %s", h.hash[:8])
+								logger.Info(fmt.Sprintf("[Pump] Aggressive mode enabled on-the-fly for: %s", h.hash[:8]), "hash", h.hash[:8])
 							}
 
 							upgradedState := sharedState
@@ -640,7 +638,7 @@ pumpSlotResolved:
 		case <-fuseCtx.Done():
 			return nil, syscall.EINTR
 		case <-time.After(30 * time.Second):
-			logger.Printf("[MasterSemaphore] Timeout waiting for slot: %s", filepath.Base(h.path))
+			logger.Info(fmt.Sprintf("[MasterSemaphore] Timeout waiting for slot: %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 			return nil, syscall.ETIMEDOUT
 		}
 	}
@@ -650,7 +648,7 @@ pumpSlotResolved:
 		rateLimitCtx, rateLimitCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer rateLimitCancel()
 		if err := globalRateLimiter.Acquire(rateLimitCtx); err != nil {
-			logger.Printf("Rate limit timeout: %v", err)
+			logger.Info(fmt.Sprintf("Rate limit timeout: %v", err), "err", err)
 			return nil, vfs.ToErrno(err)
 		}
 	}
@@ -742,7 +740,7 @@ pumpSlotResolved:
 				}
 				return nil, errnoWakeRefused
 			}
-			logger.Printf("[VFS] Re-activation failed for %s: %v", filepath.Base(h.path), err)
+			logger.Info(fmt.Sprintf("[VFS] Re-activation failed for %s: %v", filepath.Base(h.path), err), "file", filepath.Base(h.path), "err", err)
 			if !torrentLive(h.hash) {
 				// The wake is stored-only now, so a failed one (engine busy, not
 				// connected) says nothing about the swarm: no fetches, no failed-read
@@ -751,7 +749,7 @@ pumpSlotResolved:
 			}
 		} else if woke {
 			countReopen(h.path, h.hash)
-			logger.Printf("[VFS] Re-activated %s after the engine closed it as idle", filepath.Base(h.path))
+			logger.Info(fmt.Sprintf("[VFS] Re-activated %s after the engine closed it as idle", filepath.Base(h.path)), "file", filepath.Base(h.path))
 		}
 		// V753: the very first read of a session can miss raCache/warmup even when
 		// headReady was already true at Open() (partial coverage from a prior open),
@@ -940,7 +938,7 @@ func ownsPumpState(handleState, registered *NativePumpState) bool {
 
 func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 	ttffReleaseClose(h.path)
-	logger.Printf("=== RELEASE VIRTUAL === path=%s", h.path)
+	logger.Info(fmt.Sprintf("=== RELEASE VIRTUAL === path=%s", h.path), "path", h.path)
 
 	// Delete from activeHandles here, not at the end: the early returns below (probe
 	// without slot, replaced pump) would otherwise leak this entry, and both the live
@@ -961,11 +959,11 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 		}
 		globalOpenTracker.Dec(h.hash, h.path)
 		if !ownsPumpState(h.pumpState, ps) {
-			logger.Printf("[Pump] Stale handle for %s: pump was replaced, refCount left alone", filepath.Base(h.path))
+			logger.Info(fmt.Sprintf("[Pump] Stale handle for %s: pump was replaced, refCount left alone", filepath.Base(h.path)), "file", filepath.Base(h.path))
 			return 0
 		}
 		newRefs := atomic.AddInt32(&ps.refCount, -1)
-		logger.Printf("[Pump] Release handle for %s (Remaining Refs: %d)", filepath.Base(h.path), newRefs)
+		logger.Info(fmt.Sprintf("[Pump] Release handle for %s (Remaining Refs: %d)", filepath.Base(h.path), newRefs), "file", filepath.Base(h.path), "new_refs", newRefs)
 
 		if newRefs <= 0 {
 			// V306: If playback is healthy (webhook media.play confirmed), skip grace period.
@@ -974,7 +972,7 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 			// killing the pump and causing freeze on resume.
 			if pbVal, ok := playbackRegistry.Load(h.path); ok {
 				if pbState := pbVal.(*PlaybackState); pbState.IsHealthy {
-					logger.Printf("[V306] Healthy playback — pump stays alive (no grace period) for %s", filepath.Base(h.path))
+					logger.Info(fmt.Sprintf("[V306] Healthy playback — pump stays alive (no grace period) for %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 					// Stop any pending grace timer from a previous release cycle
 					if oldTimer, ok := pumpTimers.LoadAndDelete(h.path); ok {
 						oldTimer.(*time.Timer).Stop()
@@ -990,11 +988,11 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 					graceDuration = 90 * time.Second
 					if pbState.IsInferredPlayback() {
 						graceDuration = 5 * time.Minute // V750
-						logger.Printf("[V750] Inferred playback — extended grace (5m) for %s", filepath.Base(h.path))
+						logger.Info(fmt.Sprintf("[V750] Inferred playback — extended grace (5m) for %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 					}
 				} else if pbState.IsInferredPlayback() {
 					graceDuration = 5 * time.Minute // V750
-					logger.Printf("[V750] Inferred playback — extended grace (5m) for %s", filepath.Base(h.path))
+					logger.Info(fmt.Sprintf("[V750] Inferred playback — extended grace (5m) for %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 				}
 			}
 			if oldTimer, ok := pumpTimers.LoadAndDelete(h.path); ok {
@@ -1010,12 +1008,12 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 							psNow.cancel()
 						}
 						activePumps.Delete(h.path)
-						logger.Printf("[V420] Shared Pump Terminated (Grace Period Expired): %s", filepath.Base(h.path))
+						logger.Info(fmt.Sprintf("[V420] Shared Pump Terminated (Grace Period Expired): %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 					}
 				}
 			})
 			pumpTimers.Store(h.path, t)
-			logger.Printf("[V420] Last handle closed: Shared Pump entering %s grace period for %s", graceDuration, filepath.Base(h.path))
+			logger.Info(fmt.Sprintf("[V420] Last handle closed: Shared Pump entering %s grace period for %s", graceDuration, filepath.Base(h.path)), "grace_duration", graceDuration, "file", filepath.Base(h.path))
 		}
 
 	skipGrace:
@@ -1051,7 +1049,7 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 
 		// V750: Don't remove priority if pump is still active for this path
 		if _, pumpOk := activePumps.Load(h.path); pumpOk {
-			logger.Printf("[V750] Priority retained — pump still active for %s", filepath.Base(h.path))
+			logger.Info(fmt.Sprintf("[V750] Priority retained — pump still active for %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 			return
 		}
 
@@ -1060,7 +1058,7 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 		// next Read() to create a new pump without a gap.
 		if val, ok := playbackRegistry.Load(h.path); ok {
 			if pbState := val.(*PlaybackState); pbState.GetStatus() {
-				logger.Printf("[V306] Priority retained — healthy playback confirmed for %s", filepath.Base(h.path))
+				logger.Info(fmt.Sprintf("[V306] Priority retained — healthy playback confirmed for %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 				return
 			}
 		}
@@ -1098,10 +1096,10 @@ func (h *MkvHandle) Release(fuseCtx context.Context) syscall.Errno {
 
 					if scannerDrop {
 						t.AddExpiredTime(5 * time.Second)
-						logger.Printf("[V272] Scanner fast-drop for Hash %s (5s retention)", state.Hash)
+						logger.Info(fmt.Sprintf("[V272] Scanner fast-drop for Hash %s (5s retention)", state.Hash), "hash", state.Hash)
 					} else {
 						t.AddExpiredTime(30 * time.Second)
-						logger.Printf("[NativeBridge] Priority disabled for Hash %s (All handles closed)", state.Hash)
+						logger.Info(fmt.Sprintf("[NativeBridge] Priority disabled for Hash %s (All handles closed)", state.Hash), "hash", state.Hash)
 					}
 				}
 			}

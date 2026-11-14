@@ -3,8 +3,9 @@ package library
 import (
 	"context"
 	"encoding/json"
+	"flodni/internal/flog"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path"
@@ -80,7 +81,7 @@ type Config struct {
 	// port has an api_token; the route answers 403 unless it does.
 	Confirm  func(hash string, fileIndex int)
 	TokenSet func() bool
-	Logger   *log.Logger
+	Logger   *slog.Logger
 	// MediaServer, when set, is asked to rescan the section a stub was added to or
 	// removed from. MovieSection and TVSection are its library ids.
 	MediaServer  MediaServer
@@ -110,7 +111,7 @@ type Manager struct {
 
 func New(cfg Config) *Manager {
 	if cfg.Logger == nil {
-		cfg.Logger = log.New(os.Stdout, "", log.LstdFlags)
+		cfg.Logger = flog.New(os.Stdout, "", true)
 	}
 	cfg.GoStormURL = strings.TrimRight(cfg.GoStormURL, "/")
 	return &Manager{cfg: cfg, hashLocks: newKeyLocks(), showLocks: newKeyLocks()}
@@ -284,7 +285,7 @@ func (m *Manager) ListGaps() ([]Gap, int, error) {
 	if err != nil {
 		// The driver error names the database file: it is logged, not returned, since
 		// this endpoint carries no authentication.
-		m.cfg.Logger.Printf("[LibraryAPI] WARNING: cannot read the episode gaps: %v", err)
+		m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot read the episode gaps: %v", err), "err", err)
 		return nil, 0, errf(http.StatusInternalServerError, "cannot read the episode gaps")
 	}
 	if gaps == nil {
@@ -338,13 +339,13 @@ func (m *Manager) dropTorrent(ctx context.Context, hash string) bool {
 	defer cancel()
 	removeErr := m.cfg.GoStorm.RemoveTorrent(cctx, hash)
 	if removeErr != nil {
-		m.cfg.Logger.Printf("[LibraryAPI] WARNING: cannot remove torrent %s: %v", hash, removeErr)
+		m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot remove torrent %s: %v", hash, removeErr), "hash", hash, "remove_err", removeErr)
 	}
 	// The failure counter outlives the torrent otherwise: the same release added again
 	// later would arrive already condemned, and the reaper would drop it on sight.
 	if cf, ok := m.cfg.Registry.(interface{ ClearMetadataFailure(string) error }); ok {
 		if err := cf.ClearMetadataFailure(hash); err != nil {
-			m.cfg.Logger.Printf("[LibraryAPI] WARNING: cannot clear the failure counter for %s: %v", hash, err)
+			m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot clear the failure counter for %s: %v", hash, err), "hash", hash, "err", err)
 		}
 	}
 	return removeErr == nil
@@ -455,7 +456,7 @@ func (m *Manager) add(ctx context.Context, req AddRequest) (*AddResponse, error)
 			return nil, err
 		}
 		if v.refused {
-			m.cfg.Logger.Printf("[LibraryAPI] Kept %s S%02dE%02d: %s", req.Title, req.Season, req.Episode, v.reason)
+			m.cfg.Logger.Info(fmt.Sprintf("[LibraryAPI] Kept %s S%02dE%02d: %s", req.Title, req.Season, req.Episode, v.reason), "title", req.Title, "season", req.Season, "episode", req.Episode, "reason", v.reason)
 			return &AddResponse{Hash: hash, Title: req.Title, Type: kind, Files: []AddedFile{}, Decision: DecisionKept,
 				Skipped: []SkippedFile{{Season: req.Season, Episode: req.Episode, Reason: v.reason}}}, nil
 		}
@@ -535,7 +536,7 @@ func (m *Manager) add(ctx context.Context, req AddRequest) (*AddResponse, error)
 		// announced and the torrent goes unless another stub uses it. The metadata fetch
 		// already happened: only a single episode is refused before any engine contact.
 		dropped[hash] = true
-		m.cfg.Logger.Printf("[LibraryAPI] Kept %s: every episode of %s refused by replace=%s", req.Title, hash[:8], req.Replace)
+		m.cfg.Logger.Info(fmt.Sprintf("[LibraryAPI] Kept %s: every episode of %s refused by replace=%s", req.Title, hash[:8], req.Replace), "title", req.Title, "hash", hash[:8], "replace", req.Replace)
 		return &AddResponse{Hash: hash, Title: req.Title, Type: kind, Files: []AddedFile{},
 			Decision: DecisionKept, Skipped: res.skipped}, nil
 	}
@@ -545,7 +546,7 @@ func (m *Manager) add(ctx context.Context, req AddRequest) (*AddResponse, error)
 		m.cfg.OnAdded(hash, files)
 	}
 	m.scheduleRefresh(m.section(kind))
-	m.cfg.Logger.Printf("[LibraryAPI] Added %s %q (%s): %d file(s)", kind, req.Title, hash[:8], len(files))
+	m.cfg.Logger.Info(fmt.Sprintf("[LibraryAPI] Added %s %q (%s): %d file(s)", kind, req.Title, hash[:8], len(files)), "kind", kind, "title", req.Title, "hash", hash[:8])
 	decision := DecisionAdded
 	if len(res.replaced) > 0 {
 		decision = DecisionReplaced
@@ -890,8 +891,7 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 			sample = append(sample, wanted[j].file)
 		}
 		if err := m.readReplacementSample(ctx, hash, sample); err != nil {
-			m.cfg.Logger.Printf("[LibraryAPI] replacement %s for %q delivered no data, existing files kept: %v",
-				hash[:8], req.Title, err)
+			m.cfg.Logger.Info(fmt.Sprintf("[LibraryAPI] replacement %s for %q delivered no data, existing files kept: %v", hash[:8], req.Title, err), "hash", hash[:8], "title", req.Title, "err", err)
 			return addResult{}, errf(http.StatusUnprocessableEntity,
 				"replacement release delivered no data (%v, limit %s); existing files kept", err, replacementReadTimeout)
 		}
@@ -916,7 +916,7 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 		for i, f := range out {
 			if !prior[i].hadStub {
 				if err := m.deleteStub(ctx, f.Path); err != nil {
-					m.cfg.Logger.Printf("[LibraryAPI] WARNING: cannot undo %s: %v", f.Path, err)
+					m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot undo %s: %v", f.Path, err), "path", f.Path, "err", err)
 				}
 			}
 			key := prior[i].key
@@ -927,7 +927,7 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 				err = m.cfg.Registry.DeleteEpisode(key)
 			}
 			if err != nil {
-				m.cfg.Logger.Printf("[LibraryAPI] WARNING: cannot undo the registry entry for %s: %v", key, err)
+				m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot undo the registry entry for %s: %v", key, err), "key", key, "err", err)
 			}
 		}
 	}
@@ -1000,7 +1000,7 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 			}
 			for _, k := range keys {
 				if err := gc.ClearEpisodeGap(k); err != nil {
-					m.cfg.Logger.Printf("[LibraryAPI] WARNING: cannot clear the gap for %s: %v", k, err)
+					m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot clear the gap for %s: %v", k, err), "k", k, "err", err)
 				}
 			}
 		}
@@ -1018,7 +1018,7 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 		if err := m.deleteStub(ctx, p.entry.FilePath); err != nil {
 			// Leaving it there keeps its torrent alive, which is the safe half of the
 			// failure, but it is a leak either way.
-			m.cfg.Logger.Printf("[LibraryAPI] WARNING: cannot remove the replaced stub %s: %v", p.entry.FilePath, err)
+			m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot remove the replaced stub %s: %v", p.entry.FilePath, err), "file_path", p.entry.FilePath, "err", err)
 			continue
 		}
 		if stubWasThere { // a row whose stub was already gone replaced no file
@@ -1164,7 +1164,7 @@ func (m *Manager) dropTorrentIfUnused(ctx context.Context, hash string) bool {
 	for _, kind := range []string{"movie", "tv"} {
 		found, err := m.findByHash(kind, hash)
 		if err != nil {
-			m.cfg.Logger.Printf("[LibraryAPI] WARNING: keeping torrent %s, cannot check its stubs: %v", hash, err)
+			m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: keeping torrent %s, cannot check its stubs: %v", hash, err), "hash", hash, "err", err)
 			return false
 		}
 		if len(found) > 0 {
@@ -1303,8 +1303,7 @@ func (m *Manager) findByHash(kind, hash string) ([]AddedFile, error) {
 		return nil
 	})
 	if skipped > 0 {
-		m.cfg.Logger.Printf("[LibraryAPI] WARNING: skipped %d stub(s) under %s with no readable hash (first: %s)",
-			skipped, dir, firstSkipped)
+		m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: skipped %d stub(s) under %s with no readable hash (first: %s)", skipped, dir, firstSkipped), "skipped", skipped, "dir", dir, "first_skipped", firstSkipped)
 	}
 	if err != nil && !os.IsNotExist(err) {
 		return nil, errf(http.StatusInternalServerError, "cannot read %s: %v", dir, err)
@@ -1356,7 +1355,7 @@ func (m *Manager) Remove(ctx context.Context, req RemoveRequest) (*RemoveRespons
 	for _, path := range targets {
 		hash := readStub(path).Hash
 		if err := m.deleteStub(ctx, path); err != nil {
-			m.cfg.Logger.Printf("[LibraryAPI] WARNING: cannot delete %s: %v", path, err)
+			m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot delete %s: %v", path, err), "path", path, "err", err)
 			failed = append(failed, path)
 			continue
 		}
@@ -1365,7 +1364,7 @@ func (m *Manager) Remove(ctx context.Context, req RemoveRequest) (*RemoveRespons
 		}
 		if req.Blacklist {
 			if w := m.blacklist(path, hash); w != "" {
-				m.cfg.Logger.Printf("[LibraryAPI] WARNING: %s", w)
+				m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: %s", w), "w", w)
 				resp.Warnings = append(resp.Warnings, w)
 			}
 		}
@@ -1381,7 +1380,7 @@ func (m *Manager) Remove(ctx context.Context, req RemoveRequest) (*RemoveRespons
 	for _, path := range resp.Removed {
 		m.scheduleRefresh(m.section(m.kindOf(path)))
 	}
-	m.cfg.Logger.Printf("[LibraryAPI] Removed %d stub(s)", len(resp.Removed))
+	m.cfg.Logger.Info(fmt.Sprintf("[LibraryAPI] Removed %d stub(s)", len(resp.Removed)))
 	if len(failed) > 0 {
 		return nil, errf(http.StatusInternalServerError,
 			"removed %d stub(s), cannot delete: %s", len(resp.Removed), strings.Join(failed, ", "))
@@ -1409,12 +1408,12 @@ func (m *Manager) forgetEpisode(path string) {
 	}
 	entries, err := m.cfg.Registry.EpisodesByFilePath(path)
 	if err != nil {
-		m.cfg.Logger.Printf("[LibraryAPI] WARNING: registry lookup for %s: %v", path, err)
+		m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: registry lookup for %s: %v", path, err), "path", path, "err", err)
 		return
 	}
 	for _, e := range entries {
 		if err := m.cfg.Registry.DeleteEpisode(e.EpisodeKey); err != nil {
-			m.cfg.Logger.Printf("[LibraryAPI] WARNING: cannot unregister %s: %v", e.EpisodeKey, err)
+			m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot unregister %s: %v", e.EpisodeKey, err), "episode_key", e.EpisodeKey, "err", err)
 		}
 	}
 }
@@ -1594,7 +1593,7 @@ func (m *Manager) usable(f FileStat) bool {
 		return false
 	}
 	if isSample(f) {
-		m.cfg.Logger.Printf("[LibraryAPI] ignored sample %s (%d bytes)", f.Path, f.Length)
+		m.cfg.Logger.Info(fmt.Sprintf("[LibraryAPI] ignored sample %s (%d bytes)", f.Path, f.Length), "path", f.Path, "length", f.Length)
 		return false
 	}
 	return true

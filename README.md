@@ -129,8 +129,10 @@ See "Play webhook" below for what raises it.
 
 Once the FUSE mount is up and the startup walk with its prunes has finished, the
 daemon logs one line, `[Startup] report {json}`, and serves the same object at
-`GET /api/startup` on the control port. It needs the token like every route but
-the panel page and `/api/health`, and answers 503 until the report exists.
+`GET /api/startup` on the control port; in the `json` log format the line's
+`msg` carries that object byte for byte, as in the text format. The endpoint
+needs the token like every route but the panel page and `/api/health`, and
+answers 503 until the report exists.
 It is built once and does not change afterwards. A pre-upgrade rehearsal can
 read it instead of grepping the startup lines; those lines keep their text for
 now (a test pins them), and the report is the interface that will stay stable
@@ -1586,6 +1588,54 @@ file of that length (by name if several); else the open fails with `EIO`.
   stub's size (outcome `index_mismatch`). Not guarded: a torrent with no
   stored list whose stale stub shares its index with another file's warm head
   of a plausible length; `GET /api/library/audit` lists such stubs.
+
+## Logging
+
+The daemon logs through `log/slog` (`internal/flog`). The default output is
+the text it has always printed, one line per event: an optional `[Name] `
+prefix, the time (`2006/01/02 15:04:05`), then the message. There is no
+level token in the line; the level only filters. A line that carries
+structured fields appends the ones its message does not already show, as
+`key=value`.
+
+| Key | Env | Values | Default |
+| --- | --- | --- | --- |
+| `log_format` | `MKV_PROXY_LOG_FORMAT` | `text`, `json` | `text` |
+| `log_level` | `MKV_PROXY_LOG_LEVEL` | `DEBUG`, `INFO` (`WARN`, `ERROR`: reserved, behave like `INFO`) | `INFO` |
+
+`log_format` `json` prints one JSON object per line instead: `time`,
+`level`, `msg`, `logger` (the `[Name]` prefix, when there is one) and the
+line's fields. `msg` is the same text the default format prints, so a
+documented line keeps its wording and payload in both formats. An unknown
+`log_format` falls back to `text` with a warning. Both keys apply at start
+and on a save from the Control Panel.
+
+`log_level` `DEBUG` shows the debug lines; any other value shows Info and
+above. `WARN` and `ERROR` are accepted but reserved: they behave like `INFO`,
+so a `log_level` never hides a contract line (`[Session]`, `[Warm]`,
+`[WarmupEvict]`, `[Startup]`, `[Webhook]`, `[ReaderBudget]`, `[DeadSwarm]`). A line whose
+text starts with `[DEBUG]` is Debug (hidden unless the level is `DEBUG`), one
+with `WARNING` or `Warning` near its start is Warn, one with `ERROR` or
+`[PANIC]` is Error, everything else is Info.
+
+**Stable lines.** The text of these lines does not change without a note
+here, in either format; match them by substring: `[DiskWarmup] Initial
+size`, `[DiskWarmup] Active`, `[StateDB] Active:`, `[StateDB] Migration
+complete:`, `[StateDB] Migration already completed`, `Failed to open
+StateDB`, `InodeMap: Loaded`, `FUSE mounted at`, `Library torrents with no
+stored engine record with metainfo`, `Failed to parse`, `physical_source_path
+... differs`, `CORRUPT CACHE`, `prune skipped`, `Startup GC: Pruned`, and,
+from the GoStorm engine, `Successfully migrated`, `Settings file was corrupt`
+and `Migrate torrent`. The container entrypoint's `is NOT on a mounted
+volume` warning is printed by the shell and is not affected. The JSON
+contract lines, `[Session]`, `[Warm]`, `[WarmupEvict]`, `[Startup] report` and
+the `[Webhook]` status line, are described in their own sections and are byte-identical in
+both formats; `[DeadSwarm]` and `[TTFF]` wording is not a contract. The
+GoStorm engine's own log lines still use the standard logger, so they keep
+their old shape in both formats.
+
+The conversion from `log.Printf` is `scripts/slogify` (see its README); it
+can be run again on a newer tree.
 
 ## Metrics
 

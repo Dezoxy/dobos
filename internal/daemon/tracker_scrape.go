@@ -4,7 +4,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"log"
+	"flodni/internal/flog"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -125,7 +127,7 @@ func storedScrapeTargets(only *[20]byte) []trackscrape.Target {
 // (tracker_scrape_hours 0 leaves only the on-demand route). Log lines carry hosts and
 // failure classes, never an announce or scrape URL.
 func startTrackerScraper(cfg *config.Config, source func(*[20]byte) []trackscrape.Target, ready func() bool,
-	net torr.ScrapeNet, stop <-chan struct{}, logger *log.Logger) *trackscrape.Scraper {
+	net torr.ScrapeNet, stop <-chan struct{}, logger *slog.Logger) *trackscrape.Scraper {
 	s := trackscrape.New(trackscrape.Config{
 		Source:    source,
 		Ready:     ready,
@@ -135,7 +137,7 @@ func startTrackerScraper(cfg *config.Config, source func(*[20]byte) []trackscrap
 		Interval:  time.Duration(cfg.TrackerScrapeHours) * time.Hour,
 		Batch:     cfg.TrackerScrapeBatch,
 		Pace:      time.Duration(cfg.TrackerScrapePaceMs) * time.Millisecond,
-		Logf:      logger.Printf,
+		Logf:      flog.Logf(logger),
 	})
 	trackerScraper.Store(s)
 	s.Start()
@@ -144,10 +146,9 @@ func startTrackerScraper(cfg *config.Config, source func(*[20]byte) []trackscrap
 		s.Stop()
 	}()
 	if cfg.TrackerScrapeHours == 0 {
-		logger.Printf("[Scrape] experimental tracker scrape: schedule off (tracker_scrape_hours 0); POST /api/torrents/scrape runs a pass")
+		logger.Info("[Scrape] experimental tracker scrape: schedule off (tracker_scrape_hours 0); POST /api/torrents/scrape runs a pass")
 	} else {
-		logger.Printf("[Scrape] experimental tracker scrape: every %d h, batches of %d, %d ms between requests to one host",
-			cfg.TrackerScrapeHours, cfg.TrackerScrapeBatch, cfg.TrackerScrapePaceMs)
+		logger.Info(fmt.Sprintf("[Scrape] experimental tracker scrape: every %d h, batches of %d, %d ms between requests to one host", cfg.TrackerScrapeHours, cfg.TrackerScrapeBatch, cfg.TrackerScrapePaceMs), "tracker_scrape_hours", cfg.TrackerScrapeHours, "tracker_scrape_batch", cfg.TrackerScrapeBatch, "tracker_scrape_pace_ms", cfg.TrackerScrapePaceMs)
 	}
 	return s
 }

@@ -1,32 +1,22 @@
 package metadb
 
 import (
-	"fmt"
+	"bytes"
+	"flodni/internal/flog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-type bufLogger struct{ lines []string }
+type bufLogger struct{ buf bytes.Buffer }
 
-func (l *bufLogger) Printf(format string, v ...interface{}) {
-	l.lines = append(l.lines, fmt.Sprintf(format, v...))
-}
-
-func (l *bufLogger) has(sub string) bool {
-	for _, s := range l.lines {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
-}
+func (l *bufLogger) has(sub string) bool { return strings.Contains(l.buf.String(), sub) }
 
 // The two migration lines operators grep for, and MigrationResult beside them.
 func TestMigrationLinesAndResult(t *testing.T) {
 	lg := &bufLogger{}
-	db, err := New(filepath.Join(t.TempDir(), "s.db"), lg)
+	db, err := New(filepath.Join(t.TempDir(), "s.db"), flog.NewText(&lg.buf))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,7 +30,7 @@ func TestMigrationLinesAndResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !lg.has("[StateDB] Migration already completed") || db.MigrationResult() != "already_completed" {
-		t.Fatalf("lines %q, result %q", lg.lines, db.MigrationResult())
+		t.Fatalf("log %q, result %q", lg.buf.String(), db.MigrationResult())
 	}
 
 	js := `{"version":2,"files":{"` + strings.Repeat("a", 40) + `:1":"5"},"dirs":{},"filename_index":{"/x/a.mkv":"` + strings.Repeat("a", 40) + `:1"}}`
@@ -51,6 +41,6 @@ func TestMigrationLinesAndResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !lg.has("[StateDB] Migration complete: 1 inodes, 0 caches, 0 episodes") || db.MigrationResult() != "migrated" {
-		t.Fatalf("lines %q, result %q", lg.lines, db.MigrationResult())
+		t.Fatalf("log %q, result %q", lg.buf.String(), db.MigrationResult())
 	}
 }
