@@ -16,7 +16,7 @@ import (
 // reports it. The warning never changes /api/health's status or HTTP code.
 //
 // The times are Unix seconds, in memory (atomics) and in the state database's
-// daemon_marks table, written at most once an hour per mark: a Jellyfin progress event
+// daemon_marks table, written at most once an hour per mark: a Plex progress ping
 // is a media.resume every few seconds. With the state database off they live since start.
 
 const (

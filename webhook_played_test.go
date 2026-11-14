@@ -144,3 +144,21 @@ func TestPathWithoutAResolvedTargetIsSkipped(t *testing.T) {
 		t.Fatal("marked a file with no resolved hash and index")
 	}
 }
+
+// Jellyfin is not supported: its PlaybackStart event and Episode item type are not
+// translated to a play, so nothing is confirmed or marked.
+func TestJellyfinShapedPlaybackStartIsNotAPlay(t *testing.T) {
+	_, key := playedEnv(t)
+	starts := playbackStarts.Load()
+
+	postWebhook(t, strings.Replace(episodePayload, `"event":"%s"`, `"event":"PlaybackStart"`, 1))
+	postWebhook(t, strings.NewReplacer(`"event":"%s"`, `"event":"PlaybackStart"`,
+		`"librarySectionType":"show"`, `"librarySectionType":"Episode"`).Replace(episodePayload))
+
+	if fileStates.IsPlayed(key) {
+		t.Fatal("a Jellyfin PlaybackStart marked a file played")
+	}
+	if got := playbackStarts.Load() - starts; got != 0 {
+		t.Fatalf("a Jellyfin PlaybackStart counted as a start: +%d", got)
+	}
+}

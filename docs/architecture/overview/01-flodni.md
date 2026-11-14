@@ -8,7 +8,7 @@ when they are read. Nothing is downloaded to disk in full.
 
 ### Context
 
-A media server (Plex or Jellyfin) reads files from a FUSE mount that Flodni
+A media server (Plex) reads files from a FUSE mount that Flodni
 provides. Each file is backed by a small stub on the host that names a
 torrent and a file inside it. When the media server reads a byte range, Flodni
 asks its torrent engine for the pieces that hold it.

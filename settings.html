@@ -602,39 +602,28 @@
                         <div class="form-section-title">Media Server</div>
                         <div class="form-grid">
                             <div class="form-group" style="grid-column: 1 / -1;">
-                                <label>Media Server Type</label>
-                                <select name="media_server_type">
-                                    <option value="plex">Plex</option>
-                                    <option value="jellyfin">Jellyfin</option>
-                                </select>
-                                <div class="hint">Which product the URL and token below belong to. Selects how the library
-                                    refresh after a library add is issued: Plex takes a token in the query string, Jellyfin an
-                                    <code>Authorization: MediaBrowser</code> header.</div>
-                            </div>
-                            <div class="form-group" style="grid-column: 1 / -1;">
                                 <label>Media Server URL</label>
                                 <input type="text" name="plex_url" data-nested="plex.url"
-                                    placeholder="http://192.168.1.10:32400  or  http://192.168.1.10:8096">
-                                <div class="hint">Plex or Jellyfin. The Media Server card identifies which one answers, and
-                                    reports it as verified rather than merely discovered. A LAN broadcast finds servers on
+                                    placeholder="http://192.168.1.10:32400">
+                                <div class="hint">The Media Server card reports Plex as verified rather than merely discovered. A LAN broadcast finds servers on
                                     the same network, but not one running in a Docker bridge network, so setting this is
                                     the reliable way.</div>
                             </div>
                             <div class="form-group" style="grid-column: 1 / -1;">
                                 <label>Media Server Token</label>
                                 <input type="text" name="plex_token" data-nested="plex.token">
-                                <div class="hint">A Plex token, or a Jellyfin API key. Needed for the library refresh after
-                                    a library add, and for the playback sessions and posters the dashboard shows (Plex only).</div>
+                                <div class="hint">A Plex token. Needed for the library refresh after
+                                    a library add, and for the playback sessions and posters the dashboard shows.</div>
                             </div>
                             <div class="form-group">
                                 <label>Movies Library ID</label>
                                 <input type="number" name="plex_library_id" data-nested="plex.library_id">
-                                <div class="hint">Plex library ID for movies. Only gates the Plex refresh call after a library add (0 = skip refresh). Jellyfin-only setups can leave this at 0.</div>
+                                <div class="hint">Plex library ID for movies. Only gates the Plex refresh call after a library add (0 = skip refresh).</div>
                             </div>
                             <div class="form-group">
                                 <label>Series TV Library ID</label>
                                 <input type="number" name="plex_tv_library_id" data-nested="plex.tv_library_id">
-                                <div class="hint">Plex library ID for TV series. Only gates the Plex refresh call after a library add (0 = skip refresh). Jellyfin-only setups can leave this at 0.</div>
+                                <div class="hint">Plex library ID for TV series. Only gates the Plex refresh call after a library add (0 = skip refresh).</div>
                             </div>
                         </div>
                     </div>
@@ -988,8 +977,7 @@
             'max_retry_attempts',
             'retry_delay_ms', 'gostorm_url',
             'metrics_port', 'disk_warmup_quota_gb',
-            'log_level',
-            'media_server_type'
+            'log_level'
         ];
 
         async function loadEngine() {
@@ -1037,7 +1025,7 @@
                 if (v === null) return;
                 if (v === "") return;
 
-                if (k === 'log_level' || k === 'gostorm_url' || k === 'media_server_type' ||
+                if (k === 'log_level' || k === 'gostorm_url' ||
                     k === 'physical_source_path' || k === 'fuse_mount_path') {
                     data[k] = v;
                 } else if (k.includes('timeout_seconds')) {
