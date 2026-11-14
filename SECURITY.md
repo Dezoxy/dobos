@@ -26,7 +26,9 @@ unauthenticated caller whether play webhooks are arriving) needs
 API is open: bind it to loopback or a private network, never to an address
 other people can reach. Even then, `POST /api/config` refuses to set or change
 `api_token` and `POST /api/restart` is refused (403), so a client cannot pick
-the next start's token; set it through the environment or `config.json`.
+or erase the next start's token; set it through the environment or
+`config.json`. GoStorm's `GET /shutdown` still stops the process without a
+token.
 
 The same token also covers GoStorm's own server on port 8090 (torrent
 control, settings, `/stream`, shutdown): every route except `GET /echo`, the

@@ -156,3 +156,62 @@ func TestTokenModeAuthenticatedRestart(t *testing.T) {
 		t.Fatalf("restart action ran %d times, want 1", *restarts)
 	}
 }
+
+// The 403 tells the owner to edit config.json and restart. Until that restart the
+// memory holds the start-up token (""), so a check against memory would let any open
+// save write "" over the hand edit and keep the port open. The save keeps the file's.
+func TestOpenPortSaveKeepsAHandEditedToken(t *testing.T) {
+	h, path, _ := controlAPIServer(t, "", "")
+	if err := os.WriteFile(path, []byte(`{"log_level":"info","api_token":"owner-edit"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, resp := doControl(h, "/api/config", `{"log_level":"debug"}`, ""); code != http.StatusOK {
+		t.Fatalf("open save after a hand edit: status %d (%s), want 200", code, resp)
+	}
+	if tok := fileToken(t, path); tok != "owner-edit" {
+		t.Fatalf("open save replaced the hand-edited token with %q", tok)
+	}
+	// Any posted token is refused, the pending one included: 200 for a match and 403
+	// otherwise would answer guesses about it.
+	if code, _ := doControl(h, "/api/config", `{"api_token":"owner-edit"}`, ""); code != http.StatusForbidden {
+		t.Fatalf("open save naming the pending token: status %d, want 403", code)
+	}
+}
+
+func TestOpenPortRefusalChecksTheDecodedTokenAndLeavesLiveConfig(t *testing.T) {
+	h, path, _ := controlAPIServer(t, "", "")
+	before, _ := os.ReadFile(path)
+	level := gc().LogLevel
+	for _, body := range []string{
+		`{"API_TOKEN":"attacker"}`,                     // encoding/json matches keys case-insensitively
+		`{"api_token":"","api_token":"attacker"}`,      // the last duplicate wins
+		`{"log_level":"debug","Api_Token":"attacker"}`, // a refused save changes nothing live
+	} {
+		if code, _ := doControl(h, "/api/config", body, ""); code != http.StatusForbidden {
+			t.Fatalf("open port %s: status %d, want 403", body, code)
+		}
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Fatalf("file changed on refusal: %s", after)
+	}
+	if gc().LogLevel != level {
+		t.Fatalf("live log_level changed on a refused save: %q -> %q", level, gc().LogLevel)
+	}
+}
+
+// A file the daemon cannot parse (an owner mid-edit) would be replaced by defaults,
+// dropping a token typed into it. With no token enforced, the save is refused.
+func TestOpenPortRefusesSaveOverAnUnparsableFile(t *testing.T) {
+	h, path, _ := controlAPIServer(t, "", "")
+	broken := []byte(`{"log_level":"info","api_token":"owner-edit",`)
+	if err := os.WriteFile(path, broken, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, resp := doControl(h, "/api/config", `{"log_level":"debug"}`, "")
+	if code != http.StatusConflict || !json.Valid([]byte(resp)) {
+		t.Fatalf("open save over an unparsable file: status %d (%q), want 409 with a JSON error", code, resp)
+	}
+	if after, _ := os.ReadFile(path); string(after) != string(broken) {
+		t.Fatalf("unparsable file overwritten: %s", after)
+	}
+}

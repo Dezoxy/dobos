@@ -104,10 +104,13 @@ then keeps it in the browser's local storage. `GET /api/config` never
 returns the token, and saving from the panel leaves it unchanged.
 With no token enforced (the port is open), two control routes are refused with
 403 and a JSON `error`, because any client that reaches the port could
-otherwise take the service over: `POST /api/config` when the body would set or
-change `api_token` (a body without it, or echoing the current empty value, saves
-as before, and nothing is written on a refusal), and `POST /api/restart`
-altogether. Set the token through `FLODNI_API_TOKEN` or by editing
+otherwise take the service over: `POST /api/config` when the body carries a non-empty
+`api_token` (whatever its value; a body without it, or with it empty, saves as
+before and keeps the token `config.json` holds now, one added by hand since the
+start included; nothing is written on a refusal), `POST /api/config` while
+`config.json` does not parse (409, so a file being edited is not replaced by
+defaults), and `POST /api/restart` altogether. Each refusal is logged with
+method, path and address. Set the token through `FLODNI_API_TOKEN` or by editing
 `config.json` and restart the service yourself; from then on an authenticated
 caller can change the token and restart through the API. The Control Panel's
 Restart button shows that hint instead of restarting while the port is open.

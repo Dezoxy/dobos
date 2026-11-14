@@ -24,19 +24,33 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		// The panel never sees the token; an empty post keeps the one in the file.
-		stored := gc().ResolveAPIToken("")
-		newCfg.APIToken = gc().ResolveAPIToken(newCfg.APIToken)
 		// No token enforced: any client that reaches the port could choose the token
-		// the next start enforces. Setting or changing it needs the environment or
-		// the file; leaving it as stored (absent, or the echoed empty value) is fine.
-		if controlToken == "" && newCfg.APIToken != stored {
-			refuseOpenPort(w, "api_token cannot be set or changed through the API while no token is enforced")
+		// the next start enforces. Setting it needs the environment or the file, so a
+		// posted token is refused whatever its value (comparing it with a pending one
+		// would answer guesses about that one).
+		if controlToken == "" && newCfg.APIToken != "" {
+			refuseOpenPort(w, r, http.StatusForbidden,
+				"api_token cannot be set or changed through the API while no token is enforced"+setTokenHint)
 			return
+		}
+		onDisk := config.LoadConfig()
+		if controlToken == "" {
+			// A file that does not parse would be replaced by defaults, dropping a token
+			// the owner is typing into it.
+			if config.ParseFailed.Load() {
+				refuseOpenPort(w, r, http.StatusConflict,
+					"config.json does not parse; fix it before saving through the API")
+				return
+			}
+			// Keep the token the file holds now, not the one read at start: the owner may
+			// have added one by hand and not restarted yet.
+			newCfg.APIToken = onDisk.ResolveAPIToken("")
+		} else {
+			// The panel never sees the token; an empty post keeps the one in the file.
+			newCfg.APIToken = gc().ResolveAPIToken(newCfg.APIToken)
 		}
 		// Paths that came from the command line are not written to the
 		// file: keep what the file had.
-		onDisk := config.LoadConfig()
 		if newCfg.PhysicalSourcePath == physicalSourcePath {
 			newCfg.PhysicalSourcePath = onDisk.PhysicalSourcePath
 		}
@@ -63,14 +77,18 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// refuseOpenPort answers 403 with a JSON error that says where to set the token.
-func refuseOpenPort(w http.ResponseWriter, what string) {
+// setTokenHint says where a token is set when the API may not set it.
+const setTokenHint = ": set api_token through the FLODNI_API_TOKEN environment variable " +
+	"or by editing config.json, then restart flodni"
+
+// refuseOpenPort answers a refused open-port request with a JSON error and logs it the
+// way the bearer middleware logs a 401 (method, path, address).
+func refuseOpenPort(w http.ResponseWriter, r *http.Request, status int, msg string) {
+	logger.Warn(fmt.Sprintf("[Auth] refused %s %s from %s: %s", r.Method, r.URL.Path, r.RemoteAddr, msg),
+		"method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "status", status)
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusForbidden)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"error": what + ": set api_token through the FLODNI_API_TOKEN environment variable " +
-			"or by editing config.json, then restart flodni",
-	})
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 // restartSelf asks the process to stop gracefully; a test replaces it.
@@ -92,7 +110,7 @@ func handleRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if controlToken == "" {
-		refuseOpenPort(w, "restart is refused while no token is enforced")
+		refuseOpenPort(w, r, http.StatusForbidden, "restart is refused while no token is enforced"+setTokenHint)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

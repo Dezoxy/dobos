@@ -50,7 +50,7 @@ IDs are stable; each row names the boundary it belongs to.
 | ID | Boundary | STRIDE | Threat | Mitigation today | Residual |
 |---|---|---|---|---|---|
 | T-01 | B1, B2 | Spoofing | A client without the token calls a control route | Bearer token, constant-time compare, length check first (`apiauth.go`); 401 logged with method, path and address, never the credential | None when the token is set; nothing at all when it is not (T-02) |
-| T-02 | B1, B2, B4 | Spoofing, Elevation | No token configured, so every route is open, including config write, restart, library add and remove | The default is documented in `SECURITY.md`; `.example` config carries a loopback `gostorm_url`. With no token enforced, `POST /api/config` refuses to set or change `api_token` and `POST /api/restart` is refused, both 403 (`control_api.go`), so a client cannot choose the next start's token or bounce the service | Gap: every other route stays open, including other config keys and library add and remove; the daemon starts without warning of an open control port beyond one log line when auth is on |
+| T-02 | B1, B2, B4 | Spoofing, Elevation | No token configured, so every route is open, including config write, restart, library add and remove | The default is documented in `SECURITY.md`; `.example` config carries a loopback `gostorm_url`. With no token enforced, `POST /api/config` refuses to set or change `api_token` and `POST /api/restart` is refused, both 403 (`control_api.go`), so a client cannot choose or erase the next start's token or restart the daemon through the control port | Gap: every other route stays open, including other config keys and library add and remove; GoStorm's port answers `GET /shutdown` without a token, which ends the process (`os.Exit(0)`), so a client can still stop the service and whether it comes back depends on the supervisor; the daemon starts without warning of an open control port beyond one log line when auth is on |
 | T-03 | B1, B2 | Information disclosure | The token or its traffic is read on the wire | The token is never logged or returned: `Config.Redacted` blanks it for `GET /api/config` | Gap: no TLS on the control port (T-04) |
 | T-04 | B1 | Information disclosure, Tampering | Passive or active attacker on the path sees the token and every payload | None in flodni; `SECURITY.md` says to front it with a TLS proxy | Gap: no TLS on B1. GoStorm can serve TLS when its own settings enable it; the control port cannot |
 | T-05 | B4 | Information disclosure | `?token=` on a webhook URL lands in proxy and access logs and in the media server's own configuration | Only the two webhook paths accept a query token, matched on the exact path (`controlWebhook` in `apiauth.go`); no other route does | Gap: the token in a URL is logged by any hop that logs URLs; use a dedicated proxy that strips it, or accept it |
@@ -73,7 +73,8 @@ Ordered by what to fix first. None is scheduled here; see
    clear text; mitigate with a TLS proxy on any untrusted network.
 2. The token is opt-in (T-02, T-06). An empty `api_token` leaves the other
    config keys, the library routes and the webhook open; setting the token
-   and restart need the environment or the file.
+   needs the environment or the file, and a restart needs the service
+   manager. GoStorm's `GET /shutdown` still stops the process without a token.
 3. `?token=` on a webhook URL is logged by proxies (T-05). Plex cannot send
    headers, so the query form exists on those two paths only.
 4. No rate limiting or lockout (T-08).
