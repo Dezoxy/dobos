@@ -790,7 +790,14 @@ switch off it never refuses or slows a read.
     16 MiB): a scan got 20 to 32 MiB before the refusal, the 20 MiB cut plus
     up to 12 MiB of read-ahead already in flight, and the engine pulled no
     more from the seeder afterwards (622 bytes in 16 s). With the pump on it
-    is not measured. The head-window part is counted and can be clamped, see
+    is not measured. The cut is on counted bytes, not on the reader's offset:
+    the kernel sends one scan's read-ahead as parallel requests, so a later
+    request can be served and counted before an earlier one is gated. That
+    earlier request is then refused, and a reader that reads in order stops
+    a little short of the cut (once 128 KiB, 19.875 MiB here), by at most the
+    read-ahead window. The end-to-end test checks the counted bytes against
+    the margin and gives the reader's bytes that slack.
+    The head-window part is counted and can be clamped, see
     the next two bullets.
   - **Read-ahead overshoot (counted always, clamp opt-in).** Implemented,
     tested against the fake engine. A miss inside the head window is never
