@@ -60,31 +60,57 @@ func variants(secrets []string) []string {
 	return out
 }
 
-// clean replaces every secret, case-insensitively and longest first, keeps
-// printable ASCII and caps the length.
+// asciiOnly maps every byte outside 0x20..0x7e to '?', byte for byte, so the result
+// has the length of the input and every offset means the same in both.
+func asciiOnly(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c < 0x20 || c > 0x7e {
+			b[i] = '?'
+		}
+	}
+	return string(b)
+}
+
+// lowerASCII lowers A-Z only: one byte in, one byte out, unlike strings.ToLower,
+// which can change the length of non-ASCII text.
+func lowerASCII(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'A' && c <= 'Z' {
+			b[i] = c + 'a' - 'A'
+		}
+	}
+	return string(b)
+}
+
+// clean reduces msg to printable ASCII first, then replaces every secret,
+// case-insensitively and longest first, then caps the length. Every offset is
+// taken from the string it is used on: nothing can go out of range, whatever
+// bytes a tracker sends. The secrets get the same reduction, so a passkey with
+// odd bytes matches its own echo.
 func clean(msg string, secrets []string) string {
+	msg = asciiOnly(msg)
 	for _, sec := range variants(secrets) {
-		lower, ls := strings.ToLower(msg), strings.ToLower(sec)
+		sec = lowerASCII(asciiOnly(sec))
+		if len(sec) < 4 {
+			continue
+		}
 		var b strings.Builder
 		for {
-			i := strings.Index(lower, ls)
+			i := strings.Index(lowerASCII(msg), sec)
 			if i < 0 {
 				break
 			}
 			b.WriteString(msg[:i])
 			b.WriteString("***")
-			msg, lower = msg[i+len(sec):], lower[i+len(sec):]
+			msg = msg[i+len(sec):]
 		}
 		b.WriteString(msg)
 		msg = b.String()
 	}
-	b := make([]byte, 0, len(msg))
-	for i := 0; i < len(msg) && len(b) < maxMsg; i++ {
-		c := msg[i]
-		if c < 0x20 || c > 0x7e {
-			c = '?'
-		}
-		b = append(b, c)
+	if len(msg) > maxMsg {
+		msg = msg[:maxMsg]
 	}
-	return string(b)
+	return msg
 }

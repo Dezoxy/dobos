@@ -18,29 +18,35 @@ func hangTracker(t *testing.T) *fakeHTTP {
 	return f
 }
 
-// A 0 is only a 0 when every tracker of the torrent answered.
-func TestZeroNeedsEveryTrackerToAnswer(t *testing.T) {
-	a, b, c := h20(1), h20(2), h20(3)
+// The numbers are the max over the trackers that gave a count; the entry carries
+// the facts (answered, failed, unscrapable, unknown) and the caller decides.
+func TestFactsReportMaxOverAnsweredTrackers(t *testing.T) {
+	a, b, c, d := h20(1), h20(2), h20(3), h20(4)
 	zero := newFakeHTTP(t, map[[20]byte]Counts{a: {0, 0}, b: {0, 0}, c: {5, 1}})
 	hang := hangTracker(t)
 	s, _ := newTest(t, []Target{
 		{Hash: a, Trackers: []string{hang.announce(), zero.announce()}},                          // one times out, one says 0
 		{Hash: b, Trackers: []string{"http://tracker.example.org/tracker.php", zero.announce()}}, // one has no scrape URL
 		{Hash: c, Trackers: []string{hang.announce(), zero.announce()}},                          // 5 stands even so
+		{Hash: d, Trackers: []string{hang.announce(), zero.announce()}},                          // d is unknown to the answering tracker
 	}, func(cf *Config) { cf.Timeout = 150 * time.Millisecond })
 	_, _ = s.StartPass("manual", nil)
 	waitDone(t, s)
 	ea, _ := s.Entry(a)
-	if ea.Seeders != nil || ea.Leechers != nil || !strings.HasSuffix(ea.Err, ": timeout") {
-		t.Fatalf("timeout + 0 must be null with the timeout: %+v", ea)
+	if ea.Seeders == nil || *ea.Seeders != 0 || ea.Err != "" || ea.Answered != 1 || ea.Failed != 1 || ea.Unscrapable != 0 || ea.Unknown != 0 {
+		t.Fatalf("timeout + 0: want seeders 0, answered 1, failed 1: %+v", ea)
 	}
 	eb, _ := s.Entry(b)
-	if eb.Seeders != nil || eb.Err != "no scrape URL" {
-		t.Fatalf("skipped tracker + 0 must be null: %+v", eb)
+	if eb.Seeders == nil || *eb.Seeders != 0 || eb.Answered != 1 || eb.Unscrapable != 1 || eb.Failed != 0 {
+		t.Fatalf("skipped + 0: %+v", eb)
 	}
 	ec, _ := s.Entry(c)
-	if ec.Seeders == nil || *ec.Seeders != 5 || ec.Err != "" || ec.Source != "http" {
-		t.Fatalf("a count above 0 stands despite a failed tracker: %+v", ec)
+	if ec.Seeders == nil || *ec.Seeders != 5 || ec.Err != "" || ec.Source != "http" || ec.Failed != 1 || ec.Answered != 1 {
+		t.Fatalf("a count above 0 with a failed tracker: %+v", ec)
+	}
+	ed, _ := s.Entry(d)
+	if ed.Seeders != nil || ed.Answered != 0 || ed.Unknown != 1 || ed.Failed != 1 || !strings.HasSuffix(ed.Err, ": timeout") {
+		t.Fatalf("nothing answered with a count: null, the failure as error: %+v", ed)
 	}
 }
 
@@ -253,8 +259,8 @@ func TestProxyCarriesHTTPAndUDPIsSkipped(t *testing.T) {
 	if !strings.Contains(lb.all(), "udp skipped: proxy") {
 		t.Fatal("the skip should be logged")
 	}
-	// a proxied http answer of 0 is not a clean 0 while a udp tracker was skipped
-	if e, _ := s.Entry(c); e.Seeders != nil || !strings.Contains(e.Err, "udp skipped: proxy") {
+	// c: the proxied http tracker omitted it, the udp one was skipped
+	if e, _ := s.Entry(c); e.Seeders != nil || e.Unscrapable != 1 || e.Unknown != 1 || e.Err != UnknownToTracker {
 		t.Fatalf("mixed entry: %+v", e)
 	}
 }
@@ -292,4 +298,88 @@ func TestStartPassChecksBeforeLoadingAndWaitsForReady(t *testing.T) {
 		t.Fatalf("after stop: %v, %d loads", err, loads.Load())
 	}
 	_ = strconv.Itoa
+}
+
+func TestRedactionSurvivesOddUnicode(t *testing.T) {
+	const pk = "PassKey0123456789"
+	sec := secretsOf("http://tracker.example.org/" + pk + "/announce")
+	// U+023A and U+2C65 change length when lowered; U+212A (Kelvin) lowers to 'k'
+	odd := "\u023a\u2c65\u212a\xff\xfe"
+	for _, in := range []string{
+		odd + pk + odd,
+		"Pass\u212aey0123456789",
+		"\u023a\u023a\u023a\u023a" + strings.ToUpper(pk) + "\u023a",
+		pk[:5] + odd + pk[5:],
+		strings.Repeat(odd, 200) + pk,
+		pk + pk + odd,
+	} {
+		out := clean(in, sec)
+		if strings.Contains(strings.ToLower(out), strings.ToLower(pk[:8])) || strings.Contains(strings.ToLower(out), strings.ToLower(pk[len(pk)-8:])) {
+			t.Errorf("%q leaked: %q", in, out)
+		}
+		for i := 0; i < len(out); i++ {
+			if out[i] < 0x20 || out[i] > 0x7e {
+				t.Fatalf("non-ASCII byte in %q", out)
+			}
+		}
+		if len(out) > maxMsg {
+			t.Fatalf("too long: %d", len(out))
+		}
+	}
+}
+
+func FuzzClean(f *testing.F) {
+	const pk = "PassKey0123456789"
+	for _, s := range []string{"", pk, strings.ToUpper(pk), "\u023a" + pk, "\u212aey", "\xff\xfe", pk[:9], "a" + pk + "b" + pk} {
+		f.Add(s)
+	}
+	sec := secretsOf("http://tracker.example.org/" + pk + "/announce?auth=Tok3nValue99")
+	f.Fuzz(func(t *testing.T, in string) {
+		out := clean(in, sec)
+		if len(out) > maxMsg {
+			t.Fatalf("too long")
+		}
+		for i := 0; i < len(out); i++ {
+			if out[i] < 0x20 || out[i] > 0x7e {
+				t.Fatalf("non-ASCII byte")
+			}
+		}
+		// a whole secret in the input never survives, in any letter case
+		if strings.Contains(strings.ToLower(asciiOnly(in)), strings.ToLower(pk)) && strings.Contains(strings.ToLower(out), strings.ToLower(pk)) {
+			t.Fatalf("passkey survived: %q", out)
+		}
+	})
+}
+
+// A tracker answer that makes the worker panic ends that host's part of the pass with an
+// error and leaves the other hosts, and the daemon, alone.
+func TestPanicInAWorkerIsContained(t *testing.T) {
+	a, b := h20(1), h20(2)
+	bad := newFakeHTTP(t, nil)
+	bad.answer = func(w http.ResponseWriter, r *http.Request, _ [][20]byte) { http.Error(w, "x", 500) }
+	good := newFakeHTTP(t, map[[20]byte]Counts{b: {4, 4}})
+	lb := &logBuf{}
+	s, _ := newTest(t, []Target{
+		{Hash: a, Trackers: []string{bad.announce()}},
+		{Hash: b, Trackers: []string{good.announce()}},
+	}, func(c *Config) {
+		c.Logf = func(f string, args ...any) {
+			if strings.Contains(sprintf(f, args...), "http status 500") {
+				panic("boom")
+			}
+			lb.logf(f, args...)
+		}
+	})
+	_, _ = s.StartPass("manual", nil)
+	p := waitDone(t, s)
+	ea, _ := s.Entry(a)
+	if ea.Seeders != nil || !strings.HasSuffix(ea.Err, ": internal error") || ea.Failed != 1 {
+		t.Fatalf("panicked host's torrent: %+v", ea)
+	}
+	if eb, _ := s.Entry(b); eb.Seeders == nil || *eb.Seeders != 4 {
+		t.Fatalf("other host: %+v", eb)
+	}
+	if p.Errors != 1 || p.OK != 1 || !strings.Contains(lb.all(), "internal error, host skipped") {
+		t.Fatalf("pass %+v log %q", p, lb.all())
+	}
 }

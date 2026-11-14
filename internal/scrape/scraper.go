@@ -27,10 +27,16 @@ type Entry struct {
 	Err               string // host and failure class, or "unknown_to_tracker"; never a URL
 	RunID             int
 	Source            string // "http" or "udp": the tracker answer that supplied the numbers
+	// Facts about the trackers of the torrent in this pass; the caller decides what
+	// they mean (a 0 with Failed > 0 is a weaker signal than one with Failed 0).
+	Answered    int // trackers that gave a count (0 included)
+	Failed      int // failed, timed out, or host backing off
+	Unscrapable int // wss://, unsupported scheme, no scrape URL, UDP behind a proxy
+	Unknown     int // HTTP answers that omitted the hash
 }
 
-// UnknownToTracker is the entry error when every tracker that answered left the
-// torrent out and none failed: the torrent is not known there, which is not a 0.
+// UnknownToTracker is the entry error when no tracker gave a count and the ones that
+// answered left the torrent out: the torrent is not known there, which is not a 0.
 const UnknownToTracker = "unknown_to_tracker"
 
 // Pass describes one pass. Torrents counts the torrents in it; OK, Errors and
@@ -244,7 +250,9 @@ type tstate struct {
 	pending int
 	answers []answer
 	unknown int    // trackers that answered and left the torrent out
-	err     string // first tracker that failed or was skipped: it was not heard from
+	failed  int    // trackers that failed
+	skipped int    // trackers that cannot be scraped
+	err     string // first tracker that failed
 }
 
 type item struct {
@@ -252,7 +260,8 @@ type item struct {
 	ep      Endpoint
 	hash    [20]byte
 	secrets []string
-	age     time.Time // the torrent's last entry; zero if it has none
+	age     time.Time // when a request last carried the torrent; zero if never
+	done    bool
 }
 
 // StartPass starts a pass and returns at once. hash nil scrapes every stored
@@ -325,12 +334,7 @@ func (s *Scraper) StartPass(trigger string, hash *[20]byte) (Pass, error) {
 			ep, err := Derive(a)
 			if err != nil {
 				s.skipTotal.Add(1)
-				if ts.err == "" {
-					ts.err = "no scrape URL"
-					if errors.Is(err, ErrUnsupported) {
-						ts.err = "unsupported tracker"
-					}
-				}
+				ts.skipped++
 				continue
 			}
 			k := [2]string{ep.Host, ep.Key}
@@ -341,9 +345,7 @@ func (s *Scraper) StartPass(trigger string, hash *[20]byte) (Pass, error) {
 			if ep.Kind == "udp" && (s.cfg.Proxy != nil || s.cfg.NoUDP) {
 				s.skipTotal.Add(1)
 				proxySkips++
-				if ts.err == "" {
-					ts.err = ep.Host + ": udp skipped: proxy"
-				}
+				ts.skipped++
 				continue
 			}
 			ts.pending++
@@ -435,6 +437,27 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // requests are sequential, paced and backed off on their own clock, so a slow
 // or failing host never delays another host's batches.
 func (s *Scraper) runHost(pass *Pass, host string, items []*item, hs *hostState, jitter bool) {
+	defer func() {
+		// Nothing a tracker sends may take the daemon down: a panic ends this host's
+		// part of the pass with an error for what it had not finished.
+		if r := recover(); r != nil {
+			s.mu.Lock()
+			var rest []*item
+			for _, it := range items {
+				if !it.done {
+					rest = append(rest, it)
+				}
+			}
+			s.mu.Unlock()
+			func() {
+				defer func() { _ = recover() }()
+				s.cfg.Logf("[Scrape] %s: internal error, host skipped for this pass", host)
+			}()
+			if len(rest) > 0 {
+				s.finish(pass, rest, nil, host, "internal error")
+			}
+		}
+	}()
 	if jitter && !sleepCtx(s.ctx, time.Duration(s.cfg.Rand()*float64(s.cfg.HostJitter))) {
 		return
 	}
@@ -531,15 +554,17 @@ func (s *Scraper) request(chunk []*item) (map[[20]byte]Counts, time.Duration, *E
 // request failed with msg. Otherwise an item missing from answers is a hash the
 // tracker did not know: not a count, not a failure.
 //
-// A max over trackers with an unknown operand is only known when the known part
-// is above 0: a 0 is a 0 only when no tracker of the torrent failed or was
-// skipped, since a tracker that does not know the hash can only say 0 or nothing.
+// Flodni reports facts and the caller decides: the numbers are the maximum over
+// the trackers that gave a count (0 when every one of them said 0), and the entry
+// says how many answered, failed, were unscrapable or did not know the hash. A 0
+// with failed > 0 is a weaker signal than one with failed 0.
 func (s *Scraper) finish(pass *Pass, chunk []*item, answers map[[20]byte]Counts, host, msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, it := range chunk {
 		ts := it.ts
 		ts.pending--
+		it.done = true
 		src := it.ep.Kind
 		if msg != msgBackingOff {
 			s.tried[it.hash] = s.cfg.Now()
@@ -552,6 +577,7 @@ func (s *Scraper) finish(pass *Pass, chunk []*item, answers map[[20]byte]Counts,
 			ts.unknown++
 		} else {
 			s.errTotal.Add(1)
+			ts.failed++
 			if ts.err == "" {
 				ts.err = host + ": " + clean(msg, it.secrets)
 			}
@@ -559,7 +585,8 @@ func (s *Scraper) finish(pass *Pass, chunk []*item, answers map[[20]byte]Counts,
 		if ts.pending > 0 {
 			continue
 		}
-		e := Entry{At: s.cfg.Now(), RunID: pass.RunID}
+		e := Entry{At: s.cfg.Now(), RunID: pass.RunID, Answered: len(ts.answers), Failed: ts.failed,
+			Unscrapable: ts.skipped, Unknown: ts.unknown}
 		var best *answer
 		for i := range ts.answers {
 			a := &ts.answers[i]
@@ -570,7 +597,7 @@ func (s *Scraper) finish(pass *Pass, chunk []*item, answers map[[20]byte]Counts,
 			}
 		}
 		switch {
-		case best != nil && (best.Seeders > 0 || ts.err == ""):
+		case best != nil:
 			e.Seeders, e.Leechers, e.Source = &best.Seeders, &best.Leechers, best.source
 			pass.OK++
 		case ts.err != "":

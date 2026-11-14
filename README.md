@@ -490,17 +490,18 @@ against a real tracker.
 
 | Field | Meaning |
 |---|---|
-| `seeders`, `leechers` | The answer with the most seeders among the torrent's trackers; **null, never 0, unless a tracker answered**. A 0 is only reported when every tracker of the torrent answered: if one failed, timed out or was skipped (no scrape URL, UDP behind a proxy), a 0 becomes null with that error, while a count above 0 stands. For HTTP only a hash present in the tracker's `files` is a count (0 included); an omitted hash is "not known to this tracker" and falls through to the torrent's other trackers. UDP answers a fixed triple per hash, so its 0 stays 0, and on a 0 tie an HTTP answer wins over a UDP one. |
+| `seeders`, `leechers` | The most seeders among the trackers that **answered with a count** (the leechers of that answer): 0 if every tracker that answered said 0; **null, never 0, when no tracker gave a count** (all failed, or all omitted the hash). For HTTP only a hash present in the tracker's `files` is a count (0 included); an omitted hash is "not known to this tracker" and is not counted. UDP answers a fixed triple per hash, so its 0 stays 0, and on a 0 tie an HTTP answer wins over a UDP one. |
+| `answered`, `failed`, `unscrapable`, `unknown` | Integer facts about the torrent's trackers in that pass: gave a count; failed, timed out or were skipped as `host backing off`; cannot be scraped (`wss://` or another scheme, no BEP 48 scrape URL, UDP behind a proxy); answered over HTTP and omitted the hash. Flodni reports the facts and **the verdict is the caller's**: a 0 with `failed` above 0 is a weaker signal than a 0 with `failed` 0, and a 0 with `answered` 1 of several trackers is weaker than a 0 from all of them. |
 | `source` | `http` or `udp`: the answer the numbers came from (a UDP 0 may mean unknown, so a consumer can weight it lower); null when there are no numbers. |
 | `scraped_at` | RFC 3339 UTC time the entry was written. |
-| `error` | `null` when the numbers stand; `unknown_to_tracker` when every tracker that answered left the torrent out and none failed; otherwise the host (`scheme://host:port`) and a failure class (`timeout`, `connection failed`, `http status N`, `tracker: <its reason>`, `malformed response`, `response too large`, `host backing off`, `udp skipped: proxy`, ...), or `no scrape URL` / `unsupported tracker`. Never a URL. |
+| `error` | Set only when no tracker gave a count, else `null`: the first failure as the host (`scheme://host:port`) and a failure class (`timeout`, `connection failed`, `http status N`, `tracker: <its reason>`, `malformed response`, `response too large`, `host backing off`, `internal error`, ...), or `unknown_to_tracker` when the trackers that answered all omitted the hash. Never a URL. |
 | `run_id` | The pass that wrote the entry. |
 
   The response also has a top-level `scrape_pass` with the `run_id` and
   `finished_at` of the last finished pass over all torrents (null before the
   first; a one-torrent pass or one cut short by a shutdown does not count).
   If one tracker of a torrent answered and another failed, the answer is used
-  and there is no error. A torrent a pass did not reach (a one-torrent pass, a
+  and there is no error; `failed` says so. A torrent a pass did not reach (a one-torrent pass, a
   shutdown, a torrent added during the pass, no scrapeable tracker) keeps its
   previous entry with its old `run_id`; nothing writes an empty or zero entry.
   Entries of torrents that are no longer stored are dropped at the next full

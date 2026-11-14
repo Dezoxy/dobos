@@ -226,6 +226,10 @@ func TestScrapeTriggerStatusOverlapAndHealth(t *testing.T) {
 	if tb["seeders"] != nil || tb["leechers"] != nil || tb["error"] == nil || tb["run_id"] != float64(1) {
 		t.Fatalf("b scrape = %v", tb)
 	}
+	if tb["answered"] != float64(0) || tb["unknown"] != float64(1) || tb["failed"] != float64(0) || tb["unscrapable"] != float64(0) ||
+		ta["answered"] != float64(1) || ta["failed"] != float64(0) {
+		t.Fatalf("facts: %v / %v", ta, tb)
+	}
 	if tb["error"] != "unknown_to_tracker" || tb["source"] != nil || ta["source"] != "http" {
 		t.Fatalf("an omitted hash is unknown, not a failure and not 0: %v / %v", tb, ta)
 	}

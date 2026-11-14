@@ -20,7 +20,8 @@ import (
 var trackerScraper atomic.Pointer[trackscrape.Scraper]
 
 // scrapeHealth is the EXPERIMENTAL "scrape" object of /api/torrents/health. seeders and
-// leechers are null unless a tracker answered; a failed pass is an error, never a 0.
+// leechers are the most over the trackers that gave a count, null when none did; a failed
+// pass is an error, never a 0.
 // run_id is the pass the entry came from: a torrent a pass did not reach keeps the
 // entry, and the run_id, of the pass that did.
 type scrapeHealth struct {
@@ -32,7 +33,12 @@ type scrapeHealth struct {
 	// UDP 0 may mean "unknown" (BEP 15 answers a fixed triple), an HTTP one was present
 	// in the tracker's files. Null when there are no numbers.
 	Source *string `json:"source"`
-	RunID  int     `json:"run_id"`
+	// Facts about the torrent's trackers in that pass; the caller decides what they mean.
+	Answered    int `json:"answered"`
+	Failed      int `json:"failed"`
+	Unscrapable int `json:"unscrapable"`
+	Unknown     int `json:"unknown"`
+	RunID       int `json:"run_id"`
 }
 
 // scrapePassHealth is the top-level "scrape_pass": the last finished pass over every torrent.
@@ -58,7 +64,8 @@ func scrapeFor(hash string) *scrapeHealth {
 	if !ok {
 		return nil
 	}
-	out := &scrapeHealth{Seeders: e.Seeders, Leechers: e.Leechers, RunID: e.RunID}
+	out := &scrapeHealth{Seeders: e.Seeders, Leechers: e.Leechers, RunID: e.RunID,
+		Answered: e.Answered, Failed: e.Failed, Unscrapable: e.Unscrapable, Unknown: e.Unknown}
 	at := rfc3339(e.At)
 	out.ScrapedAt = &at
 	out.Error = strOrNil(e.Err)
