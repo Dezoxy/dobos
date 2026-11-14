@@ -632,6 +632,12 @@ file (an idea in `docs/ideas.md`, not planned). Warm on add and its catch-up,
 which fill windows on their own, are described in their own section below; both
 are off by default.
 
+The quota counts allocated blocks, not apparent sizes: a sparse file (a tail
+written in pieces, a head with holes) counts what it holds on disk, as the
+start-up walk, the eviction walk, writes and removals all do. Where a platform
+reports no block count, the apparent size stands in. The window lengths and
+the coverage the cache serves still follow the logical length of the files.
+
 - **Played** means a playback confirmed by Plex's play webhook, never a
   scanner's read. A webhook marks at most one file: a movie by file name,
   IMDB id or a unique title (and year); an episode by file name, or by a
@@ -1057,7 +1063,7 @@ scraper on the same host or Docker network.
 | `flodni_warmup_cache_bytes` | gauge | none | Approximate size of the warmup cache; only with the cache enabled. |
 | `flodni_warmup_cache_quota_bytes` | gauge | none | Its size limit; only with the cache enabled. |
 | `flodni_warmup_evictions_total` | counter | `window` | Files removed by quota eviction, `head` or `tail`. |
-| `flodni_warmup_evicted_bytes_total` | counter | `window` | Their apparent size in bytes. |
+| `flodni_warmup_evicted_bytes_total` | counter | `window` | Their allocated size in bytes. |
 | `flodni_warm_fills_total` | counter | `trigger`, `outcome` | Warm fills. `trigger="mount"`: per-file records the mount path wrote, `outcome` `warmed` (the engine holds a swarm delivery stamp) or `cached` (it does not); needs the state database and index mode. `trigger="add"` and `trigger="catchup"`: warm on add and catch-up attempts, `outcome` as in "Warm on add", every value present from 0. |
 | `flodni_warm_fill_bytes_total` | counter | `trigger`, `window` | Bytes warm on add and catch-up wrote, `window` `head` or `tail`, also by fills that did not finish. |
 | `flodni_warm_cache_failures_total` | counter | `reason` | Warm on add and catch-up attempts that lost a window or could not write it: `lost` or `write_failed`. |
