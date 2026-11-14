@@ -595,10 +595,12 @@ func TestASwarmDeliveryOnAnyFileOfTheHashLiftsThePackGiveUp(t *testing.T) {
 		t.Fatalf("fed %v, want none: the delivery is older than the give-up", got)
 	}
 	// A delivery after it, on a sibling, lifts the pack; the given-up file stays given up.
+	// File 3 is "cached" in the record only: its windows are not on disk, and catch-up
+	// decides from the disk, so it is fed with file 2.
 	e.x.RecordWarm(warmUpdate{key: fk("aa", 3), readability: readWarmed, cache: cacheCached, deliveredAt: e.now.Add(-time.Hour)})
 	e.c.runPass()
-	if got := e.tg.feeds(); len(got) != 1 || got[0] != "aa/2" {
-		t.Fatalf("fed %v, want aa/2 (file 1 stays given up, file 3 is cached in the record only)", got)
+	if got := e.tg.feeds(); len(got) != 1 || got[0] != "aa/2,3" {
+		t.Fatalf("fed %v, want aa/2,3 (file 1 stays given up; file 3 is not on disk)", got)
 	}
 }
 
