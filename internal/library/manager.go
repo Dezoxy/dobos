@@ -576,15 +576,33 @@ func (m *Manager) pickFile(index int, files []FileStat) (*FileStat, error) {
 }
 
 // replacementSample returns the indexes into the sorted episode list whose files
-// the check reads: the one being replaced, then the first and the last episode. The
-// list holds only files that name an episode, so samples and extras never appear. A
-// single-file release yields one index.
-func replacementSample(n, replacing int) []int {
-	idx := []int{replacing}
-	for _, j := range []int{0, n - 1} {
-		if len(idx) < replacementSampleSize && !slices.Contains(idx, j) {
+// the check reads: the one being replaced, then the first and the last regular
+// episode. seasons holds each entry's season. Season-0 specials are never chosen as
+// first or last, nor as the replaced one; the list holds only files that name an
+// episode, so samples and extras never appear. A single-file release yields one
+// index. A release of specials alone has nothing else to read, so the replaced
+// special is read.
+func replacementSample(seasons []int, replacing int) []int {
+	var idx []int
+	if seasons[replacing] > 0 {
+		idx = append(idx, replacing)
+	}
+	first, last := -1, -1
+	for i, s := range seasons {
+		if s > 0 {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	for _, j := range []int{first, last} {
+		if j >= 0 && len(idx) < replacementSampleSize && !slices.Contains(idx, j) {
 			idx = append(idx, j)
 		}
+	}
+	if len(idx) == 0 {
+		idx = append(idx, replacing)
 	}
 	return idx
 }
@@ -693,8 +711,12 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 		if !ok || prev == nil || prev.FilePath == "" || prev.FilePath == path {
 			continue
 		}
+		seasons := make([]int, len(wanted))
+		for k := range wanted {
+			seasons[k] = wanted[k].season
+		}
 		var sample []FileStat
-		for _, j := range replacementSample(len(wanted), i) {
+		for _, j := range replacementSample(seasons, i) {
 			sample = append(sample, wanted[j].file)
 		}
 		if err := m.readReplacementSample(ctx, hash, sample); err != nil {

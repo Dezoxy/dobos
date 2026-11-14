@@ -834,8 +834,9 @@ another release filed, the old stubs stay until the new release has shown it
 delivers. The check reads the first 64 KiB of a bounded sample of the new
 release's files: the file that replaces an existing stub, plus the first and
 the last episode by season and episode number, three files at most. A sample
-clip or an extra that names no episode is never chosen, since only files that
-name an episode are filed at all. The reads run at the same time under one
+clip, an extra or a season-0 special is never chosen as first or last, and a
+special is not read as the replaced file unless the release holds nothing else:
+only the files the add would file are candidates. The reads run at the same time under one
 60 s timeout, so a dead release costs one wait, not three. The replacement
 goes ahead only if every sampled file reads. Otherwise the call answers 422,
 the old stubs and registry rows stay, the new torrent is dropped, and the log

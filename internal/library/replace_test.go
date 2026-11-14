@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
@@ -303,10 +304,47 @@ func TestSingleFileReleaseReadsOnce(t *testing.T) {
 
 func TestSampleSizeNeverExceedsTheConstant(t *testing.T) {
 	// The replaced episode sits in the middle: three distinct reads, no more.
-	if got := replacementSample(5, 2); len(got) != replacementSampleSize {
+	if got := replacementSample([]int{1, 1, 1, 1, 1}, 2); len(got) != replacementSampleSize {
 		t.Fatalf("sample = %v, want %d indexes", got, replacementSampleSize)
 	}
-	if got := replacementSample(1, 0); len(got) != 1 {
+	if got := replacementSample([]int{1}, 0); len(got) != 1 {
 		t.Fatalf("sample = %v, want one index", got)
+	}
+}
+
+func TestSampleSkipsSeasonZeroSpecials(t *testing.T) {
+	// Sorted list: S00E01, S01E01, S01E02, S01E03. Index 2 is replaced.
+	got := replacementSample([]int{0, 1, 1, 1}, 2)
+	if want := []int{2, 1, 3}; !slices.Equal(got, want) {
+		t.Fatalf("sample = %v, want %v (special never first)", got, want)
+	}
+	// A replaced special is not itself sampled; first and last regular episodes are.
+	got = replacementSample([]int{0, 1, 1, 1}, 0)
+	if want := []int{1, 3}; !slices.Equal(got, want) {
+		t.Fatalf("sample = %v, want %v", got, want)
+	}
+	// Specials only: the replaced special is all there is to read.
+	if got := replacementSample([]int{0, 0}, 1); !slices.Equal(got, []int{1}) {
+		t.Fatalf("sample = %v, want [1]", got)
+	}
+}
+
+func TestPackWithSpecialAndSampleReadsNeitherAsASample(t *testing.T) {
+	eng := &replaceEngine{}
+	m, _, _ := replaceFixture(t, eng)
+	eng.files = []FileStat{
+		{ID: 1, Path: "Show.S01/Show.S01E01.mkv", Length: 1 << 30},
+		{ID: 2, Path: "Show.S01/Show.S01E02.mkv", Length: 1 << 30},
+		{ID: 3, Path: "Show.S01/Show.S01E03.mkv", Length: 1 << 30},
+		{ID: 4, Path: "Show.S01/Show.S00E01.mkv", Length: 1 << 30},
+		{ID: 5, Path: "Show.S01/Sample/Show.S01E03.mkv", Length: 1 << 20},
+	}
+	if _, err := addPack(m); err != nil {
+		t.Fatal(err)
+	}
+	got := append([]int(nil), eng.readIDs...)
+	sort.Ints(got)
+	if !slices.Equal(got, []int{1, 3}) {
+		t.Fatalf("read file ids = %v, want [1 3] (no special, no sample)", got)
 	}
 }
