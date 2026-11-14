@@ -713,7 +713,7 @@ func main() {
 			},
 			Logger:       logger,
 			OnAdded:      onLibraryAdded,
-			MediaServer:  mediaserver.New(gc().MediaServerType, gc().Plex.URL, gc().Plex.Token),
+			MediaServer:  mediaserver.New(gc().Plex.URL, gc().Plex.Token),
 			MovieSection: gc().Plex.LibraryID,
 			TVSection:    gc().Plex.TVLibraryID,
 		})

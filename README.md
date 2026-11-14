@@ -1,7 +1,7 @@
 # Flodni
 
-Flodni presents torrents as ordinary media files. A media server such as Plex
-or Jellyfin scans and plays them from a FUSE mount, and the bytes are fetched
+Flodni presents torrents as ordinary media files. Plex scans and plays them
+from a FUSE mount, and the bytes are fetched
 from the swarm when they are read. Nothing is downloaded to disk in full.
 
 It is one Go binary: a torrent engine, a FUSE virtual filesystem and a small
@@ -94,7 +94,7 @@ The command-line paths (the entrypoint's `FLODNI_SOURCE_PATH` and
 The control server on `metrics_port` (default 9080) is open unless you set a
 token. Set `api_token` in `config.json` or `FLODNI_API_TOKEN` (the variable
 wins) and every route except the panel page and
-`/api/health` needs `Authorization: Bearer <token>`. The Plex or Jellyfin webhook cannot send
+`/api/health` needs `Authorization: Bearer <token>`. The Plex webhook cannot send
 headers, so `/plex/webhook` and `/webhook` also accept the token in the URL,
 for example `http://host:9080/plex/webhook?token=<token>`; no other route
 does. `/control` loads without it and asks for the token on its first call,
@@ -133,9 +133,9 @@ fails, the features are just inactive.
 | Keep-alive of a confirmed play (see "Keep-alive") | confirm the play, so its torrent is not closed for idleness | Built, on by default (`playback_keepalive_minutes`) |
 
 - **Set it up.** Point the media server's webhook at
-  `http://<host>:<metrics_port>/plex/webhook` (Plex) or `/webhook`
-  (Jellyfin). With `api_token` set, the URL needs `?token=<token>`, because
-  these servers cannot send headers; without it every webhook is answered
+  `http://<host>:<metrics_port>/plex/webhook` (`/webhook` answers the same
+  way). With `api_token` set, the URL needs `?token=<token>`, because
+  Plex cannot send headers; without it every webhook is answered
   401 and nothing is counted. A webhook counts when it is a play or resume
   of a movie or an episode. It is matched when it resolves to one file of
   the library.
@@ -595,14 +595,12 @@ file (an idea in `docs/ideas.md`, not planned). Warm on add and its catch-up,
 which fill windows on their own, are described in their own section below; both
 are off by default.
 
-- **Played** means a playback confirmed by the media server webhook (Plex or
-  Jellyfin), never a scanner's read. A webhook marks at most one file: a
-  movie by file name, IMDB id or a unique title (and year); an episode by
-  file name, or by a unique IMDB id that agrees with the file's season and
-  episode, or by series title, season and episode together
-  (`Metadata.parentIndex` and `Metadata.index`, the Plex names; a Jellyfin
-  template must send the same fields, and that is not verified against a
-  Jellyfin server). When several candidates fit equally, or an episode
+- **Played** means a playback confirmed by Plex's play webhook, never a
+  scanner's read. A webhook marks at most one file: a movie by file name,
+  IMDB id or a unique title (and year); an episode by file name, or by a
+  unique IMDB id that agrees with the file's season and episode, or by series
+  title, season and episode together (`Metadata.parentIndex` and
+  `Metadata.index`). When several candidates fit equally, or an episode
   webhook carries no season and episode and no file name, no file is marked:
   a missed play costs one file its protection, a wrong mark would protect a
   season. Marking does not change which file the webhook starts playback

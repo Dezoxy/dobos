@@ -7,7 +7,7 @@ import (
 
 const defaultRefreshDelay = 15 * time.Second
 
-// MediaServer is the Plex/Jellyfin library refresh. mediaserver.Client implements it.
+// MediaServer is the Plex library refresh. mediaserver.Client implements it.
 type MediaServer interface {
 	RefreshLibrary(ctx context.Context, sectionID int) error
 }

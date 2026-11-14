@@ -22,7 +22,7 @@ route except the static panel page (`GET /control`) and `GET /api/health`
 (status words only, no paths or values; its `warnings` array tells an
 unauthenticated caller whether play webhooks are arriving) needs
 `Authorization: Bearer <token>`; the two webhook routes also accept
-`?token=<token>`, because Plex and Jellyfin cannot send headers. Unset, the
+`?token=<token>`, because Plex cannot send headers. Unset, the
 API is open: bind it to loopback or a private network, never to an address
 other people can reach.
 
