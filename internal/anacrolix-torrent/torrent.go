@@ -1102,6 +1102,9 @@ func (t *Torrent) countChurnDrop(pc *PeerConn) {
 	t.peerChurnCount.Add(1)
 	if pc.utp() {
 		t.peerChurnCountUTP.Add(1)
+		processCounters.peerChurnsUTP.Add(1)
+	} else {
+		processCounters.peerChurnsTCP.Add(1)
 	}
 }
 
@@ -1434,6 +1437,7 @@ func (t *Torrent) fireHedge(r RequestIndex, req Request, currentPeer *Peer, trig
 	candidate.validReceiveChunks[r]++
 	candidate.peerImpl._request(req)
 	t.hedgeTriggerCount.Add(1)
+	processCounters.hedgeTriggers.Add(1)
 	t.logger.WithDefaultLevel(log.Warning).Printf("[TailHedge] hash=%s Hedging piece=%d begin=%d to %v (original request exceeded %s)", t.infoHash.HexString(), req.Index, req.Begin, candidate.RemoteAddr, trigger)
 }
 
@@ -1576,6 +1580,9 @@ func (t *Torrent) maybeEjectOutlierPeer(now time.Time) {
 	t.peerEjectCount.Add(1)
 	if worst.utp() {
 		t.peerEjectCountUTP.Add(1)
+		processCounters.peerEjectsUTP.Add(1)
+	} else {
+		processCounters.peerEjectsTCP.Add(1)
 	}
 	uselessFor := "ever (no useful chunk received)"
 	if !worst.lastUsefulChunkReceived.IsZero() {

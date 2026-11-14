@@ -105,6 +105,15 @@ var OnWarmupStateChange func(hash string, fileID int, active bool)
 
 var warmupDurationBuckets [8]atomic.Int64 // <2s,<5s,<10s,<15s,<30s,<60s,<120s,>=120s
 
+// warmupDurationSumMicros is the sum of every recorded head-fill duration, in microseconds, so
+// the buckets plus this sum and their total make a Prometheus histogram.
+var warmupDurationSumMicros atomic.Int64
+
+// WarmupDurationBoundsSeconds are the bucket upper bounds in seconds; the eighth bucket is
+// everything above the last. The JSON buckets are open on the right (<2s), a histogram's le is
+// closed: they differ only for a duration of exactly a bound.
+var WarmupDurationBoundsSeconds = []float64{2, 5, 10, 15, 30, 60, 120}
+
 func recordWarmupDuration(d time.Duration) {
 	s := d.Seconds()
 	idx := 7
@@ -125,6 +134,17 @@ func recordWarmupDuration(d time.Duration) {
 		idx = 6
 	}
 	warmupDurationBuckets[idx].Add(1)
+	warmupDurationSumMicros.Add(d.Microseconds())
+}
+
+// WarmupDurationSnapshot returns the per-bucket counts (not cumulative) and the duration sum in
+// seconds, for /metrics/prometheus. The three counters are separate atomics, so a scrape taking
+// the count from the buckets it read sees a consistent histogram up to one in-flight record.
+func WarmupDurationSnapshot() (counts [8]int64, sumSeconds float64) {
+	for i := range warmupDurationBuckets {
+		counts[i] = warmupDurationBuckets[i].Load()
+	}
+	return counts, float64(warmupDurationSumMicros.Load()) / 1e6
 }
 
 // WarmupDurationBucketCounts returns a snapshot of the bucket counts for /metrics.
