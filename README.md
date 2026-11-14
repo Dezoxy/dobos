@@ -345,11 +345,13 @@ line below is the one log format that is).
 - Times are UTC and are taken when the session closes, up to two minutes
   after its last read.
 - An entry goes when the last stub of its torrent is removed through the
-  library API. A session still open on that torrent writes the entry back
-  when it closes, and a stub deleted another way leaves it in place. Such
+  library API, replaced by an add, or deleted through the mount. A session
+  still open on that torrent is closed first, by the usual close rules (a
+  session under 25 s gets no dead-swarm verdict), so it cannot write the
+  entry back. A stub deleted directly on disk leaves the entry in place. Such
   entries stay until a startup prunes them. The prune runs only after a
-  complete scan: both `movies` and `tv` exist, at least one stub was found
-  and no read failed. It is skipped otherwise, and the log says so. A stub
+  complete scan: both `movies` and `tv` exist and each held at least one
+  stub, and no read failed. It is skipped otherwise, and the log says so. A stub
   that parses but declares a size outside the valid range is logged with
   its path and counted separately (the start-up summary line); it does not
   block the prune and its torrent's rows stay. An unreadable directory
@@ -920,6 +922,28 @@ for movies) are not used, so a stub of another torrent that shares them is
 left alone. The call reads each stub under both folders. A stub with no
 readable hash is skipped and logged once per call. The torrent is dropped once
 no stub links to it.
+
+## Replacing a release
+
+**Implemented.** When an add of a TV release would replace episode stubs that
+another release filed, the old stubs stay until the new release has shown it
+delivers. The check reads the first 64 KiB of a bounded sample of the new
+release's files: the file that replaces an existing stub, plus the first and
+the last episode by season and episode number, three files at most. A sample
+clip, an extra or a season-0 special is never chosen as first or last, and a
+special is not read as the replaced file unless the release holds nothing else:
+only the files the add would file are candidates. The reads run at the same time under one
+60 s timeout, so a dead release costs one wait, not three. The replacement
+goes ahead only if every sampled file reads. Otherwise the call answers 422,
+the old stubs and registry rows stay, the new torrent is dropped, and the log
+names the release. A release with one file is checked on that file; an add that
+replaces nothing is not checked. A private torrent is read through its own
+peer sources only.
+
+The trade-off: the check samples, it does not prove. A pack whose middle
+episodes are dead but whose sampled files read still replaces the old stubs,
+and those episodes then fail on first play. Reading every file would delay
+every replacement by the slowest episode of the pack.
 
 ## Auditing stubs against the engine's file list
 
