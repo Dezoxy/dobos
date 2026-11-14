@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
-	"encoding/json"
 	"errors"
 	"flag"
 	"flodni/internal/apiauth"
-	"flodni/internal/atomicfile"
 	"flodni/internal/cache"
 	"flodni/internal/catalog"
 	"flodni/internal/catalog/mediaserver"
@@ -587,48 +585,7 @@ func Run() {
 		_, _ = w.Write(settingsHTML)
 	})
 
-	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(gc().Redacted())
-			return
-		}
-		if r.Method == "POST" {
-			var newCfg config.Config
-			if err := json.NewDecoder(r.Body).Decode(&newCfg); err != nil {
-				http.Error(w, err.Error(), 400)
-				return
-			}
-			// The panel never sees the token; an empty post keeps the one in the file.
-			newCfg.APIToken = gc().ResolveAPIToken(newCfg.APIToken)
-			// Paths that came from the command line are not written to the
-			// file: keep what the file had.
-			onDisk := config.LoadConfig()
-			if newCfg.PhysicalSourcePath == physicalSourcePath {
-				newCfg.PhysicalSourcePath = onDisk.PhysicalSourcePath
-			}
-			if newCfg.FuseMountPath == virtualMountPath {
-				newCfg.FuseMountPath = onDisk.FuseMountPath
-			}
-			// Update file
-			data, _ := json.MarshalIndent(newCfg, "", "  ")
-			if err := atomicfile.WriteFileKeepMode(gc().ConfigPath, data, 0600); err != nil {
-				http.Error(w, err.Error(), 500)
-				return
-			}
-			// Reload in memory (V1.4.0 Live Update)
-			cfg := config.LoadConfig()
-			// A save must not reintroduce a path other than the mounted one.
-			_ = applyEffectivePaths(&cfg, physicalSourcePath, virtualMountPath)
-			// RootPath comes from -path at startup, not from the file; without it
-			// GetStateDir falls back to /home/pi/STATE after every save.
-			cfg.RootPath = gc().RootPath
-			globalConfig.Store(&cfg)
-			applyLogConfig()
-			logger.Info("[Config] Updated via Dashboard API")
-			w.WriteHeader(200)
-		}
-	})
+	mux.HandleFunc("/api/config", handleConfig)
 
 	// Same-origin proxy to the GoStorm settings API. The Control Panel must not
 	// build an absolute URL of its own: behind a reverse proxy the GoStorm port is
@@ -670,29 +627,7 @@ func Run() {
 		_, _ = io.Copy(w, resp.Body)
 	})
 
-	mux.HandleFunc("/api/restart", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "POST" {
-			http.Error(w, "method not allowed", 405)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(200)
-		_, _ = w.Write([]byte(`{"ok":true}`))
-		// Flush response before exiting
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-		// Graceful shutdown, then exit with restartExitCode: systemd restarts on any
-		// code, and the Docker entrypoint's supervision loop restarts only on this one.
-		restartRequested.Store(true)
-		go func() {
-			time.Sleep(150 * time.Millisecond)
-			p, _ := os.FindProcess(os.Getpid())
-			if err := p.Signal(syscall.SIGTERM); err != nil {
-				logger.Warn(fmt.Sprintf("WARNING: restart requested but SIGTERM to self failed: %v", err), "err", err)
-			}
-		}()
-	})
+	mux.HandleFunc("/api/restart", handleRestart)
 
 	// Library API (external clients)
 	// Adds one title without any discovery: register the
