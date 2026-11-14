@@ -8,8 +8,10 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,7 +31,12 @@ const (
 // swarm delivers, small enough to cost seconds on a live one.
 const replacementReadBytes = 64 << 10
 
-// replacementReadTimeout bounds that read. A release with no seeds would otherwise
+// replacementSampleSize is how many files of a replacing pack the check reads: the
+// one being replaced, the first and the last episode by name, never more. A bound
+// on cost, not a proof: a dead file outside the sample can still pass.
+const replacementSampleSize = 3
+
+// replacementReadTimeout bounds that read, for the whole sample together. A release with no seeds would otherwise
 // hold the request open until the client gives up; a minute matches the metadata
 // wait. A variable so tests can shrink it.
 var replacementReadTimeout = 60 * time.Second
@@ -61,8 +68,20 @@ type Config struct {
 	// Gaps, when set, reports the episodes the reaper removed and has not been able to
 	// replace. Read-only: what to do about a hole is a decision for the client, which
 	// can ask the user; the engine only says which ones are open.
-	Gaps   func() ([]Gap, error)
-	Logger *slog.Logger
+	Gaps func() ([]Gap, error)
+	// StoredFiles, when set, is the file list saved with a torrent's record (engine
+	// ids), read without waking the torrent; nil when there is none. GET
+	// /api/library/audit needs it.
+	StoredFiles func(hash string) []TorrentFile
+	// FileState, when set, reports the daemon's per-file facts (warm record, played and
+	// eviction marks, an open session) for GET /api/library/file; nil reads as none.
+	FileState func(hash string, fileIndex int) FileFacts
+	// Confirm, when set, records a play of the file the way a play webhook does for the
+	// file it resolves to (POST /api/library/confirm). TokenSet says whether the control
+	// port has an api_token; the route answers 403 unless it does.
+	Confirm  func(hash string, fileIndex int)
+	TokenSet func() bool
+	Logger   *slog.Logger
 	// MediaServer, when set, is asked to rescan the section a stub was added to or
 	// removed from. MovieSection and TVSection are its library ids.
 	MediaServer  MediaServer
@@ -142,7 +161,17 @@ type AddRequest struct {
 	// QualityScore is stored in the TV registry. Left at 0, the next TV sync is free
 	// to replace the episode with any release it scores above zero.
 	QualityScore int `json:"quality_score"`
-	MetadataWait int `json:"metadata_wait"`
+	// Replace says what to do when the registry already holds a different release
+	// of the same episode: "never", "if-better" (only when QualityScore is greater
+	// than the stored one; 0 is never better) or "always". Omitted means "always",
+	// which is what an add did before the field existed. A movie never replaces.
+	Replace string `json:"replace"`
+	// DryRun answers what an add would decide from the registry and the stubs on disk,
+	// and does nothing else: no engine call (the torrent is never added, no metadata
+	// wait, no read), nothing written, no OnAdded, no scan. A single episode or a movie
+	// only: a pack's episodes are known only from the torrent's file list.
+	DryRun       bool `json:"dry_run"`
+	MetadataWait int  `json:"metadata_wait"`
 	// AcceptFiles vets the torrent's file list once metadata arrives; an error drops
 	// the torrent and becomes a 422. Not part of the HTTP contract.
 	AcceptFiles func(paths []string) error `json:"-"`
@@ -150,20 +179,70 @@ type AddRequest struct {
 
 // AddedFile is one stub written to disk.
 type AddedFile struct {
-	Path      string `json:"path"`
-	FusePath  string `json:"fuse_path"`
+	Path string `json:"path"`
+	// FusePath is empty, and so omitted, in a dry run: nothing was written, and callers
+	// link every entry that has one.
+	FusePath  string `json:"fuse_path,omitempty"`
 	Size      int64  `json:"size"`
 	FileIndex int    `json:"file_index"`
 	Season    int    `json:"season,omitempty"`
 	Episode   int    `json:"episode,omitempty"`
 }
 
+// Replace policies and add decisions (ADR 3).
+const (
+	ReplaceNever    = "never"
+	ReplaceIfBetter = "if-better"
+	ReplaceAlways   = "always"
+
+	DecisionAdded          = "added"
+	DecisionAlreadyPresent = "already_present"
+	DecisionReplaced       = "replaced"
+	DecisionKept           = "kept"
+
+	// ReadabilityUnchecked is what a dry run reports: it never asks the swarm.
+	ReadabilityUnchecked = "unchecked"
+)
+
+// ReplacedFile is a stub an add replaced: its path, the release it linked to and the
+// file index in that release.
+type ReplacedFile struct {
+	Path      string `json:"path"`
+	Hash      string `json:"hash"`
+	FileIndex int    `json:"file_index"`
+}
+
+// SkippedFile is an episode the replace policy refused. It was not written, so it is
+// never in Files.
+type SkippedFile struct {
+	Season  int    `json:"season"`
+	Episode int    `json:"episode"`
+	Reason  string `json:"reason"`
+}
+
+// AddResponse is the answer to an add. Files lists only the stubs this request wrote
+// (or, for already_present, the ones already there): callers link each entry that
+// carries a fuse_path. Decision, Replaced and Skipped are answered only to a request
+// that carries the replace field; any other request gets the v0.1.0 body.
 type AddResponse struct {
-	Hash           string      `json:"hash"`
-	Title          string      `json:"title"`
-	Type           string      `json:"type"`
-	Files          []AddedFile `json:"files"`
-	AlreadyPresent bool        `json:"already_present"`
+	Hash           string         `json:"hash"`
+	Title          string         `json:"title"`
+	Type           string         `json:"type"`
+	Files          []AddedFile    `json:"files"`
+	AlreadyPresent bool           `json:"already_present"`
+	Decision       string         `json:"decision,omitempty"`
+	Replaced       []ReplacedFile `json:"replaced,omitempty"`
+	Skipped        []SkippedFile  `json:"skipped,omitempty"`
+	// DryRun and Readability are set only by a dry run: nothing was written or asked.
+	DryRun      bool   `json:"dry_run,omitempty"`
+	Readability string `json:"readability,omitempty"`
+}
+
+// addResult is what filing the episodes of one torrent produced.
+type addResult struct {
+	files    []AddedFile
+	replaced []ReplacedFile
+	skipped  []SkippedFile
 }
 
 type RemoveRequest struct {
@@ -276,6 +355,16 @@ func (m *Manager) dropTorrent(ctx context.Context, hash string) bool {
 // files the FUSE layer serves. On any failure after the torrent was added it is removed
 // again, so a failed call leaves nothing hydrated.
 func (m *Manager) Add(ctx context.Context, req AddRequest) (*AddResponse, error) {
+	// A request that names none of the lifecycle fields gets the v0.1.0 body.
+	optedIn := strings.TrimSpace(req.Replace) != "" || req.DryRun
+	resp, err := m.add(ctx, req)
+	if resp != nil && !optedIn {
+		resp.Decision, resp.Replaced, resp.Skipped = "", nil, nil
+	}
+	return resp, err
+}
+
+func (m *Manager) add(ctx context.Context, req AddRequest) (*AddResponse, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, errf(http.StatusRequestTimeout, "request cancelled: %v", err)
 	}
@@ -315,7 +404,16 @@ func (m *Manager) Add(ctx context.Context, req AddRequest) (*AddResponse, error)
 		show := "show:" + EpisodeKey(req.Title, 0, 0)
 		if req.Episode > 0 {
 			defer m.showLocks.RLock(show)()
-			defer m.hashLocks.Lock("ep:" + EpisodeKey(req.Title, req.Season, req.Episode))()
+			// The legacy row may be written too (see episodeKey), so its lock is taken
+			// as well, always in key order.
+			keys := []string{EpisodeKey(req.Title, req.Season, req.Episode)}
+			if legacy := legacyEpisodeKey(req.Title, req.Season, req.Episode); legacy != keys[0] {
+				keys = append(keys, legacy)
+				sort.Strings(keys)
+			}
+			for _, k := range keys {
+				defer m.hashLocks.Lock("ep:" + k)()
+			}
 		} else {
 			defer m.showLocks.Lock(show)()
 		}
@@ -328,7 +426,40 @@ func (m *Manager) Add(ctx context.Context, req AddRequest) (*AddResponse, error)
 	if existing, err := m.alreadyPresent(kind, hash, req); err != nil {
 		return nil, err
 	} else if len(existing) > 0 {
-		return &AddResponse{Hash: hash, Title: req.Title, Type: kind, Files: existing, AlreadyPresent: true}, nil
+		resp := &AddResponse{Hash: hash, Title: req.Title, Type: kind, Files: existing, AlreadyPresent: true,
+			Decision: DecisionAlreadyPresent}
+		if req.DryRun {
+			resp.DryRun, resp.Readability = true, ReadabilityUnchecked
+			for i := range resp.Files {
+				resp.Files[i].FusePath = ""
+			}
+		}
+		return resp, nil
+	}
+
+	if req.DryRun {
+		return m.dryRun(req, kind, hash)
+	}
+
+	// A single episode is decided here, under its lock and before the engine is
+	// contacted: a refused add costs no metadata wait and touches no swarm (a private
+	// torrent is not announced). A pack's episodes are only known after metadata, so a
+	// pack fetches it once before its verdicts, even when every episode is then refused.
+	if kind == "tv" && req.Episode > 0 && req.Replace != ReplaceAlways {
+		key, err := m.episodeKey(req.Title, req.Season, req.Episode)
+		if err != nil {
+			return nil, errf(http.StatusServiceUnavailable, "cannot read the registry entry for %s: %v",
+				EpisodeKey(req.Title, req.Season, req.Episode), err)
+		}
+		v, err := m.replaceVerdict(req.Replace, key, m.singleEpisodePath(req, hash), req.QualityScore)
+		if err != nil {
+			return nil, err
+		}
+		if v.refused {
+			m.cfg.Logger.Info(fmt.Sprintf("[LibraryAPI] Kept %s S%02dE%02d: %s", req.Title, req.Season, req.Episode, v.reason), "title", req.Title, "season", req.Season, "episode", req.Episode, "reason", v.reason)
+			return &AddResponse{Hash: hash, Title: req.Title, Type: kind, Files: []AddedFile{}, Decision: DecisionKept,
+				Skipped: []SkippedFile{{Season: req.Season, Episode: req.Episode, Reason: v.reason}}}, nil
+		}
 	}
 
 	file, err := releaseFile(req.TorrentFile, hash)
@@ -390,23 +521,38 @@ func (m *Manager) Add(ctx context.Context, req AddRequest) (*AddResponse, error)
 		}
 	}
 
-	var files []AddedFile
+	var res addResult
 	if kind == "tv" {
-		files, err = m.addEpisodes(ctx, req, hash, magnet, info, dropped)
+		res, err = m.addEpisodes(ctx, req, hash, magnet, info, dropped)
 	} else {
-		files, err = m.addMovie(req, hash, magnet, info)
+		res.files, err = m.addMovie(req, hash, magnet, info)
 	}
 	if err != nil {
 		dropped[hash] = true
 		return nil, err
 	}
+	if len(res.files) == 0 && len(res.skipped) > 0 {
+		// Every episode of the pack was refused: nothing was written, so nothing is
+		// announced and the torrent goes unless another stub uses it. The metadata fetch
+		// already happened: only a single episode is refused before any engine contact.
+		dropped[hash] = true
+		m.cfg.Logger.Info(fmt.Sprintf("[LibraryAPI] Kept %s: every episode of %s refused by replace=%s", req.Title, hash[:8], req.Replace), "title", req.Title, "hash", hash[:8], "replace", req.Replace)
+		return &AddResponse{Hash: hash, Title: req.Title, Type: kind, Files: []AddedFile{},
+			Decision: DecisionKept, Skipped: res.skipped}, nil
+	}
+	files := res.files
 
 	if m.cfg.OnAdded != nil {
 		m.cfg.OnAdded(hash, files)
 	}
 	m.scheduleRefresh(m.section(kind))
 	m.cfg.Logger.Info(fmt.Sprintf("[LibraryAPI] Added %s %q (%s): %d file(s)", kind, req.Title, hash[:8], len(files)), "kind", kind, "title", req.Title, "hash", hash[:8])
-	return &AddResponse{Hash: hash, Title: req.Title, Type: kind, Files: files}, nil
+	decision := DecisionAdded
+	if len(res.replaced) > 0 {
+		decision = DecisionReplaced
+	}
+	return &AddResponse{Hash: hash, Title: req.Title, Type: kind, Files: files,
+		Decision: decision, Replaced: res.replaced, Skipped: res.skipped}, nil
 }
 
 // alreadyPresent reports the stubs this request would create that are already on disk.
@@ -451,6 +597,15 @@ func (m *Manager) validate(req *AddRequest) (string, string, error) {
 		return "", "", errf(http.StatusBadRequest, "unknown type %q: use movie or tv", req.Type)
 	}
 
+	req.Replace = strings.ToLower(strings.TrimSpace(req.Replace))
+	switch req.Replace {
+	case "":
+		req.Replace = ReplaceAlways
+	case ReplaceNever, ReplaceIfBetter, ReplaceAlways:
+	default:
+		return "", "", errf(http.StatusBadRequest, "unknown replace %q: use never, if-better or always", req.Replace)
+	}
+
 	req.Title = strings.TrimSpace(req.Title)
 	if req.Title == "" {
 		return "", "", errf(http.StatusBadRequest, "title is required")
@@ -485,6 +640,10 @@ func (m *Manager) validate(req *AddRequest) (string, string, error) {
 		if req.Season <= 0 {
 			return "", "", errf(http.StatusBadRequest, "season is required for tv")
 		}
+		if req.DryRun && req.Episode <= 0 {
+			return "", "", errf(http.StatusBadRequest,
+				"dry_run needs an episode: a season pack's episodes are only known from the torrent's file list, which a dry run never fetches")
+		}
 		if m.cfg.Registry == nil {
 			return "", "", errf(http.StatusServiceUnavailable,
 				"the episode registry is unavailable: a tv stub added now would be deleted by the next sync")
@@ -504,22 +663,27 @@ func (m *Manager) addMovie(req AddRequest, hash, magnet string, info *TorrentSta
 		return nil, err
 	}
 
-	is4K := reIs4K.MatchString(req.ReleaseTitle)
-	if req.Is4K != nil {
-		is4K = *req.Is4K
-	}
-
-	name := BuildMovieFilename(MovieName{
-		Title: req.Title, ReleaseDate: req.ReleaseDate, ReleaseTitle: req.ReleaseTitle,
-		Is4K: is4K, Hash: hash,
-	})
-	path := filepath.Join(m.cfg.MoviesDir, name)
+	path := m.moviePath(req, hash)
 	if err := WriteStub(path, m.streamURL(hash, file.ID), file.Length, magnet, req.IMDB); err != nil {
-		return nil, errf(http.StatusInternalServerError, "cannot write %s: %v", name, err)
+		return nil, errf(http.StatusInternalServerError, "cannot write %s: %v", filepath.Base(path), err)
 	}
 	return []AddedFile{{
 		Path: path, FusePath: m.fusePath(path), Size: file.Length, FileIndex: file.ID,
 	}}, nil
+}
+
+// moviePath is where an add of this release writes its stub; the name needs no file
+// list, so a dry run can say it.
+func (m *Manager) moviePath(req AddRequest, hash string) string {
+	is4K := reIs4K.MatchString(req.ReleaseTitle)
+	if req.Is4K != nil {
+		is4K = *req.Is4K
+	}
+	name := BuildMovieFilename(MovieName{
+		Title: req.Title, ReleaseDate: req.ReleaseDate, ReleaseTitle: req.ReleaseTitle,
+		Is4K: is4K, Hash: hash,
+	})
+	return filepath.Join(m.cfg.MoviesDir, name)
 }
 
 var reIs4K = regexp.MustCompile(`(?i)2160p|\buhd\b|\b4k\b`)
@@ -539,47 +703,108 @@ func (m *Manager) pickFile(index int, files []FileStat) (*FileStat, error) {
 	}
 
 	var best *FileStat
+	skipped := 0
 	for i := range files {
-		if IsVideoFile(files[i].Path) && (best == nil || files[i].Length > best.Length) {
+		if m.usable(files[i]) && (best == nil || files[i].Length > best.Length) {
 			best = &files[i]
+		} else if IsVideoFile(files[i].Path) && isSample(files[i]) {
+			skipped++
 		}
 	}
 	if best == nil {
+		if skipped > 0 {
+			return nil, errf(http.StatusUnprocessableEntity, "the torrent holds only a sample")
+		}
 		return nil, errf(http.StatusUnprocessableEntity, "the torrent holds no video file")
 	}
 	return best, nil
 }
 
-func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet string, info *TorrentStats, dropped map[string]bool) ([]AddedFile, error) {
+// replacementSample returns the indexes into the sorted episode list whose files
+// the check reads: the one being replaced, then the first and the last regular
+// episode. seasons holds each entry's season. Season-0 specials are never chosen as
+// first or last, nor as the replaced one; the list holds only files that name an
+// episode, so samples and extras never appear. A single-file release yields one
+// index. A release of specials alone has nothing else to read, so the replaced
+// special is read.
+func replacementSample(seasons []int, replacing int) []int {
+	var idx []int
+	if seasons[replacing] > 0 {
+		idx = append(idx, replacing)
+	}
+	first, last := -1, -1
+	for i, s := range seasons {
+		if s > 0 {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	for _, j := range []int{first, last} {
+		if j >= 0 && len(idx) < replacementSampleSize && !slices.Contains(idx, j) {
+			idx = append(idx, j)
+		}
+	}
+	if len(idx) == 0 {
+		idx = append(idx, replacing)
+	}
+	return idx
+}
+
+// readReplacementSample reads the head of every sampled file at once, under one
+// shared timeout. Concurrent, so the worst case is one timeout, as for a single
+// file, rather than three; at most replacementSampleSize reads run. The first
+// failure cancels the others and is returned.
+func (m *Manager) readReplacementSample(ctx context.Context, hash string, files []FileStat) error {
+	ctx, cancel := context.WithTimeout(ctx, replacementReadTimeout)
+	defer cancel()
+	errs := make(chan error, len(files))
+	for _, f := range files {
+		go func() {
+			errs <- m.cfg.GoStorm.ReadFileHead(ctx, hash, f.ID, min(replacementReadBytes, f.Length))
+		}()
+	}
+	var first error
+	for range files {
+		if err := <-errs; err != nil && first == nil {
+			first = err
+			cancel()
+		}
+	}
+	return first
+}
+
+func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet string, info *TorrentStats, dropped map[string]bool) (addResult, error) {
 	type episodeFile struct {
 		file    FileStat
 		season  int
 		episode int
+		key     string
 	}
 	var wanted []episodeFile
 
 	if req.Episode > 0 {
 		file, err := m.pickFileForEpisode(req, info.FileStats)
 		if err != nil {
-			return nil, err
+			return addResult{}, err
 		}
-		wanted = append(wanted, episodeFile{*file, req.Season, req.Episode})
+		wanted = append(wanted, episodeFile{file: *file, season: req.Season, episode: req.Episode})
 	} else {
 		for _, f := range info.FileStats {
-			if !IsVideoFile(f.Path) {
+			if !m.usable(f) {
 				continue
 			}
+			// Season 0 with an episode is an explicit S00Exx special: it keeps season 0
+			// and is filed under Season.00, never under the requested season.
 			season, episode := PackEpisode(f.Path, req.Season)
 			if episode == 0 {
 				continue
 			}
-			if season == 0 {
-				season = req.Season
-			}
-			wanted = append(wanted, episodeFile{f, season, episode})
+			wanted = append(wanted, episodeFile{file: f, season: season, episode: episode})
 		}
 		if len(wanted) == 0 {
-			return nil, errf(http.StatusUnprocessableEntity, "no episode file could be named in this torrent")
+			return addResult{}, errf(http.StatusUnprocessableEntity, "no episode file could be named in this torrent")
 		}
 	}
 
@@ -604,32 +829,73 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 		return wanted[i].episode < wanted[j].episode
 	})
 
+	// The registry key of each episode, read once: it is the folded key unless the
+	// show was registered under the older form (see episodeKey).
+	for i := range wanted {
+		key, err := m.episodeKey(req.Title, wanted[i].season, wanted[i].episode)
+		if err != nil {
+			return addResult{}, errf(http.StatusServiceUnavailable, "cannot read the registry entry for %s: %v",
+				EpisodeKey(req.Title, wanted[i].season, wanted[i].episode), err)
+		}
+		wanted[i].key = key
+	}
+
 	showDir := filepath.Join(m.cfg.TVDir, ShowFolderName(req.Title, req.FirstAirDate))
+
+	// The replace policy, per episode: an episode the registry already holds from a
+	// different release, and the policy refuses to replace, is not written. It goes in
+	// skipped, never in the files this request wrote. Nothing is read from the swarm
+	// for it: the readability gate below runs only for the episodes that replace.
+	var skipped []SkippedFile
+	if req.Replace != ReplaceAlways {
+		allowed := wanted[:0]
+		for _, w := range wanted {
+			path := filepath.Join(showDir, fmt.Sprintf("Season.%02d", w.season),
+				EpisodeFilename(req.Title, w.season, w.episode, hash[:8]))
+			v, err := m.replaceVerdict(req.Replace, w.key, path, req.QualityScore)
+			if err != nil {
+				return addResult{}, err
+			}
+			if v.refused {
+				skipped = append(skipped, SkippedFile{Season: w.season, Episode: w.episode, Reason: v.reason})
+				continue
+			}
+			allowed = append(allowed, w)
+		}
+		wanted = allowed
+		if len(wanted) == 0 {
+			return addResult{skipped: skipped}, nil
+		}
+	}
 
 	// The new release wins, but only once it has shown it can deliver bytes: a dead
 	// swarm must not cost the files that played. Nothing is written or removed
 	// before this check passes, so a failure needs no rollback. Re-adding a stub at
 	// its own path replaces nothing and is not checked.
-	for _, w := range wanted {
+	for i, w := range wanted {
 		path := filepath.Join(showDir, fmt.Sprintf("Season.%02d", w.season),
 			EpisodeFilename(req.Title, w.season, w.episode, hash[:8]))
-		prev, ok, err := m.cfg.Registry.GetEpisode(EpisodeKey(req.Title, w.season, w.episode))
+		prev, ok, err := m.cfg.Registry.GetEpisode(w.key)
 		if err != nil {
-			return nil, errf(http.StatusServiceUnavailable, "cannot read the registry entry for %s: %v",
-				EpisodeKey(req.Title, w.season, w.episode), err)
+			return addResult{}, errf(http.StatusServiceUnavailable, "cannot read the registry entry for %s: %v", w.key, err)
 		}
 		if !ok || prev == nil || prev.FilePath == "" || prev.FilePath == path {
 			continue
 		}
-		rctx, cancel := context.WithTimeout(ctx, replacementReadTimeout)
-		err = m.cfg.GoStorm.ReadFileHead(rctx, hash, w.file.ID, min(replacementReadBytes, w.file.Length))
-		cancel()
-		if err != nil {
+		seasons := make([]int, len(wanted))
+		for k := range wanted {
+			seasons[k] = wanted[k].season
+		}
+		var sample []FileStat
+		for _, j := range replacementSample(seasons, i) {
+			sample = append(sample, wanted[j].file)
+		}
+		if err := m.readReplacementSample(ctx, hash, sample); err != nil {
 			m.cfg.Logger.Info(fmt.Sprintf("[LibraryAPI] replacement %s for %q delivered no data, existing files kept: %v", hash[:8], req.Title, err), "hash", hash[:8], "title", req.Title, "err", err)
-			return nil, errf(http.StatusUnprocessableEntity,
+			return addResult{}, errf(http.StatusUnprocessableEntity,
 				"replacement release delivered no data (%v, limit %s); existing files kept", err, replacementReadTimeout)
 		}
-		break // one readable file proves the release; later episodes need no second read
+		break // one sample proves the release; later episodes need no second check
 	}
 
 	var out []AddedFile
@@ -642,6 +908,7 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 		hadEntry bool
 		hadStub  bool
 		path     string
+		key      string
 	}
 	var prior []previous
 
@@ -652,7 +919,7 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 					m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot undo %s: %v", f.Path, err), "path", f.Path, "err", err)
 				}
 			}
-			key := EpisodeKey(req.Title, f.Season, f.Episode)
+			key := prior[i].key
 			var err error
 			if prior[i].hadEntry {
 				err = m.cfg.Registry.UpsertEpisode(key, prior[i].entry)
@@ -668,19 +935,28 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 	for _, w := range wanted {
 		seasonDir := filepath.Join(showDir, fmt.Sprintf("Season.%02d", w.season))
 		path := filepath.Join(seasonDir, EpisodeFilename(req.Title, w.season, w.episode, hash[:8]))
-		key := EpisodeKey(req.Title, w.season, w.episode)
+		key := w.key
 
 		// Read the previous state before touching anything: a registry we cannot read
 		// is a registry we cannot restore, so the add stops here rather than
 		// overwriting a row blind.
-		p := previous{path: path}
+		p := previous{path: path, key: key}
 		prev, ok, err := m.cfg.Registry.GetEpisode(key)
 		if err != nil {
 			rollback()
-			return nil, errf(http.StatusServiceUnavailable, "cannot read the registry entry for %s: %v", key, err)
+			return addResult{}, errf(http.StatusServiceUnavailable, "cannot read the registry entry for %s: %v", key, err)
 		}
 		if ok && prev != nil {
 			p.entry, p.hadEntry = *prev, true
+		}
+		// The policy read and this one must agree: the row about to be replaced is
+		// judged again, so a change between them cannot turn into a replacement the
+		// policy refused.
+		if req.Replace != ReplaceAlways {
+			if v, verr := m.replaceVerdict(req.Replace, key, path, req.QualityScore); verr != nil || v.refused {
+				rollback()
+				return addResult{}, errf(http.StatusConflict, "the registry entry for %s changed during the add", key)
+			}
 		}
 		if _, err := os.Stat(path); err == nil {
 			p.hadStub = true
@@ -691,7 +967,7 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 		// whose id is empty, and a series id here takes the episode out of it.
 		if err := WriteStub(path, m.streamURL(hash, w.file.ID), w.file.Length, magnet, ""); err != nil {
 			rollback()
-			return nil, errf(http.StatusInternalServerError, "cannot write the stub for S%02dE%02d: %v", w.season, w.episode, err)
+			return addResult{}, errf(http.StatusInternalServerError, "cannot write the stub for S%02dE%02d: %v", w.season, w.episode, err)
 		}
 		out = append(out, AddedFile{
 			Path: path, FusePath: m.fusePath(path), Size: w.file.Length,
@@ -710,33 +986,145 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 			FilePath: path, Source: "api", Created: time.Now().Unix(), ShowIMDB: showIMDB,
 		}); err != nil {
 			rollback()
-			return nil, errf(http.StatusInternalServerError, "cannot register S%02dE%02d: %v", w.season, w.episode, err)
+			return addResult{}, errf(http.StatusInternalServerError, "cannot register S%02dE%02d: %v", w.season, w.episode, err)
 		}
 		// The episode is back on disk: an open gap for it is stale, and a client that
 		// read the gap list and added it here would otherwise keep seeing its own hole.
 		if gc, ok := m.cfg.Registry.(interface{ ClearEpisodeGap(string) error }); ok {
-			if err := gc.ClearEpisodeGap(key); err != nil {
-				m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot clear the gap for %s: %v", key, err), "key", key, "err", err)
+			// A gap stored under the other key form is this episode's too.
+			keys := []string{key}
+			if folded := EpisodeKey(req.Title, w.season, w.episode); folded != key {
+				keys = append(keys, folded)
+			} else if legacy := legacyEpisodeKey(req.Title, w.season, w.episode); legacy != key {
+				keys = append(keys, legacy)
+			}
+			for _, k := range keys {
+				if err := gc.ClearEpisodeGap(k); err != nil {
+					m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot clear the gap for %s: %v", k, err), "k", k, "err", err)
+				}
 			}
 		}
 	}
 
 	// The pack is complete: now the releases it replaced can go.
+	var replaced []ReplacedFile
 	for _, p := range prior {
 		if !p.hadEntry || p.entry.FilePath == "" || p.entry.FilePath == p.path {
 			continue
 		}
+		old := ReplacedFile{Path: p.entry.FilePath, Hash: p.entry.Hash, FileIndex: readStub(p.entry.FilePath).FileIndex}
+		_, statErr := os.Stat(p.entry.FilePath)
+		stubWasThere := statErr == nil
 		if err := m.deleteStub(ctx, p.entry.FilePath); err != nil {
 			// Leaving it there keeps its torrent alive, which is the safe half of the
 			// failure, but it is a leak either way.
 			m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot remove the replaced stub %s: %v", p.entry.FilePath, err), "file_path", p.entry.FilePath, "err", err)
 			continue
 		}
+		if stubWasThere { // a row whose stub was already gone replaced no file
+			replaced = append(replaced, old)
+		}
 		if p.entry.Hash != "" && p.entry.Hash != hash {
 			dropped[p.entry.Hash] = true
 		}
 	}
-	return out, nil
+	return addResult{files: out, replaced: replaced, skipped: skipped}, nil
+}
+
+// replaceDecision is the registry's answer for one episode.
+type replaceDecision struct {
+	refused   bool
+	reason    string               // why it was refused
+	replacing *metadb.EpisodeEntry // the row an allowed add would replace, nil when none
+}
+
+// replaceVerdict decides one episode against the registry: when a row holds a release
+// stored at another path than this add's, policy says whether it may be replaced.
+// never refuses; if-better replaces only for a score greater than the stored one (0 is
+// never better, so a caller that sends no score cannot replace by accident); always
+// replaces. No row, an empty row and the same stub are not a replacement. It reads the
+// registry only: no engine call, so it is safe before one, and a dry run is exactly
+// this.
+func (m *Manager) replaceVerdict(policy, key, path string, score int) (replaceDecision, error) {
+	prev, ok, err := m.cfg.Registry.GetEpisode(key)
+	if err != nil {
+		return replaceDecision{}, errf(http.StatusServiceUnavailable, "cannot read the registry entry for %s: %v", key, err)
+	}
+	if !ok || prev == nil || prev.FilePath == "" || prev.FilePath == path {
+		return replaceDecision{}, nil
+	}
+	// A row whose stub is gone holds no release: there is nothing to keep or replace.
+	if _, serr := os.Stat(prev.FilePath); os.IsNotExist(serr) {
+		return replaceDecision{}, nil
+	}
+	switch policy {
+	case ReplaceNever:
+		return replaceDecision{refused: true, reason: "replace=never: the episode is already filed"}, nil
+	case ReplaceIfBetter:
+		if score <= 0 || score <= prev.QualityScore {
+			return replaceDecision{refused: true, reason: fmt.Sprintf(
+				"replace=if-better: quality_score %d is not greater than the stored %d", score, prev.QualityScore)}, nil
+		}
+	}
+	return replaceDecision{replacing: prev}, nil
+}
+
+// dryRun answers a dry-run add from the stubs and the registry alone. It makes no
+// engine call, writes nothing and calls no hook, so a private torrent is not announced
+// by asking what an add would do. Files names where the stubs would go, with no
+// fuse_path (nothing exists to link); the size and file index are what the request
+// said, because the file list is not fetched.
+func (m *Manager) dryRun(req AddRequest, kind, hash string) (*AddResponse, error) {
+	resp := &AddResponse{Hash: hash, Title: req.Title, Type: kind, Files: []AddedFile{},
+		DryRun: true, Readability: ReadabilityUnchecked, Decision: DecisionAdded}
+	if kind == "movie" {
+		resp.Files = append(resp.Files, AddedFile{Path: m.moviePath(req, hash), FileIndex: req.FileIndex})
+		return resp, nil
+	}
+	// A base32 spelling slices differently in alreadyPresent's stub name than the hex
+	// the engine reports, so a filed release can slip past it: look again by the hex
+	// spelling, for the preview only (the real add keeps v0.1.0's behaviour).
+	if existing, err := m.alreadyPresent(kind, canonicalHashKey(hash), req); err != nil {
+		return nil, err
+	} else if len(existing) > 0 {
+		for i := range existing {
+			existing[i].FusePath = ""
+		}
+		resp.Files, resp.AlreadyPresent, resp.Decision = existing, true, DecisionAlreadyPresent
+		return resp, nil
+	}
+	key, err := m.episodeKey(req.Title, req.Season, req.Episode)
+	if err != nil {
+		return nil, errf(http.StatusServiceUnavailable, "cannot read the registry entry for %s: %v",
+			EpisodeKey(req.Title, req.Season, req.Episode), err)
+	}
+	path := m.singleEpisodePath(req, hash)
+	v, err := m.replaceVerdict(req.Replace, key, path, req.QualityScore)
+	if err != nil {
+		return nil, err
+	}
+	if v.refused {
+		resp.Decision = DecisionKept
+		resp.Skipped = []SkippedFile{{Season: req.Season, Episode: req.Episode, Reason: v.reason}}
+		return resp, nil
+	}
+	resp.Files = append(resp.Files, AddedFile{Path: path, FileIndex: req.FileIndex, Season: req.Season, Episode: req.Episode})
+	if v.replacing != nil {
+		resp.Decision = DecisionReplaced
+		resp.Replaced = []ReplacedFile{{Path: v.replacing.FilePath, Hash: v.replacing.Hash,
+			FileIndex: readStub(v.replacing.FilePath).FileIndex}}
+	}
+	return resp, nil
+}
+
+// singleEpisodePath is where a single-episode add of this release would write its stub.
+// The tag is the hex spelling, as the engine reports it, so a base32 request names the
+// stub the real add writes. Only the pre-engine check and the dry run use it.
+func (m *Manager) singleEpisodePath(req AddRequest, hash string) string {
+	hash = canonicalHashKey(hash)
+	return filepath.Join(m.cfg.TVDir, ShowFolderName(req.Title, req.FirstAirDate),
+		fmt.Sprintf("Season.%02d", req.Season),
+		EpisodeFilename(req.Title, req.Season, req.Episode, hash[:8]))
 }
 
 // deleteStub removes one stub and drops the FUSE layer's cached state for it.
@@ -787,7 +1175,8 @@ func (m *Manager) dropTorrentIfUnused(ctx context.Context, hash string) bool {
 }
 
 // pickFileForEpisode prefers the file whose name carries the requested episode number;
-// a single-episode torrent that does not name it falls back to the largest video file.
+// a single-episode torrent that does not name it falls back to the largest video file
+// that names no episode.
 // Of several files that name it, the largest wins: a release's Sample/ clip names the
 // episode too, and when the torrent listed it first it was filed as the episode
 // (Dezoxy fork). Season packs already keep the largest file per episode.
@@ -797,18 +1186,31 @@ func (m *Manager) pickFileForEpisode(req AddRequest, files []FileStat) (*FileSta
 	}
 	var best *FileStat
 	for i := range files {
-		if !IsVideoFile(files[i].Path) {
+		if !m.usable(files[i]) {
 			continue
 		}
 		if season, episode := ParseSeasonEpisode(filepath.Base(files[i].Path)); episode == req.Episode &&
-			(season == req.Season || season == 0) && (best == nil || files[i].Length > best.Length) {
+			season == req.Season && (best == nil || files[i].Length > best.Length) {
 			best = &files[i]
 		}
 	}
 	if best != nil {
 		return best, nil
 	}
-	return m.pickFile(0, files)
+	// Nothing names the episode: the largest video file that names no episode at all.
+	// One that names another episode (or a special) is that episode's, never this one.
+	var unnamed []FileStat
+	for _, f := range files {
+		if _, episode := ParseSeasonEpisode(filepath.Base(f.Path)); episode == 0 {
+			unnamed = append(unnamed, f)
+		}
+	}
+	file, err := m.pickFile(0, unnamed)
+	if err != nil {
+		return nil, errf(http.StatusUnprocessableEntity, "no file in the torrent names S%02dE%02d or names no episode: %v",
+			req.Season, req.Episode, err)
+	}
+	return file, nil
 }
 
 func (m *Manager) section(kind string) int {
@@ -1152,4 +1554,70 @@ func readStub(path string) stub {
 		out.FileIndex, _ = strconv.Atoi(m[1])
 	}
 	return out
+}
+
+// minVideoSize is the size below which a file named as a sample is dropped: a fixed
+// 50 MiB, since release samples run to a few tens of MiB. It is separate from the VFS's
+// own size floor for video stubs (internal/vfs/metadata_test.go), which guards opening.
+const minVideoSize int64 = 50 << 20
+
+var reSampleFolder = regexp.MustCompile(`(?i)^samples?$`)
+
+var reSampleName = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])samples?(?:$|[^a-z0-9])`)
+
+// isSample reports a file that is a sample by name (its own name or its immediate parent
+// folder; not the root folder, which usually carries the title) and below minVideoSize.
+// Samples were only dropped when a larger file named the same episode; a lone one was
+// filed as the episode.
+func isSample(f FileStat) bool {
+	if f.Length >= minVideoSize {
+		return false
+	}
+	p := filepath.ToSlash(f.Path)
+	if reSampleName.MatchString(path.Base(p)) {
+		return true
+	}
+	dir := path.Dir(p)
+	parent := path.Base(dir)
+	// A folder named just "Sample" is one anywhere. Any other parent counts only below
+	// the root folder, which is the release's own name.
+	if reSampleFolder.MatchString(parent) {
+		return true
+	}
+	return strings.Contains(dir, "/") && reSampleName.MatchString(parent)
+}
+
+// usable reports whether f is a video file the add may file, logging a sample it skips.
+func (m *Manager) usable(f FileStat) bool {
+	if !IsVideoFile(f.Path) {
+		return false
+	}
+	if isSample(f) {
+		m.cfg.Logger.Info(fmt.Sprintf("[LibraryAPI] ignored sample %s (%d bytes)", f.Path, f.Length), "path", f.Path, "length", f.Length)
+		return false
+	}
+	return true
+}
+
+// episodeKey returns the registry key to use for an episode of title. It is the folded
+// key, except when the show was registered under the older form: its row is then
+// replaced in place, not duplicated or re-keyed. The old key drops accented letters, so
+// it is also another show's proper key (Elite's "lite" is Lite's). The legacy row is
+// reused only when its stub sits in a show folder that folds to this title's key; any
+// other row is someone else's and the folded key is used, which at worst leaves a
+// duplicate, never a deleted stub.
+func (m *Manager) episodeKey(title string, season, episode int) (string, error) {
+	key := EpisodeKey(title, season, episode)
+	legacy := legacyEpisodeKey(title, season, episode)
+	if legacy == key {
+		return key, nil
+	}
+	prev, ok, err := m.cfg.Registry.GetEpisode(legacy)
+	if err != nil {
+		return key, err
+	}
+	if ok && prev != nil && EpisodeKey(ShowNameFromEpisodePath(prev.FilePath), season, episode) == key {
+		return legacy, nil
+	}
+	return key, nil
 }

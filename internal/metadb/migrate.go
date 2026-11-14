@@ -26,6 +26,7 @@ func (d *DB) MigrateFromJSON(stateDir string) error {
 	needsEpisodes := fileExists(epPath)
 
 	if !needsInodes && !needsCaches && !needsEpisodes {
+		d.migration = "already_completed"
 		if d.logger != nil {
 			d.logger.Info("[StateDB] Migration already completed (all JSON files renamed)")
 		}
@@ -91,6 +92,7 @@ func (d *DB) MigrateFromJSON(stateDir string) error {
 		}
 	}
 
+	d.migration = "migrated"
 	if d.logger != nil {
 		d.logger.Info(fmt.Sprintf("[StateDB] Migration complete: %d inodes, %d caches, %d episodes", inodeCount, cacheCount, epCount), "inode_count", inodeCount, "cache_count", cacheCount, "ep_count", epCount)
 	}

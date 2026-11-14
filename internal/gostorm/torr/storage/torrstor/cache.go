@@ -91,6 +91,9 @@ type Cache struct {
 	free    [][]byte
 	freeCap int
 	muFree  sync.Mutex
+	// wakePending is set while a coalesced wake is scheduled (scheduleWake).
+	wakeMu      sync.Mutex
+	wakePending bool
 }
 
 // getBuffer returns a spare buffer of exactly pieceLength, or nil when none is held.
@@ -513,6 +516,7 @@ func (c *Cache) setLoadPriority(ranges []Range) {
 		return
 	}
 	c.muReaders.RLock()
+	changed := false
 	// Dynamic priority window based on cache capacity (10% of cache in pieces, minimum 5)
 	highPriorityWindow := int(c.capacity / c.pieceLength / 10)
 	if highPriorityWindow < 5 {
@@ -587,6 +591,7 @@ func (c *Cache) setLoadPriority(ranges []Range) {
 					}
 				}
 				if prio != 0 {
+					changed = changed || c.localPriority[i] != prio
 					c.localPriority[i] = prio
 					batch[i] = prio
 				}
@@ -601,7 +606,13 @@ func (c *Cache) setLoadPriority(ranges []Range) {
 		}
 		c.muPriority.Unlock()
 	}
+	torr := c.torrent
 	c.muReaders.RUnlock()
+	// Only a priority that differs from what this cache set before can reorder what the
+	// engine wants; a re-set of the same priorities wakes nobody.
+	if changed {
+		c.scheduleWake(torr)
+	}
 }
 
 // dropPriority clears the priority this cache set on a piece that has just completed. With a
@@ -621,6 +632,44 @@ func (c *Cache) dropPriority(id int) {
 	// DownloadPieces without this cache knowing, and only RAM eviction would clear that.
 	delete(c.localPriority, id)
 	torr.Piece(id).SetPriority(torrent.PiecePriorityNone)
+	c.scheduleWake(torr)
+}
+
+// wakePeers asks every peer of the torrent to recompute its requests. The engine does so
+// when a priority change alters the set of pieces it wants, but not when it only changes
+// their order: a priority or request-order change that leaves the wanted set as it was
+// triggers no request update, so a peer with nothing in flight stays idle until the next
+// chunk, keepalive or announce. Every priority change this cache makes can be such a
+// change, so each ends here. AllowDataUpload is the engine's existing public call that
+// does it: Flodni never disallows uploads, so its only effect is the update on each peer.
+// A var so tests can see the calls.
+var wakePeers = func(t *torrent.Torrent) { t.AllowDataUpload() }
+
+// wakeWindow is how long scheduleWake collects calls before it wakes the peers once. A var
+// so tests can shorten it.
+var wakeWindow = 20 * time.Millisecond
+
+// scheduleWake asks for one wakePeers call a wakeWindow from now, and absorbs the calls that
+// come before it: a completing piece changes priorities up to three times in a row, and a
+// wake that fires on the first of them would miss the last. The wake runs on the timer, with
+// no cache lock held, because it takes the engine's client lock.
+func (c *Cache) scheduleWake(t *torrent.Torrent) {
+	if t == nil {
+		return
+	}
+	c.wakeMu.Lock()
+	defer c.wakeMu.Unlock()
+	if c.wakePending {
+		return
+	}
+	c.wakePending = true
+	wake := wakePeers // read here, not on the timer's goroutine
+	time.AfterFunc(wakeWindow, func() {
+		c.wakeMu.Lock()
+		c.wakePending = false
+		c.wakeMu.Unlock()
+		wake(t)
+	})
 }
 
 func (c *Cache) isIdInFileBE(ranges []Range, id int) bool {
@@ -710,13 +759,19 @@ func (c *Cache) clearPriority() {
 	// Eliminates O(N_cached) PieceState(rLock) calls. localPriority is our authoritative
 	// record of which pieces have non-None priority, so no PieceState() query needed.
 	c.muPriority.Lock()
+	dropped := false
 	for id := range c.localPriority {
 		if len(ranges) == 0 || !inRanges(ranges, id) {
 			c.torrent.Piece(id).SetPriority(torrent.PiecePriorityNone)
 			delete(c.localPriority, id)
+			dropped = true
 		}
 	}
+	torr := c.torrent
 	c.muPriority.Unlock()
+	if dropped {
+		c.scheduleWake(torr)
+	}
 }
 
 func (c *Cache) GetCapacity() int64 {

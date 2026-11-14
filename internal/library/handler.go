@@ -41,8 +41,10 @@ func (h *Handler) Add(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, err)
 		return
 	}
+	// 201 only when the request wrote something: an already present title, a refused
+	// replace and a dry run are 200.
 	status := http.StatusCreated
-	if resp.AlreadyPresent {
+	if resp.AlreadyPresent || resp.Decision == DecisionKept || resp.DryRun {
 		status = http.StatusOK
 	}
 	writeJSON(w, status, resp)
@@ -116,6 +118,21 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+// Audit serves GET /api/library/audit: stubs whose index disagrees with the engine's
+// stored file list. Read-only, on demand.
+func (h *Handler) Audit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	rep, err := h.mgr.Audit()
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 // readBody reads at most maxBodyBytes+1: reading exactly the cap accepts a valid JSON

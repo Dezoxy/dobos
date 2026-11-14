@@ -27,6 +27,7 @@ and no support.
 | [docs/ideas.md](docs/ideas.md) | What could be improved, not yet planned. |
 | [docs/architecture/README.md](docs/architecture/README.md) | The C4 model, its views and the decisions. |
 | [README.upstream.md](README.upstream.md) | Tiramisu's user guide as inherited: install, configuration, API. |
+| [docs/deploy/least-privilege.md](docs/deploy/least-privilege.md) | A narrower container profile than `SYS_ADMIN` with AppArmor unconfined. Designed, not verified on a host. |
 | [SECURITY.md](SECURITY.md) | How to report a vulnerability. |
 
 ## Building
@@ -123,6 +124,40 @@ when nothing is wrong. Its one value today is `no_play_webhook`, an advisory:
 it never changes `status` or the HTTP code, so a deployment without a play
 webhook stays healthy. The array is computed from memory, without a check.
 See "Play webhook" below for what raises it.
+
+## Startup report
+
+Once the FUSE mount is up and the startup walk with its prunes has finished, the
+daemon logs one line, `[Startup] report {json}`, and serves the same object at
+`GET /api/startup` on the control port. It needs the token like every route but
+the panel page and `/api/health`, and answers 503 until the report exists.
+It is built once and does not change afterwards. A pre-upgrade rehearsal can
+read it instead of grepping the startup lines; those lines keep their text for
+now (a test pins them), and the report is the interface that will stay stable
+when logging changes.
+
+`schema` is 1. A new field keeps it; a rename, a removal or a changed meaning
+raises it.
+
+| Field | Meaning |
+| --- | --- |
+| `version`, `config_path` | The build and the config file it read. |
+| `warmup` | `active`, `dir`, `initial_size_bytes`, `dropped_stale`, `residues_dropped`: the `[DiskWarmup]` start lines. Not active: zeros and an empty `dir`. |
+| `state_db` | `active`, `path`, `migration`: `already_completed`, `migrated`, `failed` (the open or the migration failed; the daemon runs on JSON) or `disabled`. |
+| `inode_map.files_loaded` | Files in the inode map before the startup walk. |
+| `fuse` | `mount_path`, `mounted`. |
+| `library_unstored` | `n` of `of`: library torrents with no stored engine record with metainfo. `null` when no stub was found to count. |
+| `prunes` | `readability`, `file_state`, `inodes`, each `status` (`ran`, `skipped` or `failed`), a `reason` when not `ran`, and `rows_pruned`. A guarded skip carries the walk's `complete`, `errors` and `stubs`. |
+| `invalid_stubs` | Stubs that parse but declare a size out of range. |
+| `alarms` | Ids of the alarm conditions that fired, `[]` when none. |
+
+Alarm ids: `config_parse_failed`, `config_paths_differ`, `settings_migrated`,
+`settings_corrupt`, `torrents_migrated` (a legacy `torrserver.db` was carried
+over), `head_density_check` (the one-shot head check ran; see Cache disk),
+`corrupt_cache`, `statedb_migrated`, `statedb_open_failed`,
+`statedb_migration_failed`, `prune_skipped`, `ghost_inodes_pruned` and
+`state_not_on_mounted_volume` (the container entrypoint's warning). The report
+is taken once, so a `corrupt_cache` removal after it is not in it.
 
 ## Play webhook
 
@@ -291,6 +326,51 @@ play is confirmed.
   through two idle windows and released by a stop webhook); the ceiling is
   unit-tested only.
 
+## Engine stall gaps
+
+Two gaps in the vendored engine could leave a reader waiting. Both are
+implemented and tested with stand-ins; neither was shown to remove a stall on
+a real swarm in this repository's end-to-end test, which no longer stalls at
+the places they were first seen (the stale cache priorities, now dropped).
+
+- **An idle peer is not woken by an order-only change (always on).** The
+  engine asks its peers to update their requests when a priority change alters
+  the set of pieces it wants, but not when the change only reorders them. A
+  peer with nothing in flight then sits idle until the next chunk, keepalive
+  or announce. The cache that sets the priorities (`torrstor`) now asks every
+  peer of the torrent to update its requests after a priority change it
+  makes, through the engine's existing public `AllowDataUpload` (Flodni never
+  disallows uploads, which a test pins by scanning the source for
+  `DisallowDataUpload`; so its only effect is that update). The engine itself
+  is not changed. The engine package pins both halves in `peer_wake_test.go`:
+  an order-only change wakes no peer, and `AllowDataUpload` wakes every one.
+  The wake fires only when a priority differs from what the cache set before
+  (a repeated identical set wakes nobody), and wakes within 20 ms of each
+  other are merged into one, run after the last of them. It wakes every peer,
+  including choked ones the engine's own wake would skip; the cost on a large
+  public swarm is not measured. It is a fix and has no switch.
+- **`redial_dropped_peer`** in `config.json` (default `false`, read when a
+  peer drops). The engine does not keep a dropped peer to redial, and floors a
+  tracker's announce interval at one minute, so a private torrent whose only
+  peer drops waits up to a minute to hear of it again. With the switch on, when
+  a connection that this torrent dialed from its own tracker drops, and
+  3 s later the torrent is private, still missing data and has no connected
+  peer, that address is added back to the same torrent once. Nothing else is
+  involved: no DHT, no PEX, no public tracker, no address from anywhere but
+  the dropped connection; connections from any other source (DHT, PEX,
+  incoming, hole-punch, direct) are never redialed, nor is a torrent that
+  is not private. A torrent is redialed at most once a minute, so a seeder that
+  drops again at once is not called in a loop (the engine's own dial limits
+  still apply). The 3 s and the 1 minute are constants. The series
+  `flodni_engine_peer_redials_total` counts the redials. The privacy cases are
+  pinned in `internal/gostorm/torr/redial_test.go`. Not covered: an incoming
+  connection that drops (its remote port is not a listening one), a peer
+  restored from the stored torrent record when a closed torrent wakes (the
+  engine tags those as direct, so the redial skips them, and the main
+  single-seeder case after a wake is therefore not covered), and two peers
+  dropping together (one address is redialed, not both). A redial the torrent
+  did not take (an address it already knows) is not counted.
+
 ## Readability record
 
 `GET /api/torrents/health` on the control port lists what Flodni has
@@ -306,8 +386,8 @@ line below is the one log format that is).
 | `consecutive_failures` | Sessions in a row that ended with a failed read and nothing served by the swarm. A session counts once, and only if it lasted 25 s. |
 | `first_failure_at` | Start of the current run of failures; `null` when the count is 0. |
 | `last_failure_at` | Last recorded failure; kept after a reset. |
-| `last_failure_reason` | `no_peers`, `timeout` (peers connected, the read gave up), `not_active` (the engine did not have the torrent running), `unknown` (the engine did not answer in time), `not_stored` (the engine refused to wake the torrent because it keeps no record of it; not a failed read, see below); `null` for older records. |
-| `last_failure_source` | `mount`: a reader through the FUSE mount. |
+| `last_failure_reason` | `no_peers`, `timeout` (peers connected, the read gave up), `not_active` (the engine did not have the torrent running), `unknown` (the engine did not answer in time), `metainfo_timeout` (the metainfo did not arrive within a wake's 45 s wait, see below), `not_stored` (the engine refused to wake the torrent because it keeps no record of it; not a failed read, see below); `null` for older records. |
+| `last_failure_source` | `mount`: a reader through the FUSE mount. `wake`: a wake whose metainfo never arrived (an open through the mount, or a warm-up). |
 | `last_swarm_read_at` | Close time of the last session in which the swarm served a read, or the delivery time of a warm-on-add fill that completed a file's windows from the swarm; `null` if none was recorded. |
 
 `?failing=1` keeps torrents with at least one consecutive failure,
@@ -329,17 +409,28 @@ line below is the one log format that is).
   evidence.
 - A wake that had to fetch the metainfo from the swarm resets the count
   without setting `last_swarm_read_at`.
-- A metainfo that never arrives is not counted: the open fails before a
-  session exists. A cancelled read, a read Flodni refuses for the reader
+- `metainfo_timeout` is a swarm-side failure: the wake waited 45 s and the
+  swarm could not deliver the metainfo (a private torrent with no peers looks
+  like this). The open fails with EIO before a session exists, so it is
+  recorded by the wake, with `last_failure_source` `wake`. It adds one to
+  `consecutive_failures` (and starts `first_failure_at`), but at most once per
+  torrent per 10 minutes: a player's retries, each a 45 s wait, are one
+  occasion, so a burst cannot reach a threshold. A metainfo that arrives, or a
+  swarm read, ends the streak. The check discovers no peers and never
+  contacts one: it only reports a wait that already ran. A cancelled open or
+  a torrent closed during the wait is not recorded.
+- A cancelled read, a read Flodni refuses for the reader
   budget, and an open that fails before any read are not recorded either.
 - Times are UTC and are taken when the session closes, up to two minutes
   after its last read.
 - An entry goes when the last stub of its torrent is removed through the
-  library API. A session still open on that torrent writes the entry back
-  when it closes, and a stub deleted another way leaves it in place. Such
+  library API, replaced by an add, or deleted through the mount. A session
+  still open on that torrent is closed first, by the usual close rules (a
+  session under 25 s gets no dead-swarm verdict), so it cannot write the
+  entry back. A stub deleted directly on disk leaves the entry in place. Such
   entries stay until a startup prunes them. The prune runs only after a
-  complete scan: both `movies` and `tv` exist, at least one stub was found
-  and no read failed. It is skipped otherwise, and the log says so. A stub
+  complete scan: both `movies` and `tv` exist and each held at least one
+  stub, and no read failed. It is skipped otherwise, and the log says so. A stub
   that parses but declares a size outside the valid range is logged with
   its path and counted separately (the start-up summary line); it does not
   block the prune and its torrent's rows stay. An unreadable directory
@@ -355,10 +446,10 @@ line below is the one log format that is).
 ### Per-file records (experimental)
 
 Each torrent object carries a `files` array, always present (`[]` when empty)
-and always the last key. It is **experimental**: it is outside the contract
-sentence above and the stable-names promise, and its names may change until
-its first consumer runs against it. It is served only with the state database
-on. Three things write it. In index mode (`warmup_dir` set), a read through
+and followed only by `swarm` (below). It is **experimental**: it is outside
+the contract sentence above and the stable-names promise, and its names may
+change until its first consumer runs against it. It is served only with the
+state database on. Three things write it. In index mode (`warmup_dir` set), a read through
 the mount that leaves a file's head and tail windows both complete records the
 file. In any cache mode, a quota eviction records `cache: evicted`, also for a
 file with no earlier record. With `warm_on_add` set, the warmer records every
@@ -391,6 +482,127 @@ set; those keep their per-torrent meaning.
   records the mount path wrote (`warmed`, or `cached` when no stamp exists);
   `trigger="add"` is warm on add.
 
+### Swarm signal (experimental)
+
+Each torrent object also carries a `swarm` key, always present, followed only
+by `scrape` (below). It is **experimental**, outside the contract sentence above and the
+stable-names promise, like `files`. It is `null` for a torrent the engine does
+not have open: Flodni never wakes a closed torrent to fill it, and a torrent
+with no record is not listed here at all.
+
+| Field | Meaning |
+|---|---|
+| `awake` | Always `true` when the object is present. |
+| `peers` | Peers connected to the engine now. |
+| `seeders` | Connected peers that have every piece; `null` until the metainfo is in. |
+| `last_piece_at` | RFC 3339 UTC time the engine last completed a piece of this torrent; `null` if none since it opened (the stamp is not kept across a close). |
+| `rate_bps` | Download rate in bytes per second as the engine's one-second ticker last measured it. |
+
+- The values come from a snapshot the daemon rebuilds every 15 s from the
+  engine's existing stats; a request reads the snapshot and does not touch the
+  engine. A torrent opened or closed since the last snapshot shows the old
+  state for up to 15 s, and nothing is served before the first snapshot.
+- `flodni_swarm_awake_torrents` (gauge) is the number of torrents in that
+  snapshot.
+- Not a verdict: zero peers on an awake torrent is a fact about now, not a
+  dead swarm. Tested against a fake engine only; not run against a real swarm.
+
+### Tracker scrape (experimental)
+
+**Experimental** until a consumer has run against it, outside the contract
+sentence above like `files` and `swarm`. Flodni asks each stored torrent's own
+trackers how many seeders and leechers they know and reports the best answer
+per torrent. Built and tested against local fake trackers (HTTP and UDP), not
+against a real tracker.
+
+- **Which trackers.** The announce list of the torrent's stored record, as it
+  is. A private torrent (BEP 27), and one whose metadata is not known yet and
+  so might be, is asked at its own trackers only: every tier of its record
+  that holds a host of the public lists Flodni adds on its own account
+  (matched by lower-case host, so a rotated-out entry, another path, scheme or
+  case still matches) is dropped whole, and there is no DHT, PEX or public
+  fallback in this path. Residual gap: a record saved before the retracker
+  gate keeps no record of where a tier came from, so a legacy tier in which no
+  entry's host is in any current list cannot be told apart from the torrent's
+  own. HTTP trackers are scraped at the BEP 48 URL (the last
+  path segment `announce` becomes `scrape`; a tracker without one is skipped
+  and counted), UDP trackers per BEP 15. Other schemes are skipped.
+- **Passes.** A pass scrapes every stored torrent once. Hashes of one tracker
+  go together: `tracker_scrape_batch` per HTTP request (default 100, 1 to 200;
+  UDP keeps its 70 per packet). Each tracker host has its own worker, with its
+  own timeout (10 s per request) and backoff: at least `tracker_scrape_pace_ms`
+  (default 1000, 100 to 60000) between two requests to one host, doubling after
+  each failed request (30 s, up to 6 hours or the interval), at least the
+  tracker's own `min_request_interval` or failure reason interval, and after
+  three failures in a row the host's remaining torrents of that pass get an
+  error. A slow or failing host never delays another host. A block longer than
+  2 minutes (a long backoff, or a tracker's long minimum interval) is never
+  waited out inside a pass: the host's remaining torrents end that pass with
+  `host backing off`, and the next pass serves the torrents tried longest ago
+  first. A pass therefore ends in minutes, not hours.
+  **Network.** HTTP scrapes use the engine's tracker proxy and user agent when
+  one is configured; with a proxy configured UDP trackers are not scraped
+  (UDP cannot go through it; logged as `udp skipped: proxy`), and an invalid
+  proxy setting stops the scrape from starting. Before the torrent store is
+  open (the first seconds after start) a pass is refused, `POST` answers 503.
+  Answers over 512 KiB, nesting beyond 6 levels and redirects are refused.
+- **Schedule.** `tracker_scrape_hours` (default 24, 0 to 8760) is the interval
+  between scheduled passes, each start varying by up to 10 %, and each host
+  waiting a random part of interval/48 (at most 10 minutes) so hosts do not
+  start together. **0 turns the schedule off**; the on-demand route still
+  works. The settings are read at start-up. Results are in memory: after a
+  restart a torrent shows `scrape: null` until the next pass reaches it.
+- **On demand.** `POST /api/torrents/scrape` (all torrents) or
+  `?hash=<40 hex>` (one) starts a pass and answers 202 at once with
+  `{"run_id": N, "started_at": ...}`. While a pass runs a second POST answers
+  409 with the running `run_id`; an unknown hash is 404. Both routes need the
+  bearer token when `api_token` is set. A manual pass has no start jitter but
+  keeps the pacing and backoff.
+- **Status.** `GET /api/torrents/scrape/status` returns the latest pass:
+  `run_id`, `trigger` (`schedule` or `manual`), `scope` (`all` or `one`),
+  `state` (`running` or `done`), `started_at`, `finished_at` (null while
+  running), `torrents`, `ok`, `errors`, `skipped` (counts of torrents:
+  answered, ended in an error, nothing to scrape), and `previous` with the
+  finished pass before it (or null).
+- **Health.** Each torrent object has `scrape`, null until a pass has reached
+  it:
+
+| Field | Meaning |
+|---|---|
+| `seeders`, `leechers` | The most seeders among the trackers that **answered with a count** (the leechers of that answer): 0 if every tracker that answered said 0; **null, never 0, when no tracker gave a count** (all failed, or all omitted the hash). For HTTP only a hash present in the tracker's `files` is a count (0 included); an omitted hash is "not known to this tracker" and is not counted. UDP answers a fixed triple per hash, so its 0 stays 0, and on a 0 tie an HTTP answer wins over a UDP one. |
+| `answered`, `failed`, `unscrapable`, `unknown` | Integer facts about the torrent's trackers in that pass: gave a count; failed, timed out or were skipped as `host backing off`; cannot be scraped (`wss://` or another scheme, no BEP 48 scrape URL, UDP behind a proxy); answered over HTTP and omitted the hash. Flodni reports the facts and **the verdict is the caller's**: a 0 with `failed` above 0 is a weaker signal than a 0 with `failed` 0, and a 0 with `answered` 1 of several trackers is weaker than a 0 from all of them. |
+| `source` | `http` or `udp`: the answer the numbers came from (a UDP 0 may mean unknown, so a consumer can weight it lower); null when there are no numbers. |
+| `scraped_at` | RFC 3339 UTC time the entry was written. |
+| `error` | Set only when no tracker gave a count, else `null`: the first failure as the host (`scheme://host:port`) and a failure class (`timeout`, `connection failed`, `http status N`, `tracker: <its reason>`, `malformed response`, `response too large`, `host backing off`, `internal error`, ...), or `unknown_to_tracker` when the trackers that answered all omitted the hash. Never a URL. |
+| `run_id` | The pass that wrote the entry. |
+
+  The response also has a top-level `scrape_pass` with the `run_id` and
+  `finished_at` of the last finished pass over all torrents (null before the
+  first; a one-torrent pass or one cut short by a shutdown does not count).
+  If one tracker of a torrent answered and another failed, the answer is used
+  and there is no error; `failed` says so. A torrent a pass did not reach (a
+  one-torrent pass, a shutdown, a torrent added during the pass, no scrapeable
+  tracker) keeps its
+  previous entry with its old `run_id`; nothing writes an empty or zero entry.
+  Entries of torrents that are no longer stored are dropped at the next full
+  pass.
+- **Secrets.** Announce URLs carry a passkey. No log line, health field,
+  status field or metric holds an announce or scrape URL, a path or a query;
+  they name the host only, and text a tracker sends back has every token of
+  the announce URL (case-insensitively, longest first, and the first and last
+  8 characters of a long one) replaced by `***` and is cut to 80 characters.
+- **Metrics.** `flodni_tracker_scrapes_total{result}` (`ok`, `error`,
+  `skipped`, counted per torrent and tracker; a hash a tracker omitted
+  counts as `error`), `flodni_torrents_by_seeders{bucket}`
+  (`0`, `1-2`, `3+`, torrents with numbers only),
+  `flodni_tracker_scrape_pass_running` (0 or 1) and
+  `flodni_tracker_scrape_last_pass_finished_timestamp_seconds` (absent before
+  the first full pass).
+- Not covered: a tracker that answers 0 for a torrent it does not know reads
+  as 0 seeders (BEP 48 gives no way to tell them apart), trackers behind
+  redirects or authentication other than the URL, IPv6 literals in UDP
+  trackers are untested.
+
 ## Session log
 
 A session covers the reads of one torrent-backed file, from an open until
@@ -404,7 +616,7 @@ goes to stdout only. A session still open at shutdown is closed then, with
 the same rules: one younger than 25 s is never condemned as a dead swarm.
 
 ```text
-[GoProxy] 2026/11/12 09:02:10 [Session] {"path":"/mnt/flodni-real/tv/Example/Example.S01E01_0123abcd.mkv","hash":"0123456789abcdef0123456789abcdef01234567","size":31461601,"opened_at":"2026-11-12T09:00:05Z","closed_at":"2026-11-12T09:02:10Z","bytes_served":31461601,"first_byte_ms":12,"reads":241,"failed_reads":0,"outcome":"served","file_index":1,"bytes_fetch_block":135393,"bytes_racache_hit":31326208,"bytes_warmup_head":0,"bytes_warmup_tail":0,"swarm_served":true,"duration_ms":125000,"failure_reason":null,"reopens":0,"stalls":0,"max_stall_ms":0,"confirmed":false}
+[GoProxy] 2026/11/12 09:02:10 [Session] {"path":"/mnt/flodni-real/tv/Example/Example.S01E01_0123abcd.mkv","hash":"0123456789abcdef0123456789abcdef01234567","size":31461601,"opened_at":"2026-11-12T09:00:05Z","closed_at":"2026-11-12T09:02:10Z","bytes_served":31461601,"first_byte_ms":12,"reads":241,"failed_reads":0,"outcome":"served","file_index":1,"bytes_fetch_block":135393,"bytes_racache_hit":31326208,"bytes_warmup_head":0,"bytes_warmup_tail":0,"swarm_served":true,"duration_ms":125000,"failure_reason":null,"reopens":0,"stalls":0,"max_stall_ms":0,"confirmed":false,"id":7,"resumed_from":0}
 ```
 
 Everything after `[Session] ` is one JSON object on one line, the same
@@ -436,6 +648,7 @@ and `[DeadSwarm]` lines are unchanged, and their wording is not a contract.
 | `reopens` | number | Times a read on an open handle woke a torrent the engine had closed as idle. The wake at open does not count. |
 | `stalls`, `max_stall_ms` | number | Served reads that took over one second, and the slowest one in milliseconds. Failed reads are not counted. |
 | `confirmed` | boolean | A play webhook confirmed the file while the session was open, or it was confirmed when the session started. Sticky: a later stop webhook does not clear it. |
+| `id`, `resumed_from` | number | A number for the session, unique within one daemon run (it restarts at 1), and the `id` of the session this one continues; 0 for a session that began with an open. Follow `resumed_from` to stitch a paused playback back together. |
 | `outcome` | string | `served`: 1 MiB or more, or over 64 KiB with a read past 8 MiB or in the tail window. `probe`: fewer bytes, a scan. `unserved`: no bytes. `dead_swarm`: the session counted as a failure in the readability record, whatever it served; it never appears when the state database is off. The thresholds may change. |
 
 - The four byte fields name the path that answered each read, not where
@@ -445,14 +658,18 @@ and `[DeadSwarm]` lines are unchanged, and their wording is not a contract.
   says the swarm delivered.
 - `served` means the reader got bytes, not that the swarm sent them.
 - A session is per file, not per open or per playback. Opens that overlap
-  share one. After a session closes, reads on a handle that is still open
-  are not counted until the file is opened again. A playback that pauses
-  for more than a minute (30 s once the session is older than 30 minutes)
-  is cut short in this record, and one whose session ended when another
-  handle closed before the first byte shows as `unserved`.
+  share one. A playback that pauses for more than a minute (30 s once the
+  session is older than 30 minutes) closes its session; the first read
+  after that, on the same handle, opens a new one with `resumed_from` set,
+  so a paused playback is one session per stretch of reads. Each session
+  gets its own verdict: a resumed session that fails is judged on its own
+  reads and, like any session, only counts as `dead_swarm` once it has
+  lasted 25 s. A scan's handle that releases closes its session and leaves
+  nothing to resume. A session that ended when another handle closed before
+  the first byte shows as `unserved`, and its next read starts a resumed
+  session.
 - `reopens`, `stalls` and `max_stall_ms` are lower bounds: a play with long
-  gaps spans several sessions, and reads on a handle after its session
-  closed are not counted. The process-wide counters
+  gaps spans several sessions, one per pause. The process-wide counters
   `flodni_torrent_reopens_total` and `flodni_read_stalls_total` have no
   such gap.
 - The `confirmed` label of the three process-wide counters is per torrent: a
@@ -488,8 +705,9 @@ switch off it never refuses or slows a read.
 - **The counter** `flodni_unconfirmed_read_bytes_total` is the bytes the
   reader took past the windows, whichever path served them. It is not bytes
   downloaded: with the pump on (the default), the engine fill happened
-  earlier through the pump or a prefetch, and attributing that fill to the
-  reader is not built; it is revisited after Reliability step 6.
+  earlier through the pump or a prefetch. What the pump and the prefetches
+  fill is counted separately, per session, and can be made part of the
+  margin (see "Fill attribution" below).
 - **`unconfirmed_read_margin_mb`** in `config.json` (default 64, 0 logs at the
   first byte past the windows; a negative or absurd value is replaced by 64).
   When a session's counted bytes reach the margin, one `[ReaderBudget]` line
@@ -570,7 +788,45 @@ switch off it never refuses or slows a read.
     16 MiB): a scan got 20 to 32 MiB before the refusal, the 20 MiB cut plus
     up to 12 MiB of read-ahead already in flight, and the engine pulled no
     more from the seeder afterwards (622 bytes in 16 s). With the pump on it
-    is not measured.
+    is not measured. The head-window part is counted and can be clamped, see
+    the next two bullets.
+  - **Read-ahead overshoot (counted always, clamp opt-in).** Implemented,
+    tested against the fake engine. A miss inside the head window is never
+    refused, and its read-ahead can run past the window edge into the middle.
+    `flodni_reader_budget_readahead_overshoot_bytes_total` counts the bytes
+    the engine was asked to fetch past the edge for such a read, on a file
+    with no confirmed playback: what was asked for, not what was downloaded,
+    and only for reads that started inside the head window (a miss in the
+    middle is the budget's own business). It only counts. Whether the number
+    is worth a clamp is for the owner to read off a few weeks of it.
+    **`unconfirmed_readahead_clamp`** in `config.json` (default `false`, read
+    at each read): when on, the read-ahead of a read that starts inside the
+    head window of a file with no confirmed playback stops at the window edge,
+    and never short of the bytes the read itself asked for. The next read,
+    at the edge, is an ordinary miss for the budget to judge. The cost is
+    a smaller read-ahead there: a play that is not yet confirmed fetches the
+    bytes past the edge one request later. It changes no refusal and works
+    with `refuse_unconfirmed_reads` on or off. With it on the counter stays
+    at 0. A file with a confirmed playback is never clamped or counted. Not
+    measured on a real swarm, and not part of `make e2e`.
+  - **Fill attribution (counted always, margin opt-in).** Implemented,
+    tested against the fake engine. The pump and the prefetches (the two
+    warm-landing fetches and the two predictive ones) fill the read-ahead
+    cache ahead of the reader, and until now only the bytes the reader
+    later read counted toward its margin. Each such fill past the two windows,
+    for a file that has a session and no confirmed playback, is now added to
+    the session's fill tally and to
+    `flodni_reader_budget_attributed_fill_bytes_total`; the `[ReaderBudget]`
+    lines carry it as `fill_bytes` when it is not 0. That counting changes
+    nothing and is always on. **`attribute_fills_to_reader`** in `config.json`
+    (default `false`, read at each call) makes the margin compare the larger
+    of the served tally and the fill tally, not their sum, since a filled
+    byte the reader then reads is one byte of cost seen from both ends. It is
+    off by default because it moves when the margin is crossed: sooner for a
+    reader with a pump or a prefetch running, so refusal starts sooner, and
+    `over_margin` is logged sooner. The fill is attributed to the session of
+    the file, not to one handle: two readers of one file share it. The
+    read-ahead of a miss (the overshoot above) is not part of it.
   - **Limits, check before turning it on.** A webhook later than 15 s, lost,
     or matched to the wrong file breaks that play shortly after the margin
     (a resume on a recently played file with a lost webhook is refused too:
@@ -624,12 +880,12 @@ switch off it never refuses or slows a read.
   `flodni_unconfirmed_read_holds_total{result="lifted|refused"}` and
   `flodni_unconfirmed_read_confirmed_after_refusal_total`.
 
-Limits: reads on a handle after its session closed and sessions open at
-shutdown are not counted; reads the kernel page cache answers never reach
-Flodni; a fuzzy webhook match or a state restored at start can mark a file
-confirmed that is being scanned. A confirmation also outlives the playback:
-it stays until a stop webhook, or until 15 minutes after the last handle of
-the file closes, and a scan in that window is not counted.
+Limits: sessions open at shutdown are not counted; reads the kernel page
+cache answers never reach Flodni; a fuzzy webhook match or a state
+restored at start can mark a file confirmed that is being scanned. A
+confirmation also outlives the playback: it stays until a stop webhook, or
+until 15 minutes after the last handle of the file closes, and a scan in
+that window is not counted.
 
 ## Warmup cache eviction
 
@@ -638,10 +894,41 @@ whole media files, head and tail together. Files never played go first, then
 played files; each class goes oldest written first. This is built and runs
 today. The cache also keeps an in-memory list of which files are warm; it is
 internal and not served, and only the aggregates below are exported
-(`flodni_warmup_files`). What is not built: evicting the least recently read
-file (an idea in `docs/ideas.md`, not planned). Warm on add and its catch-up,
+(`flodni_warmup_files`). Evicting the least recently read file is built but
+off by default (`warmup_eviction_order`, below). Warm on add and its catch-up,
 which fill windows on their own, are described in their own section below; both
 are off by default.
+
+The quota counts allocated blocks, not apparent sizes: a sparse file (a tail
+written in pieces, a head with holes) counts what it holds on disk, as the
+start-up walk, the eviction walk, writes and removals all do. Where a platform
+reports no block count for a non-empty file, its apparent size stands in. The
+cache keeps a ledger of what each file has contributed to the total, so a
+removal gives back exactly that, and every change to the total happens under
+one lock. Where a filesystem reports blocks late (ZFS within a transaction
+group), a write counts at least the bytes it wrote: the total never reads low
+because of the lag, and the next eviction walk corrects the rest. The window
+lengths and the coverage the cache serves still follow the logical length of
+the files. An eviction walk holds that lock while it reads the directory, and
+a head write waits for it; the daemon logs a walk that takes more than 50 ms.
+
+- **Eviction order (built, off by default).** `warmup_eviction_order` is
+  `"written"` (the default, the order above) or `"read"`: inside each class
+  (never played first, then played) the file read least recently goes first.
+  A file's read time is the last cache hit on its head or tail, kept in memory
+  only (not persisted, not served); a file not read since the daemon started
+  ranks by its write time, and a file written after its last read ranks by that
+  write. The tracking costs one atomic load on the read path and nothing is
+  stamped under the default order. The played protection, the protected files of
+  a fill in flight and the lock order of the quota walk are unchanged. An
+  unknown value is logged at load and replaced by `"written"`; it is read at
+  start. **The measurement that should decide switching it on:**
+  `flodni_warmup_cold_reopen_total{previously_played="true"}` over
+  `flodni_playback_starts_total` reaching 5% of plays over a few weeks at a
+  full quota. The `previously_played="false"` series is a different problem
+  (warm data evicted before its first play points at the quota or the order, not
+  at recency) and does not argue for this switch. Not measured yet: it has not
+  run against real plays.
 
 - **Played** means a playback confirmed by Plex's play webhook, never a
   scanner's read. A webhook marks at most one file: a movie by file name,
@@ -748,6 +1035,35 @@ What Flodni does in each case:
 - **Full.** Failed creates and writes are logged, nothing false is recorded,
   and a fill reports that the file was evicted.
 
+## Filing and naming
+
+`POST /api/library/add` names what it writes from the request, not from the
+release. These rules apply to new adds only: a stub already on disk is never
+renamed and its registry row is never re-keyed, and stubs are found by the
+`link=` hash in their content, not by name.
+
+- **Specials.** A pack file named `S00E01` is filed as season 0, under
+  `Season.00` (the folder Plex reads as Specials), never as the requested
+  season's episode 1. A single-episode add does not take a special's file for
+  the requested episode either.
+- **Samples.** A video file is skipped when "sample" is a word in its name or
+  in the folder directly above it (not the release's root folder) and it is
+  under 50 MiB, even when no larger file names the same episode. Each skip is
+  logged (`ignored sample`). An explicit `file_index` still files the file it
+  names. A single-episode add whose torrent does not name the episode takes
+  the largest file that names no episode at all, never one named for another
+  episode or a special.
+- **Movie year.** The year in a movie's stub name is the request's
+  `release_date` year. A number in the title (`Blade Runner 2049`,
+  `Dune (2021)`) is part of the title and is not read as a second year. A title
+  with no ASCII letter or digit is named with the first eight hash characters
+  instead of an empty base with a leading underscore.
+- **Episode key.** The registry key folds Latin letters with diacritics to
+  their base letters (`Élite` gives `elite_s01e01`; before, the accented letter
+  vanished and `Lite` shared the key). A show whose rows were registered under
+  the old form keeps them: an add finds the row by the old key when the new one
+  has none, and replaces it in place.
+
 ## Removing a title
 
 `POST /api/library/remove` takes a `path` or a `hash`. A hash removes every
@@ -757,6 +1073,172 @@ for movies) are not used, so a stub of another torrent that shares them is
 left alone. The call reads each stub under both folders. A stub with no
 readable hash is skipped and logged once per call. The torrent is dropped once
 no stub links to it.
+
+## Replacing a release
+
+**Implemented.** When an add of a TV release would replace episode stubs that
+another release filed, the old stubs stay until the new release has shown it
+delivers. The check reads the first 64 KiB of a bounded sample of the new
+release's files: the file that replaces an existing stub, plus the first and
+the last episode by season and episode number, three files at most. A sample
+clip, an extra or a season-0 special is never chosen as first or last, and a
+special is not read as the replaced file unless the release holds nothing else:
+only the files the add would file are candidates. The reads run at the same time under one
+60 s timeout, so a dead release costs one wait, not three. The replacement
+goes ahead only if every sampled file reads. Otherwise the call answers 422,
+the old stubs and registry rows stay, the new torrent is dropped, and the log
+names the release. A release with one file is checked on that file; an add that
+replaces nothing is not checked. A private torrent is read through its own
+peer sources only.
+
+The trade-off: the check samples, it does not prove. A pack whose middle
+episodes are dead but whose sampled files read still replaces the old stubs,
+and those episodes then fail on first play. Reading every file would delay
+every replacement by the slowest episode of the pack.
+
+## Auditing stubs against the engine's file list
+
+`GET /api/library/audit` (control port, behind `api_token` like the other
+routes) checks every stub's `index` against the file list saved with its
+torrent's record, using the engine's own ids. It reads the stubs the list
+route reads and the records without waking any torrent; it changes no stub,
+record or state, and it runs only when asked, never at start.
+
+```json
+{"checked": 120, "mismatched_total": 1, "truncated": false,
+ "mismatched": [{"path": "...", "hash": "...", "index": 3, "stub_size": 200,
+                 "engine_length": 100, "reason": "length_differs"}],
+ "no_file_list": {"stubs": 2, "torrents": 1, "hashes": ["..."]},
+ "unreadable": 0}
+```
+
+| Field | Meaning |
+|---|---|
+| `checked` | Stubs compared against a stored file list. |
+| `reason` `no_such_file` | The index names no file in the list (`engine_length` is `null`). |
+| `reason` `length_differs` | The index names a file of another length than the stub's `size`. |
+| `no_file_list` | Stubs whose record holds no file list (saved before the metainfo arrived). They cannot be checked until one wake stores the list; the audit does not wake them. |
+| `unreadable` | Stubs with no readable hash. |
+
+`mismatched` and `no_file_list.hashes` hold at most 200 entries each;
+`mismatched_total` and `truncated` give the full count. Repair a reported
+stub with `POST /api/library/remove` for its hash, then `POST /api/library/add`
+again, which writes the stub from the engine's current list.
+
+## File lifecycle API
+
+Four additions to the library routes on the control port, decided in
+[ADR 3](docs/architecture/decisions/0003-file-lifecycle-api.md). They ride on
+the existing `api_token` bearer gate; `remove`, `list`, `inspect` and `audit`
+are unchanged.
+
+**A request with none of the new fields behaves as it did.** An add without
+`replace` or `dry_run` returns the same body as v0.1.0: `hash`, `title`,
+`type`, `files`, `already_present`, nothing else (a golden test pins it).
+
+### Replace policy
+
+`POST /api/library/add` takes `replace`:
+
+| `replace` | When the registry already holds a different release of the episode |
+|---|---|
+| omitted, `always` | Replace it, after the readability read below. This is what an add did before. |
+| `never` | Keep it; answer `kept`. |
+| `if-better` | Replace only when the request's `quality_score` is greater than the stored one. A score of 0 is never better, so a caller that sends none cannot replace by accident. |
+
+Flodni compares that one number and nothing else; which release is better
+stays with the caller. A movie never replaces: a second release is a second
+stub, whatever `replace` says. An unknown value is a 400.
+
+The readability gate is not a policy: a replacing release that delivers no
+data is a 422 under `always` and `if-better`, and the old files stay.
+
+A single episode is decided under its episode lock before the engine is
+contacted: a refused add makes no upload, no add, no metadata wait and no read,
+so it never announces a private torrent. A season pack is decided per episode
+once the torrent's file list is known, so a refused pack has paid the metadata
+wait; it writes the allowed episodes and lists the refused ones.
+
+A request that names `replace` or `dry_run` also gets:
+
+| Field | Meaning |
+|---|---|
+| `decision` | `added`, `already_present`, `replaced` or `kept`. |
+| `replaced` | The stubs this add replaced (or, in a dry run, would): `path`, `hash`, `file_index`. Omitted when empty. |
+| `skipped` | Episodes the policy refused: `season`, `episode`, `reason`. Omitted when empty. |
+
+**`files` lists only what this request wrote** (for `already_present`, what was
+already there, as before): callers link every entry that has a `fuse_path`. A
+refused episode is in `skipped`, never in `files`; a `kept` answer is 200 with
+`"files": []`; a pack with every episode refused is the same. An empty `files`
+means nothing was filed by this request. Status is 201 only when something was
+written; `already_present`, `kept` and a dry run are 200.
+
+### Dry run
+
+`dry_run: true` answers the decision from the stubs on disk and the registry
+and does nothing else: no engine call at all (no `.torrent` upload, no add, no
+metadata wait, no read), no stub or registry row written, no warm on add, no
+media-server scan. The answer carries `"dry_run": true` and
+`"readability": "unchecked"`, because it never asks the swarm, so a plan can
+still fail the real add's readability gate. No `files` entry has a `fuse_path`;
+each names the path the stub would get, with the request's `file_index` and a
+size of 0. It works for a single episode or a movie; a season pack is a 400,
+because its episodes are known only from the torrent's file list.
+
+### State of a file
+
+`GET /api/library/file?hash=&file_index=` reads one file. It is a projection of
+records that exist (the stub, the registry row, the daemon's file state); there
+is no new store.
+
+```json
+{"hash": "...", "file_index": 3, "state": "played",
+ "stub": {"path": "...", "fuse_path": "...", "size": 1234, "type": "tv",
+          "season": 1, "episode": 2},
+ "registry": {"episode_key": "...", "quality_score": 42, "source": "api"},
+ "warm": {"readability": "warmed", "cache": "cached", "queued": false,
+          "failed_attempts": 0},
+ "played_at": "2026-11-14T08:00:00Z", "protected": true,
+ "evicted": false, "confirmed": false}
+```
+
+The facts are independent (a file is warm and played at once); `state` is one
+word for the first that applies: `confirmed` (a session is open on the file and
+a webhook confirmed it), `evicted` (the windows were evicted), `played` (a play
+inside the protection window), `warm` (readability `warmed` or `present` and
+cache `cached`), `warming` (queued, no outcome yet), `added`. `registry` is
+`null` for a movie. A file no stub links to is a 404: replaced and removed
+files are not kept, their rows go with their torrent. The state reads three
+stores written at different times, so a file can be `added` a moment before it
+is `warm`.
+
+### Confirming a play
+
+`POST /api/library/confirm` with `{"hash": "...", "file_index": 3}` records a
+play of the file by hand: it clears the file's eviction mark and writes the same
+played mark a play webhook writes, so the file is protected from the first
+rounds of quota eviction for `played_protection_days`. It answers with the
+file's state. A repeat is a 200 and renews the played time. An unknown file is a 404.
+
+It records the play and nothing else: it confirms no session and counts no
+playback start, so the reader budget's hold on an unconfirmed session is not
+lifted (only a webhook does that). `flodni_played_marks_total{source}` counts it
+as `manual`, the webhook's marks as `webhook`.
+
+**It fails closed.** With `api_token` unset the control port is open to anyone
+who can reach it, and a play mark changes what eviction protects, so the route
+answers 403 and records nothing. With a token, anyone holding it can protect
+any file. (`remove` and the other routes keep working without a token.)
+
+The gate is the token the control server was started with, the same value the
+bearer middleware enforces, including the `FLODNI_API_TOKEN` override: never the
+live config. This matters in the open mode: with no token at start,
+`POST /api/config` is unauthenticated like every route and can write an
+`api_token`, but nothing enforces it until the daemon restarts, and confirm
+stays 403 until then too. `POST /api/config` itself is unchanged by this API;
+that it works without a token on an open port is a property of that mode, so
+set `api_token` before exposing the port.
 
 ## Warm on add
 
@@ -884,8 +1366,9 @@ closed torrent and reports the engine's state for it before the pass).
     was full (`file_state.queued_at`, schema 16: written when warm on add
     queues the file, cleared when an attempt records any outcome, and read
     after a restart). A file never attempted by warm on add (no record, or
-    only `cached`), an evicted file and a file warm on disk are never fed,
-    and the gauge counts the never-attempted ones as `out_of_scope`. The
+    only `cached`), a file warm on disk and an evicted file (except the
+    re-warm below, which both scopes run) are never fed, and the gauge
+    counts the never-attempted ones as `out_of_scope`. The
     rest of the rules below (20 hours, the cap, never evicting, the quota
     stop) apply in both scopes. An unknown value is logged and replaced by
     `"all"`. Evidence does not change with the scope: a retried read the
@@ -901,23 +1384,41 @@ closed torrent and reports the engine's state for it before the pass).
     after the daemon starts. The default 20 is sized for walking a backlog.
   - **Which files.** A file is skipped when both windows are complete on disk
     (the disk decides, not the record; a record without `cache: cached` is
-    written, with no wake). It is never warmed when its `cache` is `evicted`,
+    written, with no wake). It is not warmed when its `cache` is `evicted`,
     or it carries an eviction mark or time, including a file evicted before
-    schema 14: eviction is left to its next play. A file that failed 4 times
-    is given up on; only a read through the mount that the swarm serves, or an
-    add again, makes it eligible. Once one file of a title has given up through
-    failed swarm reads (`lost` and `write_failed` do not count, nor `not_stored`),
-    the title's other files are given up too, so a dead pack costs one wake a
-    day for four days, not for four days per file; any swarm delivery for a
-    file of the title after that give-up makes them eligible again. Warm on add
-    of a new file is not affected: an add still tries once. A file attempted
-    under 20 hours ago waits, and so does its whole title when any file of
-    it failed under 20 hours ago (a no-peers failure skips the rest of a pack
-    without a record). A title the engine refused to wake (`not_stored`, for
-    example a stub the engine never stored) waits for a play. Everything
-    else is a candidate: no record,
-    `dropped_quota`, `dropped_no_evidence`, `lost`, `write_failed`, and a
-    record that says `cached` while the disk does not.
+    schema 14: eviction is left to its next play, except the re-warm below.
+    A file that failed 4 times is given up on; only a read through the mount
+    that the swarm serves, or an add again, makes it eligible. Once one file
+    of a title has given up through failed swarm reads (`lost` and
+    `write_failed` do not count, nor `not_stored`), the title's other files
+    are given up too, so a dead pack costs one wake a day for four days, not
+    for four days per file; any swarm delivery for a file of the title after
+    that give-up makes them eligible again. Warm on add of a new file is not
+    affected: an add still tries once. A file attempted under 20 hours ago
+    waits, and so does its whole title when any file of it failed under 20
+    hours ago (a no-peers failure skips the rest of a pack without a record).
+    A title the engine refused to wake (`not_stored`, for example a stub the
+    engine never stored) waits for a play. Everything else is a candidate: no
+    record, `dropped_quota`, `dropped_no_evidence`, `lost`, `write_failed`,
+    and a record that says `cached` while the disk does not.
+  - **Re-warm after eviction.** An evicted file is fed again when a
+    webhook-confirmed play of it is recorded within the last
+    `played_protection_days` (the same setting that protects it from
+    eviction; `0` means a play counts forever) and no attempt on it has been
+    recorded since that play. It then goes through the same rules as any
+    candidate (the 20-hour wait, the cap, the engine refusing the hash, a
+    title given up as a whole, which a re-warm never overrides) and
+    the same pace, and, like all catch-up, only into free room: a full
+    cache leaves it, counted `no_room`, never evicting another file. A file
+    never played, or last played longer ago than the protection time, stays
+    evicted until its next play. A re-warm is an attempt, so a file warmed
+    again and evicted again, or one whose re-warm failed, is not fed again
+    until it is played again. Under scope `"retries"` the re-warm is fed too:
+    the file was kept once, so it is a retry, not the cold backlog. There is
+    no state of its own: such a file counts as `pending` in
+    `flodni_warm_catchup_files` (and as `left_no_room` when the pass left it
+    for room), and the `pass_start` line carries `"rewarm"`, how many of the
+    pending files are re-warms. Files left evicted stay `evicted`.
   - **Never evicts.** It checks for room before it wakes anything. At a full
     cache the pass ends: the file is counted `no_room`, nothing is recorded, and
     `flodni_warm_catchup_files{state="left_no_room"}` holds what the pass left.
@@ -953,6 +1454,47 @@ closed torrent and reports the engine's state for it before the pass).
   are over if an attempt was recorded. A title removed and added again while
   `warm_on_add` was off keeps its removal mark until a restart: catch-up lists
   it as `pending` every pass and feeds nothing.
+
+### Warm the next episode (built, off by default)
+
+`warm_next_episode` (default `false`) fills the windows of the next episode
+while one plays, so a binge starts at once. It is built and has not run against
+real plays yet. It reuses warm on add's warmer, so it needs `warm_on_add` on and
+`warmup_dir` set; without them Flodni logs one warning and does nothing. With
+it off nothing is listed, queued or counted.
+
+- **When.** A play the media server's webhook confirmed (the same single-file
+  resolution that marks a file played). Flodni lists the library, finds that
+  episode and takes the next one in the same show: the next episode of the
+  season, else the first of the next season, by the season and episode in the
+  stub names. The show is the stub's show directory. A file that is not a
+  library episode (a movie) does nothing and counts nothing.
+- **One at a time.** At most one next-episode fill is in flight per playing
+  show; a second confirmed play of the show meanwhile counts `in_flight`. The
+  fills run on their own worker, one after another, and a playback does not
+  pause them, which is the point (every other fill pauses for a playback).
+- **Never evicts.** Before it queues anything it asks the cache whether the
+  windows are warm already (`already_warm`) and whether they fit without
+  evicting (`no_room`, then it skips). The fill itself runs under the
+  never-evict policy, is not retried after a cache failure and stops at a
+  removal or a shutdown; the next confirmed play asks again.
+- **A season pack is skipped.** When the next episode is a file of the torrent
+  being played (a pack), it is skipped (`same_torrent`) unless
+  `warm_next_episode_same_torrent` is `true` (default `false`): a second reader
+  on the playing torrent splits the engine's read-ahead, and a playing stream
+  that slows down costs more than the head start gains. Only a next episode in
+  another torrent is filled by default.
+- **Metrics.** `flodni_warm_next_episode_total{outcome}`: `queued`, `no_next`,
+  `same_torrent`, `no_room`, `already_warm`, `in_flight` and `error`, every
+  value present from 0. The fills themselves show as
+  `flodni_warm_fills_total{trigger="next"}`.
+- **What should decide switching it on.** Not measured yet. Switch it on for a
+  trial when a series is watched episode after episode and the first read of
+  the next one is slow: `flodni_session_first_byte_seconds` of a binge's
+  later episodes. Then check that the playing stream does not slow down while
+  a fill runs: `flodni_read_stalls_total{confirmed="true"}` should not rise
+  against the same weeks with it off, and `flodni_warm_next_episode_total{outcome="no_room"}`
+  should be small (a full cache is skipped, never evicted for this).
 
 ### A stub the engine does not store
 
@@ -1119,12 +1661,13 @@ scraper on the same host or Docker network.
 | `flodni_read_duration_seconds` | histogram | `source` | Duration of each served read. Its `_count` is the number of reads each path answered. |
 | `flodni_read_bytes_total` | counter | `source` | Bytes handed to the kernel. |
 | `flodni_sessions_closed_total` | counter | `outcome` | Closed sessions: `served`, `probe`, `unserved`, `dead_swarm`. |
-| `flodni_dead_swarm_verdicts_total` | counter | `reason`, `source` | Dead-swarm verdicts; `reason` as `last_failure_reason`, `source` is `mount`. |
+| `flodni_dead_swarm_verdicts_total` | counter | `reason`, `source` | Dead-swarm verdicts; `reason` as `last_failure_reason`, `source` is `mount`, or `wake` for `metainfo_timeout`. |
 | `flodni_warmup_cache_bytes` | gauge | none | Approximate size of the warmup cache; only with the cache enabled. |
 | `flodni_warmup_cache_quota_bytes` | gauge | none | Its size limit; only with the cache enabled. |
 | `flodni_warmup_evictions_total` | counter | `window` | Files removed by quota eviction, `head` or `tail`. |
-| `flodni_warmup_evicted_bytes_total` | counter | `window` | Their apparent size in bytes. |
-| `flodni_warm_fills_total` | counter | `trigger`, `outcome` | Warm fills. `trigger="mount"`: per-file records the mount path wrote, `outcome` `warmed` (the engine holds a swarm delivery stamp) or `cached` (it does not); needs the state database and index mode. `trigger="add"` and `trigger="catchup"`: warm on add and catch-up attempts, `outcome` as in "Warm on add", every value present from 0. |
+| `flodni_warmup_evicted_bytes_total` | counter | `window` | Their allocated size in bytes. |
+| `flodni_warm_fills_total` | counter | `trigger`, `outcome` | Warm fills. `trigger="mount"`: per-file records the mount path wrote, `outcome` `warmed` (the engine holds a swarm delivery stamp) or `cached` (it does not); needs the state database and index mode. `trigger="add"`, `trigger="catchup"` and `trigger="next"`: warm on add, catch-up and next-episode attempts, `outcome` as in "Warm on add", every value present from 0. |
+| `flodni_warm_next_episode_total` | counter | `outcome` | Confirmed plays of a library episode seen with `warm_next_episode` on: `queued`, `no_next`, `same_torrent`, `no_room`, `already_warm`, `in_flight`, `error`; every value present from 0. See "Warm the next episode". |
 | `flodni_warm_fill_bytes_total` | counter | `trigger`, `window` | Bytes warm on add and catch-up wrote, `window` `head` or `tail`, also by fills that did not finish. |
 | `flodni_warm_cache_failures_total` | counter | `reason` | Warm on add and catch-up attempts that lost a window or could not write it: `lost` or `write_failed`. |
 | `flodni_warm_queue_files` | gauge | none | Files waiting for warm on add or catch-up. |
@@ -1133,6 +1676,7 @@ scraper on the same host or Docker network.
 | `flodni_warm_catchup_scope` | gauge | `scope` | The `warm_catchup_scope` the last catch-up pass ran with: 1 for `all` or `retries`, 0 for the other; both 0 before the first pass. |
 | `flodni_warmup_files` | gauge | `window` | Media files with a warm window on disk now: `head` counts heads at or above the 1 MiB ready floor, `tail` counts tails fully covered. Only with the cache enabled. |
 | `flodni_playback_starts_total` | counter | none | Playbacks the media server webhook confirmed (not playing to playing). |
+| `flodni_played_marks_total` | counter | `source` | Plays recorded on a file, the mark that protects it from eviction: `webhook` (a play resolved to one file) or `manual` (`POST /api/library/confirm`). Both present from 0. |
 | `flodni_torrent_idle_closes_total` | counter | `confirmed` | Torrents the engine closed because no reader had them for the idle timeout. `confirmed` is `true` when a file of the torrent had a webhook-confirmed playback; the label is refreshed once a second. Both values present from 0. With the keep-alive on, a torrent it holds is not counted; see Keep-alive. |
 | `flodni_torrent_reopens_total` | counter | `confirmed` | Closed torrents a read on an open handle woke again; the wake at open is not counted. `confirmed` as above. |
 | `flodni_wake_refused_total` | counter | none | Wakes the engine refused because it keeps no record of the torrent: one per handle at a read, one per open. Not a failed read and not a dead swarm. 0 from start. See "A stub the engine does not store". |
@@ -1150,12 +1694,18 @@ scraper on the same host or Docker network.
 | `flodni_unconfirmed_read_refused_reads_total` | counter | none | Reads the reader budget refused with EIO. Moves only with `refuse_unconfirmed_reads` on. See Reader budget. |
 | `flodni_unconfirmed_read_holds_total` | counter | `result` | Holds of a refused handle, when they end: `lifted` by a confirmation (or the switch going off), `refused` when the time ran out. Moves only with `refuse_unconfirmed_reads` on. |
 | `flodni_unconfirmed_read_confirmed_after_refusal_total` | counter | none | Sessions with a refused read that a webhook then confirmed, once each (plays the budget would have broken). Moves only with `refuse_unconfirmed_reads` on. |
+| `flodni_reader_budget_readahead_overshoot_bytes_total` | counter | none | Bytes the engine was asked to fetch as read-ahead past the head window edge, for a read that started inside the window of a file with no confirmed playback. Asked for, not downloaded. Stays 0 with `unconfirmed_readahead_clamp` on. See Reader budget. |
+| `flodni_reader_budget_attributed_fill_bytes_total` | counter | none | Bytes the pump and the prefetches filled past the head and tail windows of a file with a session and no confirmed playback. Count toward the margin only with `attribute_fills_to_reader` on. |
 | `flodni_warmup_cold_reopen_total` | counter | `previously_played` | Confirmed plays that opened cold on a file quota eviction had removed, `true` or `false` by whether it had been played before. |
 | `flodni_warmup_unverified_drops_total` | counter | none | Warmup blocks, head or tail, never written because their pieces did not verify in time. |
 | `flodni_warmup_write_queue_drops_total` | counter | none | Head chunks dropped because the warmup write queue was full. |
 | `flodni_readability_torrents` | gauge | `state` | Library torrents by readability: `failed` has a failure streak, `ok` has none and a read served by the swarm, `never_read` is the rest (no record, or a streak reset by a metainfo without a read). Not exported when the state database is off. |
 | `flodni_library_torrents_unstored` | gauge | none | Library torrents with no stored engine record holding metainfo, counted once at startup after the library walk and not refreshed. Not exported until counted. See "A stub the engine does not store". |
 | `flodni_stub_index_mismatch_total` | counter | none | Library paths whose stub file index differs from the file an open resolved by size and name, once per path per process. Non-zero means a stale stub. See "A stub whose file index is stale". |
+| `flodni_tracker_scrapes_total` | counter | `result` | Experimental. Tracker scrapes per torrent and tracker: `ok` (answered), `error` (the request failed or the answer left the torrent out), `skipped` (no BEP 48 scrape URL or an unsupported scheme). All values present from 0 once the scraper runs. See Tracker scrape. |
+| `flodni_torrents_by_seeders` | gauge | `bucket` | Experimental. Torrents by the seeders of their latest scrape answer: `0`, `1-2`, `3+`. A torrent with an error entry is in none. |
+| `flodni_tracker_scrape_pass_running` | gauge | none | Experimental. 1 while a scrape pass runs. |
+| `flodni_tracker_scrape_last_pass_finished_timestamp_seconds` | gauge | none | Experimental. Unix time the last finished full pass ended; absent before the first. |
 | `flodni_readahead_cache_bytes` | gauge | none | Bytes in the read-ahead cache. |
 | `flodni_readahead_cache_active_bytes` | gauge | none | The part that is not stale. |
 | `flodni_readahead_cache_entries` | gauge | none | Entries in the cache. |
@@ -1165,6 +1715,7 @@ scraper on the same host or Docker network.
 | `flodni_fetch_dedup_total` | counter | none | Concurrent fetches of one chunk that shared a single fetch. |
 | `flodni_engine_short_reads_total` | counter | `path` | Engine reads that ended short and were reported as success: `stream` (the sequential reader) or `fetch` (the stateless block fetch behind the FUSE fallback). 0 from start. |
 | `flodni_engine_short_read_repairs_total` | counter | `result` | Outcome of the stream reader's refill loop, per read that needed it: `repaired` after a reconnect, `unfilled` when a gap stayed. |
+| `flodni_engine_peer_redials_total` | counter | none | Peers the opt-in redial (`redial_dropped_peer`) added back to a private torrent after its only connected peer dropped. 0 with the switch off. See Engine stall gaps. |
 | `flodni_sessions_open` | gauge | none | Sessions open now, the length of the `open` list of `/api/sessions`. |
 | `go_goroutines` | gauge | none | Goroutines that currently exist. |
 | `go_memstats_heap_inuse_bytes` | gauge | none | Bytes in in-use heap spans. |
@@ -1193,8 +1744,10 @@ to be stable; buckets and help text are not.
   a session closed and reads with no session, so it differs from the
   `[Session]` lines.
 - `flodni_warmup_cache_bytes` is a running total, resynced from the disk on
-  each eviction walk. It can drift in between; the known causes are in
-  `docs/ideas.md`.
+  each eviction walk. Writes and removals through the cache keep it in step
+  (counted in allocated blocks, see the eviction section); it can still
+  differ from the disk by files changed behind the cache's back, until the
+  next walk.
 - `flodni_warmup_files` reads the cache's in-memory index. A head removed
   behind the cache's back shows until the next lookup of it, a tail until
   the next restart. Warm bytes are `flodni_warmup_cache_bytes`. The series is a count of files, not of

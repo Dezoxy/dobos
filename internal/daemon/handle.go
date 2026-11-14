@@ -306,6 +306,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 							n, err := nativeBridge.FetchBlock(goHash, goFileID, goOff, (*bufPtr)[:limit])
 							if err == nil && n > 0 {
 								raCache.Put(h.path, goOff, goOff+int64(n)-1, (*bufPtr)[:n])
+								noteFillAttributed(h.path, goOff, int64(n), goSize)
 								logger.Info(fmt.Sprintf("[WarmLanding] Pre-fetched chunk at %dMB for new handle", goOff/(1024*1024)))
 							}
 						})
@@ -381,6 +382,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 							n, err := nativeBridge.FetchBlock(goHash, goFileID, goOff, (*bufPtr)[:limit])
 							if err == nil && n > 0 {
 								raCache.Put(h.path, goOff, goOff+int64(n)-1, (*bufPtr)[:n])
+								noteFillAttributed(h.path, goOff, int64(n), goSize)
 								logger.Info(fmt.Sprintf("[WarmLanding] Pre-fetched chunk at %dMB for seek target", goOff/(1024*1024)))
 							}
 						})
@@ -503,6 +505,7 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 								n, err := nativeBridge.FetchBlock(goHash, goFileID, goStart, (*bufPtr)[:limit])
 								if err == nil && n > 0 {
 									raCache.Put(h.path, goStart, goStart+int64(n)-1, (*bufPtr)[:n])
+									noteFillAttributed(h.path, goStart, int64(n), h.size)
 								}
 							}
 							// HTTP Fallback REMOVED
@@ -551,6 +554,9 @@ func (h *MkvHandle) readInner(fuseCtx context.Context, dest []byte, off int64) (
 		if fetchEnd >= h.size {
 			fetchEnd = h.size - 1
 		}
+		// Opt-in (unconfirmed_readahead_clamp): no read-ahead past the head window edge
+		// for a file with no confirmed playback.
+		fetchEnd = clampReadahead(h.path, off, end, fetchEnd, h.size)
 		fetchSize = fetchEnd - off + 1
 	}
 	h.mu.Lock()
@@ -790,6 +796,7 @@ pumpSlotResolved:
 			if err == nil && nFetch > 0 {
 				n = nFetch
 				fetchHandedOff = true
+				noteReadaheadOvershoot(h.path, off, int64(target), fetchSize, h.size)
 				timing.HTTPFetchTime = time.Since(fetchStart)
 				goto DATA_READY
 			}
@@ -881,6 +888,7 @@ DATA_READY:
 							n, err := nativeBridge.FetchBlock(goHash, goFileID, goStart, (*bufPtr)[:limit])
 							if err == nil && n > 0 {
 								raCache.Put(h.path, goStart, goStart+int64(n)-1, (*bufPtr)[:n])
+								noteFillAttributed(h.path, goStart, int64(n), h.size)
 							}
 							return
 						}

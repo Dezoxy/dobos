@@ -105,6 +105,13 @@ that had to wait for the metainfo and got it from the swarm (`Wake` in
 `internal/gostorm/native/native.go`). Every new writer of the readability
 record follows the same rule.
 
+**The metainfo timeout.** A wake whose metainfo does not arrive within its
+45 s wait fails the open before any session exists, so `Wake` itself reports
+it (`OutcomeMetainfoTimeout`) and the recorder writes reason
+`metainfo_timeout`, source `wake`, counting it as a swarm-side failure. It is
+counted at most once per torrent per 10 minutes, because a player retries and
+each retry is another 45 s wait.
+
 **The failure rule.** A failure is counted once per session, and only when
 a read gave up, the swarm served nothing and the session lasted at least
 `sessionVerdictFloor` (25 s). A read Flodni refuses on purpose is not a
@@ -136,7 +143,7 @@ Status of each part:
 | `[DeadSwarm]` log lines | Exists; the wording is not a contract |
 | `GET /api/torrents/health` with the readability fields | Exists; the fields are in the README |
 | Time of the last swarm-served read, reason and source of the last failure | Exists |
-| One `[Session]` log line per closed session: bytes by serving path, `swarm_served`, file index (the README documents it as a contract) | Exists; sessions open at shutdown and reads after a session closes are not counted |
+| One `[Session]` log line per closed session: bytes by serving path, `swarm_served`, file index (the README documents it as a contract) | Exists; sessions open at shutdown are not counted; a read after a session closes opens a linked session (`resumed_from`) |
 | Prometheus text exposition at `GET /metrics/prometheus`: session latency histograms, read counts and bytes by serving path, session outcomes, dead-swarm verdicts, warmup cache size and evictions (the README lists the series) | Exists |
 | Per-file warm record: readability and cache state per file, served as the experimental `files` array on `GET /api/torrents/health` (state database schema 14); the engine stamps each piece with its completion time, a read through the mount that completes a file's windows records it, and warm on add and catch-up record each of their outcomes | Exists, **experimental**; written by the mount path in index mode (`warmed`, `cached`) and by warm on add (all outcomes: `present`, `failed`, `dropped_*`, `lost`, `write_failed`; catch-up writes all but `dropped_*`) |
 | Played and evicted state per file (state database schema 13); quota eviction takes head and tail together, files never played first, then played files, oldest first; one `[WarmupEvict]` log line per eviction; `flodni_playback_starts_total` and `flodni_warmup_cold_reopen_total` | Exists; "played" is a playback confirmed by the media server webhook, so without webhooks nothing is ever played and the order is oldest first |

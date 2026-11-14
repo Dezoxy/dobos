@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"flodni/internal/gostorm/native"
+	"flodni/internal/gostorm/torr"
 	"flodni/internal/promtext"
 	"flodni/internal/warmup"
 )
@@ -135,6 +136,8 @@ func collectProm(w *promtext.Writer) {
 	collectWebhookHealthProm(w)
 	collectReadabilityProm(w)
 	collectUnstoredProm(w)
+	collectSwarmProm(w)
+	collectScrapeProm(w)
 	collectReadAheadProm(w)
 	collectStubIndexProm(w)
 
@@ -166,7 +169,7 @@ func collectWarmupProm(w *promtext.Writer) {
 	w.Counter("flodni_warmup_evictions_total", "Files removed by quota eviction, by window.",
 		promSample(st.EvictedHeads, lbl("window", "head")),
 		promSample(st.EvictedTails, lbl("window", "tail")))
-	w.Counter("flodni_warmup_evicted_bytes_total", "Bytes (apparent size) removed by quota eviction, by window.",
+	w.Counter("flodni_warmup_evicted_bytes_total", "Bytes (allocated size) removed by quota eviction, by window.",
 		promSample(st.EvictedHeadBytes, lbl("window", "head")),
 		promSample(st.EvictedTailBytes, lbl("window", "tail")))
 	w.Counter("flodni_warmup_unverified_drops_total",
@@ -177,13 +180,14 @@ func collectWarmupProm(w *promtext.Writer) {
 		promSample(st.WriteQueueDrops))
 	add := addWarmer.Stats()
 	w.Counter("flodni_warm_fills_total",
-		"Warm fills by trigger and outcome. trigger=mount: per-file records written when reads through the mount completed a file's windows (outcome=warmed when the engine holds a swarm delivery stamp, cached when it does not; needs the state database and index mode). trigger=add: attempts of warm on add (warm_on_add), one per file attempt; trigger=catchup: attempts of catch-up for files already in the library (warm_catchup_per_hour), which never evicts, so a full cache counts no_room; every outcome of both triggers is present from the start; a pause, a shutdown and a removal count nothing.",
+		"Warm fills by trigger and outcome. trigger=mount: per-file records written when reads through the mount completed a file's windows (outcome=warmed when the engine holds a swarm delivery stamp, cached when it does not; needs the state database and index mode). trigger=add: attempts of warm on add (warm_on_add), one per file attempt; trigger=catchup: attempts of catch-up for files already in the library (warm_catchup_per_hour), which never evicts, so a full cache counts no_room; trigger=next: fills of the next episode during a playback (warm_next_episode), which never evicts and does not pause for a playback; every outcome of these triggers is present from the start; a pause, a shutdown and a removal count nothing.",
 		append([]promtext.Sample{
 			promSample(warmFillsMountWarmed.Load(), lbl("trigger", "mount"), lbl("outcome", "warmed")),
 			promSample(warmFillsMountCached.Load(), lbl("trigger", "mount"), lbl("outcome", "cached")),
 		}, addWarmFillSamples(add)...)...)
 	collectAddWarmProm(w, add)
 	collectCatchupProm(w, catchupFiles)
+	collectWarmNextProm(w, warmNext)
 }
 
 // collectReadabilityProm writes the library by readability. The numbers come from the
@@ -217,6 +221,13 @@ func collectPlaybackProm(w *promtext.Writer) {
 	w.Counter("flodni_playback_starts_total",
 		"Playbacks the media server webhook confirmed (not playing to playing).",
 		promSample(playbackStarts.Load()))
+	marks := make([]promtext.Sample, 0, len(playSources))
+	for i, src := range playSources {
+		marks = append(marks, promSample(playMarks[i].Load(), lbl("source", src)))
+	}
+	w.Counter("flodni_played_marks_total",
+		"Plays recorded on a file (the played mark that protects it from eviction), by source: webhook (the media server resolved a playback to one file) or manual (POST /api/library/confirm). Both present from 0.",
+		marks...)
 	w.Counter("flodni_torrent_idle_closes_total",
 		"Torrents the engine closed because no reader had them for the idle timeout. confirmed is true when a file of the torrent had a webhook-confirmed playback (the label is refreshed once a second).",
 		promSample(keepaliveCounters.idleCloses[1].Load(), lbl("confirmed", "true")),
@@ -266,6 +277,12 @@ func collectReaderBudgetProm(w *promtext.Writer) {
 	w.Counter("flodni_unconfirmed_read_confirmed_after_refusal_total",
 		"Sessions that had a read refused and were then confirmed by a playback webhook, counted once each (plays the budget broke).",
 		promSample(unconfirmedConfirmedAfterRefusal.Load()))
+	w.Counter("flodni_reader_budget_readahead_overshoot_bytes_total",
+		"Bytes the engine was asked to fetch as read-ahead past the head window edge, for a read that started inside the window of a file with no confirmed playback. Asked for, not downloaded. With unconfirmed_readahead_clamp on it stays at 0.",
+		promSample(readaheadOvershootBytes.Load()))
+	w.Counter("flodni_reader_budget_attributed_fill_bytes_total",
+		"Bytes the pump and the prefetches filled past the head and tail windows of a file with a session and no confirmed playback. They count toward the margin only with attribute_fills_to_reader on.",
+		promSample(attributedFillBytes.Load()))
 	w.Counter("flodni_playback_webhooks_received_total",
 		"Playback start and resume webhooks for a movie or an episode, matched to one file or not.",
 		promSample(playbackWebhooksMatched.Load(), lbl("matched", "true")),
@@ -308,6 +325,9 @@ func collectEngineReadsProm(w *promtext.Writer) {
 		"Engine reads that ended short and were reported as success, by path: stream is the sequential reader, fetch the stateless block fetch behind the FUSE fallback.",
 		promSample(stream, lbl("path", "stream")),
 		promSample(fetch, lbl("path", "fetch")))
+	w.Counter("flodni_engine_peer_redials_total",
+		"Peers the opt-in redial (redial_dropped_peer) added back to a private torrent after its only connected peer dropped. 0 with the switch off.",
+		promSample(torr.RedialCount()))
 	repaired, unfilled := native.ShortReadRepairCounts()
 	w.Counter("flodni_engine_short_read_repairs_total",
 		"Outcome of the stream reader's refill loop, per read that needed it: repaired after a reconnect, or unfilled and left a gap.",
