@@ -28,6 +28,9 @@
   "playback_webhook_warn_days": 7,
   "playback_keepalive_minutes": 15,
   "playback_keepalive_max_torrents": 4,
+  "tracker_scrape_hours": 24,
+  "tracker_scrape_batch": 100,
+  "tracker_scrape_pace_ms": 1000,
   "plex_path_map": {},
   "plex": {
     "url": "http://127.0.0.1:32400",

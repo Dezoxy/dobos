@@ -422,6 +422,7 @@ func Run() {
 
 	startWebhookStatus(webhookStatus, backgroundStopChan)
 	startSwarmSnapshot(engineSwarmSource, backgroundStopChan, logger)
+	startTrackerScraper(gc(), storedScrapeTargets, backgroundStopChan, logger)
 
 	finishGlobalInodeMapInit(logger)
 
@@ -547,6 +548,8 @@ func Run() {
 		healthStore = stateDB
 	}
 	mux.HandleFunc("/api/torrents/health", newTorrentsHealthHandler(healthStore, fileStates.WarmSnapshot, logger))
+	mux.HandleFunc("/api/torrents/scrape", handleScrapeTrigger)
+	mux.HandleFunc("/api/torrents/scrape/status", handleScrapeStatus)
 	mux.HandleFunc("/api/health", newHealthChecks().handler)
 	mux.HandleFunc("/api/warmup/evict", newWarmupEvictHandler(evictWarmupTo))
 
