@@ -282,6 +282,7 @@ func Run() {
 	// torrent's records are forgotten.
 	addWarmer = warmer.New(addWarmerDeps(fileStates, backgroundStopChan))
 	warmup.OnHashRemoved = onHashRemoved(addWarmer, fileStates)
+	warmup.SetEvictionOrder(gc().WarmupEvictionOrder) // "written" unless the owner opted in
 	warmup.InitDiskWarmup(warmup.Options{
 		QuotaGB: gc().DiskWarmupQuotaGB,
 		Dir:     gc().WarmupDir,
@@ -422,6 +423,12 @@ func Run() {
 
 	startWebhookStatus(webhookStatus, backgroundStopChan)
 	startSwarmSnapshot(engineSwarmSource, backgroundStopChan, logger)
+	if net, err := torr.ScrapeNetwork(); err != nil {
+		// Fail closed: with a proxy that cannot be used, a scrape would leave from the real address.
+		logger.Printf("[Scrape] tracker scrape not started: %v", err)
+	} else {
+		startTrackerScraper(gc(), storedScrapeTargets, torr.ScrapeReady, net, backgroundStopChan, logger)
+	}
 
 	finishGlobalInodeMapInit(logger)
 
@@ -547,6 +554,8 @@ func Run() {
 		healthStore = stateDB
 	}
 	mux.HandleFunc("/api/torrents/health", newTorrentsHealthHandler(healthStore, fileStates.WarmSnapshot, logger))
+	mux.HandleFunc("/api/torrents/scrape", handleScrapeTrigger)
+	mux.HandleFunc("/api/torrents/scrape/status", handleScrapeStatus)
 	mux.HandleFunc("/api/health", newHealthChecks().handler)
 	mux.HandleFunc("/api/warmup/evict", newWarmupEvictHandler(evictWarmupTo))
 
@@ -727,6 +736,8 @@ func Run() {
 		}
 		// Catch-up (idle unless warm_on_add is on): warms the titles already filed.
 		startCatchup(libMgr)
+		// Next episode (idle unless warm_next_episode is on): see warm_next.go.
+		startWarmNext(libMgr)
 		libHandler := library.NewHandler(libMgr)
 		mux.HandleFunc("/api/library/add", libHandler.Add)
 		mux.HandleFunc("/api/library/remove", libHandler.Remove)

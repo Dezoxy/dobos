@@ -114,6 +114,21 @@ type Config struct {
 	// read, dropped_quota, lost, write_failed, or queued for over an hour with no
 	// outcome), never the cold backlog. An unknown value is replaced by "all" at load.
 	WarmCatchupScope string `json:"warm_catchup_scope"`
+	// WarmupEvictionOrder is how the quota ranks files inside each class (never played
+	// first, then played): "written" (the default) takes the oldest written first;
+	// "read" (opt-in, roadmap step 22) takes the least recently read first, by an
+	// in-memory last-hit time that is not persisted (a file not read since start ranks
+	// by its write time). Read at start. An unknown value is replaced by "written".
+	WarmupEvictionOrder string `json:"warmup_eviction_order"`
+	// WarmNextEpisode (opt-in, roadmap step 23) fills the windows of the next episode
+	// of a show while a play of the previous one is confirmed by the media server. It
+	// runs through warm on add's machinery, so it needs WarmOnAdd and WarmupDir, and
+	// it never evicts: it only fills where the cache has room. Off by default.
+	WarmNextEpisode bool `json:"warm_next_episode"`
+	// WarmNextEpisodeSameTorrent lets WarmNextEpisode also fill an episode that is a
+	// file of the torrent being played (a season pack). Off by default: a second
+	// reader on the playing torrent splits the engine's read-ahead.
+	WarmNextEpisodeSameTorrent bool `json:"warm_next_episode_same_torrent"`
 	// PlayedProtectionDays is how long a play confirmed by the media server keeps a
 	// file out of the first rounds of quota eviction, counted from its last play.
 	// After that the file ranks as never played. 0 means a play protects forever;
@@ -153,6 +168,21 @@ type Config struct {
 	// unlimited here. Size it so cap x CacheSize stays well under the memory limit. Read
 	// live.
 	PlaybackKeepaliveMaxTorrents int `json:"playback_keepalive_max_torrents"`
+
+	// TrackerScrapeHours is the interval of the scheduled tracker scrape pass
+	// (internal/scrape, EXPERIMENTAL): every stored torrent is asked once per pass at
+	// its own trackers. 0 turns the schedule off; POST /api/torrents/scrape still runs
+	// a pass. A negative value or one over a year (8760) is replaced by the default
+	// (24). Read at start-up.
+	TrackerScrapeHours int `json:"tracker_scrape_hours"`
+	// TrackerScrapeBatch is the most hashes in one HTTP scrape request (UDP keeps its
+	// own 70 per packet). 1 to 200; anything else is replaced by the default (100).
+	// Read at start-up.
+	TrackerScrapeBatch int `json:"tracker_scrape_batch"`
+	// TrackerScrapePaceMs is the least gap in milliseconds between two scrape
+	// requests to one tracker host. 100 to 60000; anything else is replaced by the
+	// default (1000). Read at start-up.
+	TrackerScrapePaceMs int `json:"tracker_scrape_pace_ms"`
 
 	// PlexPathMap maps a media server library path prefix to the path of the same
 	// files inside this container, for libraries whose files are Sonarr/Radarr-named
@@ -248,10 +278,15 @@ func LoadConfig() Config {
 		UnconfirmedReadMarginMB: 64,
 		WarmCatchupPerHour:      20,
 		WarmCatchupScope:        "all",
+		WarmupEvictionOrder:     "written",
 		PlaybackWebhookWarnDays: 7,
 
 		PlaybackKeepaliveMinutes:     15,
 		PlaybackKeepaliveMaxTorrents: 4,
+
+		TrackerScrapeHours:  24,
+		TrackerScrapeBatch:  100,
+		TrackerScrapePaceMs: 1000,
 
 		GoStormBaseURL: "http://127.0.0.1:8090",
 		MetricsPort:    9080,
@@ -447,6 +482,12 @@ func (c *Config) finalize() {
 
 	// Above ~100,000 days the protection time overflows a duration and would turn
 	// protection off by accident.
+	if c.WarmupEvictionOrder != "written" && c.WarmupEvictionOrder != "read" {
+		if c.WarmupEvictionOrder != "" {
+			log.Printf("[Config] WARNING: warmup_eviction_order %q is not \"written\" or \"read\"; using \"written\"", c.WarmupEvictionOrder)
+		}
+		c.WarmupEvictionOrder = "written"
+	}
 	if c.PlayedProtectionDays > 36500 {
 		log.Printf("[Config] WARNING: played_protection_days %d is absurd; using 0 (never expire)", c.PlayedProtectionDays)
 		c.PlayedProtectionDays = 0
@@ -474,6 +515,20 @@ func (c *Config) finalize() {
 	if c.PlaybackKeepaliveMaxTorrents < 1 {
 		log.Printf("[Config] WARNING: playback_keepalive_max_torrents %d is below 1; using 4", c.PlaybackKeepaliveMaxTorrents)
 		c.PlaybackKeepaliveMaxTorrents = 4
+	}
+
+	// 0 stays 0: the schedule is off, a manual pass still works.
+	if c.TrackerScrapeHours < 0 || c.TrackerScrapeHours > 8760 {
+		log.Printf("[Config] WARNING: tracker_scrape_hours %d is out of range; using 24", c.TrackerScrapeHours)
+		c.TrackerScrapeHours = 24
+	}
+	if c.TrackerScrapeBatch < 1 || c.TrackerScrapeBatch > 200 {
+		log.Printf("[Config] WARNING: tracker_scrape_batch %d is outside 1 to 200; using 100", c.TrackerScrapeBatch)
+		c.TrackerScrapeBatch = 100
+	}
+	if c.TrackerScrapePaceMs < 100 || c.TrackerScrapePaceMs > 60000 {
+		log.Printf("[Config] WARNING: tracker_scrape_pace_ms %d is outside 100 to 60000; using 1000", c.TrackerScrapePaceMs)
+		c.TrackerScrapePaceMs = 1000
 	}
 
 	// An entry whose prefix or target is not absolute cannot match a library path or

@@ -254,6 +254,9 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 					season: payload.Metadata.ParentIndex, episode: payload.Metadata.Index,
 				}, playedCandidates())
 				countConfirmedPlay(chosen.path, chosen.key, ok)
+				if ok && warmNext != nil {
+					go warmNext.onConfirmedPlay(chosen.key) // off the webhook's path: it lists the library
+				}
 			}
 			exactState.mu.Lock()
 			exactState.IsStopped = false
