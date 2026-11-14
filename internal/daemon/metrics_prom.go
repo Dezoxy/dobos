@@ -2,8 +2,11 @@ package daemon
 
 import (
 	"net/http"
+	"os"
+	"runtime"
 	"sort"
 
+	"flodni/internal/gostorm/native"
 	"flodni/internal/promtext"
 	"flodni/internal/warmup"
 )
@@ -120,12 +123,18 @@ func collectProm(w *promtext.Writer) {
 		"Dead-swarm verdicts by reason and source. Stays 0 when the state database is off.",
 		verdictSamples...)
 
+	collectEngineReadsProm(w)
+	collectProcessProm(w)
+	w.Gauge("flodni_sessions_open", "Sessions open now: the open list of /api/sessions.",
+		promSample(int64(openSessionCount())))
+
 	collectWarmupProm(w)
 	collectPlaybackProm(w)
 	collectReaderBudgetProm(w)
 	collectWebhookHealthProm(w)
 	collectReadabilityProm(w)
 	collectUnstoredProm(w)
+	collectSwarmProm(w)
 	collectReadAheadProm(w)
 	collectStubIndexProm(w)
 
@@ -278,4 +287,58 @@ func collectReadAheadProm(w *promtext.Writer) {
 	if b := gc(); b != nil {
 		w.Gauge("flodni_readahead_cache_budget_bytes", "Size budget of the read-ahead cache.", promSample(b.ReadAheadBudget))
 	}
+}
+
+// openSessionCount counts the sessions /api/sessions lists as open, without building
+// their records.
+func openSessionCount() int {
+	n := 0
+	sessions.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}
+
+// collectEngineReadsProm writes the engine's short-read counters. They are atomics
+// kept per process, so a scrape takes no engine lock.
+func collectEngineReadsProm(w *promtext.Writer) {
+	stream, fetch := native.ShortReadCounts()
+	w.Counter("flodni_engine_short_reads_total",
+		"Engine reads that ended short and were reported as success, by path: stream is the sequential reader, fetch the stateless block fetch behind the FUSE fallback.",
+		promSample(stream, lbl("path", "stream")),
+		promSample(fetch, lbl("path", "fetch")))
+	repaired, unfilled := native.ShortReadRepairCounts()
+	w.Counter("flodni_engine_short_read_repairs_total",
+		"Outcome of the stream reader's refill loop, per read that needed it: repaired after a reconnect, or unfilled and left a gap.",
+		promSample(repaired, lbl("result", "repaired")),
+		promSample(unfilled, lbl("result", "unfilled")))
+}
+
+// collectProcessProm writes the Go runtime and process gauges under the names the
+// standard Go and process collectors use, without importing a client library. The
+// process start time is flodni's own series above. ReadMemStats stops the world for
+// a moment; a scrape every few seconds does not notice.
+func collectProcessProm(w *promtext.Writer) {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	w.Gauge("go_goroutines", "Number of goroutines that currently exist.",
+		promSample(int64(runtime.NumGoroutine())))
+	w.Gauge("go_memstats_heap_inuse_bytes", "Bytes in in-use heap spans.", promSample(int64(m.HeapInuse)))
+	w.Gauge("go_memstats_sys_bytes", "Bytes obtained from the system by the Go runtime.", promSample(int64(m.Sys)))
+	w.Counter("go_gc_cycles_total", "Completed garbage collection cycles.", promSample(int64(m.NumGC)))
+	if n, ok := openFDs(); ok {
+		w.Gauge("process_open_fds", "Number of open file descriptors.", promSample(int64(n)))
+	}
+}
+
+// openFDs counts /proc/self/fd, minus the descriptor the listing itself holds. It
+// reports false where there is no /proc (anything but Linux), and the series is then
+// left out.
+func openFDs() (int, bool) {
+	ents, err := os.ReadDir("/proc/self/fd")
+	if err != nil || len(ents) == 0 {
+		return 0, false
+	}
+	return len(ents) - 1, true
 }

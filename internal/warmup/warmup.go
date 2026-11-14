@@ -846,13 +846,25 @@ func (d *DiskWarmupCache) writeHeadLocked(path string, off int64, data []byte) (
 	return
 }
 
+// filePath and tailPath keep every cache path inside d.dir: a hash is hex, and Base strips
+// any directory part a caller-supplied hash could carry ("../x" stays a name in d.dir).
+// A hash with a path element in it names no torrent: it maps to a name that cannot exist.
 func (d *DiskWarmupCache) filePath(hash string, fileID int) string {
-	return filepath.Join(d.dir, hash+"-"+strconv.Itoa(fileID)+warmupSuffix)
+	if strings.Contains(hash, "..") || strings.ContainsAny(hash, `/\`) {
+		hash = invalidHashName
+	}
+	return filepath.Join(d.dir, filepath.Base(hash+"-"+strconv.Itoa(fileID)+warmupSuffix))
 }
 
 func (d *DiskWarmupCache) tailPath(hash string, fileID int) string {
-	return filepath.Join(d.dir, hash+"-"+strconv.Itoa(fileID)+tailSuffix)
+	if strings.Contains(hash, "..") || strings.ContainsAny(hash, `/\`) {
+		hash = invalidHashName
+	}
+	return filepath.Join(d.dir, filepath.Base(hash+"-"+strconv.Itoa(fileID)+tailSuffix))
 }
+
+// invalidHashName replaces a hash carrying a path element; never a hex hash.
+const invalidHashName = "invalid-hash"
 
 // GetAvailableRange returns the contiguous bytes cached from offset 0. Callers treat the
 // result as coverage (pump start offset, warmup gates, ReadAt clamp), which holds only
@@ -887,9 +899,18 @@ func (d *DiskWarmupCache) GetAvailableRange(hash string, fileID int) int64 {
 		// Only the entry that was seen: a writer may have stored a newer one since.
 		if hadEntry {
 			d.sizeCache.CompareAndDelete(path, cached)
+			hadEntry = false // gone now: the stat below must not swap an entry that is not there
 		}
-		d.missing.Store(path, time.Now())
-		return 0
+		// A writer may create the file after the stat above and clear the negative cache
+		// before this entry lands, which would hide the new file for missingTTL. Record
+		// the miss first, then look again: either the writer's clear comes after this
+		// entry, or the second stat sees its file.
+		seen := time.Now()
+		d.missing.Store(path, seen)
+		if fi, err = os.Stat(path); err != nil {
+			return 0
+		}
+		d.missing.CompareAndDelete(path, seen)
 	}
 
 	if fi.Size() > FileSize+(16*1024*1024) {

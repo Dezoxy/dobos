@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"errors"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -50,9 +52,11 @@ type StartupCacheBuilder struct {
 	filesProcessed int
 	filesSkipped   int
 	errors         int
+	invalidStubs   int // stubs that parse but declare a size outside the valid range
 	startTime      time.Time
 	foundFiles     map[string]bool // V142: Track files for GC
 	foundHashes    map[string]bool // lower-case info hashes of every stub seen, for pruning
+	stubsSeen      int             // stubs noted, duplicates included: tells a directory that held none
 
 	// hasMetainfo says whether the engine stores the hash with its metainfo; a test
 	// swaps it.
@@ -78,20 +82,7 @@ func (b *StartupCacheBuilder) Start() {
 	b.logger.Printf("Starting cache pre-population from %s", b.sourcePath)
 
 	go func() {
-		// Process movies directory
-		walked := 0
-		moviesPath := filepath.Join(b.sourcePath, "movies")
-		if _, err := os.Stat(moviesPath); err == nil {
-			b.processDirectory(moviesPath, false) // Not recursive
-			walked++
-		}
-
-		// Process TV directory (recursive for seasons)
-		tvPath := filepath.Join(b.sourcePath, "tv")
-		if _, err := os.Stat(tvPath); err == nil {
-			b.processDirectory(tvPath, true) // Recursive
-			walked++
-		}
+		walked, whole := b.walkLibrary()
 
 		// Log final statistics
 		duration := time.Since(b.startTime)
@@ -99,18 +90,19 @@ func (b *StartupCacheBuilder) Start() {
 		processed := b.filesProcessed
 		skipped := b.filesSkipped
 		errors := b.errors
+		invalid := b.invalidStubs
 		b.mu.Unlock()
 
-		b.logger.Printf("Cache pre-population complete: %d processed, %d skipped, %d errors in %v",
-			processed, skipped, errors, duration)
+		b.logger.Printf("Cache pre-population complete: %d processed, %d skipped, %d invalid (size out of range, prunes still run), %d errors in %v",
+			processed, skipped, invalid, errors, duration)
 
 		// Log cache statistics
 		stats := b.metaCache.Stats()
 		b.logger.Printf("Cache after startup: %d entries, %.2f MB used of %.2f MB capacity",
 			stats.Entries, float64(stats.Size)/(1024*1024), float64(stats.Capacity)/(1024*1024))
 
-		b.pruneReadability(walked == 2)
-		b.pruneFileState(walked == 2)
+		b.pruneReadability(whole)
+		b.pruneFileState(whole)
 		b.warnUnstored()
 
 		// V133: Save inode map after startup scan completes
@@ -125,8 +117,38 @@ func (b *StartupCacheBuilder) Start() {
 		}
 
 		// V142: Inode GC - Remove ghost entries (files that no longer exist)
-		b.pruneInodes(walked == 2)
+		b.pruneInodes(walked)
 	}()
+}
+
+// walkLibrary walks movies, then tv. It reports whether both exist (walked) and
+// whether each also held at least one stub (whole). A directory that is present and
+// empty (a separate mount that did not come up) must not let the other directory's
+// stubs stand for the whole library: the prunes would delete the rows of every
+// torrent filed in the empty one.
+func (b *StartupCacheBuilder) walkLibrary() (walked, whole bool) {
+	walked, whole = true, true
+	for _, d := range []struct {
+		name      string
+		recursive bool // tv is recursive for seasons
+	}{{"movies", false}, {"tv", true}} {
+		path := filepath.Join(b.sourcePath, d.name)
+		if _, err := os.Stat(path); err != nil {
+			walked, whole = false, false
+			continue
+		}
+		b.mu.Lock()
+		before := b.stubsSeen
+		b.mu.Unlock()
+		b.processDirectory(path, d.recursive)
+		b.mu.Lock()
+		if b.stubsSeen == before {
+			whole = false
+			b.logger.Printf("Startup cache: %s holds no stubs", d.name)
+		}
+		b.mu.Unlock()
+	}
+	return walked, whole
 }
 
 // processDirectory walks directory and processes all .mkv files
@@ -200,6 +222,10 @@ func (b *StartupCacheBuilder) processDirectory(dirPath string, recursive bool) {
 func (b *StartupCacheBuilder) processFile(path string) {
 	// Read metadata from file
 	fileMeta, err := vfs.ReadMetadataFromFile(path)
+	if errors.Is(err, vfs.ErrInvalidSize) {
+		b.noteInvalidStub(path, err)
+		return
+	}
 	if err != nil {
 		b.logger.Printf("Startup cache: error reading metadata for %s: %v", path, err)
 		b.incrementErrors()
@@ -230,6 +256,23 @@ func (b *StartupCacheBuilder) processFile(path string) {
 	b.incrementProcessed(path)
 }
 
+// noteInvalidStub counts a stub that parses but declares a size outside the valid
+// range. It is a known fault of that one file, not a walk error: it is logged with its
+// path and the prunes still run. The stub is still in the library, so its inode entry
+// and its hash are kept; they come from a second parse that accepts any size.
+func (b *StartupCacheBuilder) noteInvalidStub(path string, cause error) {
+	b.logger.Printf("Startup cache: invalid stub %s: %v", path, cause)
+	any := vfs.SizeLimits{Min: math.MinInt64, Max: math.MaxInt64}
+	meta, err := vfs.ReadMetadataFromFileWithLimits(path, any)
+	b.mu.Lock()
+	b.invalidStubs++
+	b.foundFiles[path] = true
+	b.mu.Unlock()
+	if err == nil {
+		b.noteHash(meta.URL)
+	}
+}
+
 // noteHash records the info hash of a stub's stream URL as part of the library.
 func (b *StartupCacheBuilder) noteHash(url string) {
 	hash, _ := vfs.ExtractHashAndIndex(url)
@@ -238,6 +281,7 @@ func (b *StartupCacheBuilder) noteHash(url string) {
 	}
 	b.mu.Lock()
 	b.foundHashes[hash] = true
+	b.stubsSeen++
 	b.mu.Unlock()
 }
 
@@ -248,11 +292,26 @@ func (b *StartupCacheBuilder) libraryIfWhole(what string, complete bool) (map[st
 	b.mu.Lock()
 	errs, keep := b.errors, b.foundHashes
 	b.mu.Unlock()
-	if !complete || errs > 0 || len(keep) == 0 {
-		b.logger.Printf("%s prune skipped: complete=%v errors=%d stubs=%d", what, complete, errs, len(keep))
+	if !pruneGuard(b.logger, what, complete, errs, len(keep), nil) {
 		return nil, false
 	}
 	return keep, true
+}
+
+// pruneGuard is the "the walk was whole" test every prune shares: the walk saw both
+// directories (complete), met no error and found at least one stub. It logs a skip;
+// with a non-nil skipped it logs once per spell of skips, not once per call.
+func pruneGuard(logger *log.Logger, what string, complete bool, errs, stubs int, skipped *atomic.Bool) bool {
+	if complete && errs == 0 && stubs > 0 {
+		if skipped != nil {
+			skipped.Store(false)
+		}
+		return true
+	}
+	if skipped == nil || !skipped.Swap(true) {
+		logger.Printf("%s prune skipped: complete=%v errors=%d stubs=%d", what, complete, errs, stubs)
+	}
+	return false
 }
 
 // pruneInodes drops the inode entries of files the walk did not find, under the same
@@ -266,8 +325,7 @@ func (b *StartupCacheBuilder) pruneInodes(complete bool) {
 	errs, found := b.errors, b.foundFiles
 	n := len(found)
 	b.mu.Unlock()
-	if !complete || errs > 0 || n == 0 {
-		b.logger.Printf("Inode prune skipped: complete=%v errors=%d files=%d", complete, errs, n)
+	if !pruneGuard(b.logger, "Inode", complete, errs, n, nil) {
 		return
 	}
 	if pruned := globalInodeMap.PruneMissing(found); pruned > 0 {
