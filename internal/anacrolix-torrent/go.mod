@@ -3,7 +3,7 @@ module github.com/anacrolix/torrent
 go 1.26.0
 
 require (
-	github.com/RoaringBitmap/roaring v1.9.4
+	github.com/RoaringBitmap/roaring/v2 v2.30.0
 	github.com/RoaringBitmap/roaring/v2 v2.30.0
 	github.com/ajwerner/btree v0.3.0
 	github.com/alexflint/go-arg v1.6.1
