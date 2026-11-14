@@ -176,7 +176,7 @@ func TestWakeOfAStoredPrivateTorrentKeepsOnlyItsOwnTrackers(t *testing.T) {
 // is treated the same way; a public torrent keeps its stored trackers.
 func TestScrapeTargetsKeepPrivateTorrentsOnTheirOwnTrackers(t *testing.T) {
 	yes, no := true, false
-	own := "http://seeder.example/KEY123456/announce?auth=SECRET9999"
+	own := "http://seeder.example/test-key-not-real/announce?auth=test-auth-not-real"
 	public := []string{"udp://public.example:1337/announce", "udp://file.example:80/announce"}
 	def := func() []string { return public[:1] }
 	file := func() []string { return public[1:] }

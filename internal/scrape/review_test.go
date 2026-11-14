@@ -194,7 +194,7 @@ func TestCountsAreCapped(t *testing.T) {
 }
 
 func TestRedactionIsCaseInsensitiveAndCoversTruncatedEchoes(t *testing.T) {
-	const pk = "AbCdEf0123456789XyZ"
+	const pk = "Test-PassKey-Not-Real"
 	ann := "http://tracker.example.org/" + pk + "/announce?auth=" + pk + "extra"
 	sec := secretsOf(ann)
 	for _, in := range []string{
@@ -301,13 +301,13 @@ func TestStartPassChecksBeforeLoadingAndWaitsForReady(t *testing.T) {
 }
 
 func TestRedactionSurvivesOddUnicode(t *testing.T) {
-	const pk = "PassKey0123456789"
+	const pk = "test-passkey-not-real"
 	sec := secretsOf("http://tracker.example.org/" + pk + "/announce")
 	// U+023A and U+2C65 change length when lowered; U+212A (Kelvin) lowers to 'k'
 	odd := "\u023a\u2c65\u212a\xff\xfe"
 	for _, in := range []string{
 		odd + pk + odd,
-		"Pass\u212aey0123456789",
+		"test-pass\u212aey-not-real",
 		"\u023a\u023a\u023a\u023a" + strings.ToUpper(pk) + "\u023a",
 		pk[:5] + odd + pk[5:],
 		strings.Repeat(odd, 200) + pk,
@@ -329,7 +329,7 @@ func TestRedactionSurvivesOddUnicode(t *testing.T) {
 }
 
 func FuzzClean(f *testing.F) {
-	const pk = "PassKey0123456789"
+	const pk = "test-passkey-not-real"
 	for _, s := range []string{"", pk, strings.ToUpper(pk), "\u023a" + pk, "\u212aey", "\xff\xfe", pk[:9], "a" + pk + "b" + pk} {
 		f.Add(s)
 	}

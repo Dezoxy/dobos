@@ -501,8 +501,9 @@ against a real tracker.
   `finished_at` of the last finished pass over all torrents (null before the
   first; a one-torrent pass or one cut short by a shutdown does not count).
   If one tracker of a torrent answered and another failed, the answer is used
-  and there is no error; `failed` says so. A torrent a pass did not reach (a one-torrent pass, a
-  shutdown, a torrent added during the pass, no scrapeable tracker) keeps its
+  and there is no error; `failed` says so. A torrent a pass did not reach (a
+  one-torrent pass, a shutdown, a torrent added during the pass, no scrapeable
+  tracker) keeps its
   previous entry with its old `run_id`; nothing writes an empty or zero entry.
   Entries of torrents that are no longer stored are dropped at the next full
   pass.

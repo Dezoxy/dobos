@@ -465,8 +465,8 @@ func TestPrivateTargetsOnlyReachTheirOwnTrackers(t *testing.T) {
 }
 
 func TestPasskeyNeverLeaks(t *testing.T) {
-	const passkey = "PASSKEYabcdef0123456789"
-	const auth = "SECRETtoken99887766"
+	const passkey = "test-passkey-not-real"
+	const auth = "test-token-not-real"
 	a, b, c := h20(1), h20(2), h20(3)
 	echo := newFakeHTTP(t, nil) // echoes the secrets in its failure reason
 	echo.answer = func(w http.ResponseWriter, r *http.Request, _ [][20]byte) {

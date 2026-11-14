@@ -361,8 +361,8 @@ func TestScrapeSettingsReachTheScraper(t *testing.T) {
 // An announce URL carries a passkey. Render every log line and the health JSON for torrents
 // whose trackers echo it, hang, or answer, and the passkey appears nowhere.
 func TestScrapePasskeyNeverLeaks(t *testing.T) {
-	const passkey = "PASSKEYd34db33f0123456789"
-	const auth = "AUTHtoken776655"
+	const passkey = "test-passkey-not-real"
+	const auth = "test-token-not-real"
 	a, b, c := hashOf(1), hashOf(2), hashOf(3)
 	echo := newScrapeTracker(t, nil)
 	echo.failure = "unknown passkey " + passkey + " auth " + auth
