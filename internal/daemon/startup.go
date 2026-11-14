@@ -1,7 +1,9 @@
 package daemon
 
 import (
+	"errors"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -50,6 +52,7 @@ type StartupCacheBuilder struct {
 	filesProcessed int
 	filesSkipped   int
 	errors         int
+	invalidStubs   int // stubs that parse but declare a size outside the valid range
 	startTime      time.Time
 	foundFiles     map[string]bool // V142: Track files for GC
 	foundHashes    map[string]bool // lower-case info hashes of every stub seen, for pruning
@@ -99,10 +102,11 @@ func (b *StartupCacheBuilder) Start() {
 		processed := b.filesProcessed
 		skipped := b.filesSkipped
 		errors := b.errors
+		invalid := b.invalidStubs
 		b.mu.Unlock()
 
-		b.logger.Printf("Cache pre-population complete: %d processed, %d skipped, %d errors in %v",
-			processed, skipped, errors, duration)
+		b.logger.Printf("Cache pre-population complete: %d processed, %d skipped, %d invalid (size out of range, prunes still run), %d errors in %v",
+			processed, skipped, invalid, errors, duration)
 
 		// Log cache statistics
 		stats := b.metaCache.Stats()
@@ -200,6 +204,10 @@ func (b *StartupCacheBuilder) processDirectory(dirPath string, recursive bool) {
 func (b *StartupCacheBuilder) processFile(path string) {
 	// Read metadata from file
 	fileMeta, err := vfs.ReadMetadataFromFile(path)
+	if errors.Is(err, vfs.ErrInvalidSize) {
+		b.noteInvalidStub(path, err)
+		return
+	}
 	if err != nil {
 		b.logger.Printf("Startup cache: error reading metadata for %s: %v", path, err)
 		b.incrementErrors()
@@ -230,6 +238,23 @@ func (b *StartupCacheBuilder) processFile(path string) {
 	b.incrementProcessed(path)
 }
 
+// noteInvalidStub counts a stub that parses but declares a size outside the valid
+// range. It is a known fault of that one file, not a walk error: it is logged with its
+// path and the prunes still run. The stub is still in the library, so its inode entry
+// and its hash are kept; they come from a second parse that accepts any size.
+func (b *StartupCacheBuilder) noteInvalidStub(path string, cause error) {
+	b.logger.Printf("Startup cache: invalid stub %s: %v", path, cause)
+	any := vfs.SizeLimits{Min: math.MinInt64, Max: math.MaxInt64}
+	meta, err := vfs.ReadMetadataFromFileWithLimits(path, any)
+	b.mu.Lock()
+	b.invalidStubs++
+	b.foundFiles[path] = true
+	b.mu.Unlock()
+	if err == nil {
+		b.noteHash(meta.URL)
+	}
+}
+
 // noteHash records the info hash of a stub's stream URL as part of the library.
 func (b *StartupCacheBuilder) noteHash(url string) {
 	hash, _ := vfs.ExtractHashAndIndex(url)
@@ -248,11 +273,26 @@ func (b *StartupCacheBuilder) libraryIfWhole(what string, complete bool) (map[st
 	b.mu.Lock()
 	errs, keep := b.errors, b.foundHashes
 	b.mu.Unlock()
-	if !complete || errs > 0 || len(keep) == 0 {
-		b.logger.Printf("%s prune skipped: complete=%v errors=%d stubs=%d", what, complete, errs, len(keep))
+	if !pruneGuard(b.logger, what, complete, errs, len(keep), nil) {
 		return nil, false
 	}
 	return keep, true
+}
+
+// pruneGuard is the "the walk was whole" test every prune shares: the walk saw both
+// directories (complete), met no error and found at least one stub. It logs a skip;
+// with a non-nil skipped it logs once per spell of skips, not once per call.
+func pruneGuard(logger *log.Logger, what string, complete bool, errs, stubs int, skipped *atomic.Bool) bool {
+	if complete && errs == 0 && stubs > 0 {
+		if skipped != nil {
+			skipped.Store(false)
+		}
+		return true
+	}
+	if skipped == nil || !skipped.Swap(true) {
+		logger.Printf("%s prune skipped: complete=%v errors=%d stubs=%d", what, complete, errs, stubs)
+	}
+	return false
 }
 
 // pruneInodes drops the inode entries of files the walk did not find, under the same
@@ -266,8 +306,7 @@ func (b *StartupCacheBuilder) pruneInodes(complete bool) {
 	errs, found := b.errors, b.foundFiles
 	n := len(found)
 	b.mu.Unlock()
-	if !complete || errs > 0 || n == 0 {
-		b.logger.Printf("Inode prune skipped: complete=%v errors=%d files=%d", complete, errs, n)
+	if !pruneGuard(b.logger, "Inode", complete, errs, n, nil) {
 		return
 	}
 	if pruned := globalInodeMap.PruneMissing(found); pruned > 0 {

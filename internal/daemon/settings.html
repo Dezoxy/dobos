@@ -605,9 +605,7 @@
                                 <label>Media Server URL</label>
                                 <input type="text" name="plex_url" data-nested="plex.url"
                                     placeholder="http://192.168.1.10:32400">
-                                <div class="hint">The Media Server card reports Plex as verified rather than merely discovered. A LAN broadcast finds servers on
-                                    the same network, but not one running in a Docker bridge network, so setting this is
-                                    the reliable way.</div>
+                                <div class="hint">Base URL of the Plex server. Used only for the library refresh after a library add; nothing is discovered automatically.</div>
                             </div>
                             <div class="form-group" style="grid-column: 1 / -1;">
                                 <label>Media Server Token</label>

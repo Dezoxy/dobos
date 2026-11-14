@@ -4,7 +4,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"flodni/internal/cache"
@@ -41,6 +43,10 @@ type CleanupManager struct {
 	stopped bool
 	stopCh  chan struct{}
 	logger  *log.Logger
+
+	// inodePruneSkipped is set while the periodic inode prune is being skipped, so the
+	// skip is logged once per spell and not on every cycle.
+	inodePruneSkipped atomic.Bool
 }
 
 // offsetEntry tracks read position and timestamp for sequential detection
@@ -164,48 +170,7 @@ func (cm *CleanupManager) runCleanup() {
 	// are always preserved. Deleted MKV entries are pruned when gone from disk.
 	// Active torrent virtual paths are added on top.
 	// Safety: skip pruning if validFiles is empty (mount unavailable).
-	if globalInodeMap != nil {
-		validFiles := make(map[string]bool)
-
-		// Primary: all physical files AND directories on disk (including virtual MKV stubs).
-		// Directories must be included — their inodes are in the InodeMap too, and pruning
-		// them causes FUSE to regenerate them on every Plex/Samba directory traversal.
-		if physicalSourcePath != "" {
-			_ = filepath.WalkDir(physicalSourcePath, func(path string, d os.DirEntry, err error) error {
-				if err == nil {
-					validFiles[path] = true
-				}
-				return nil
-			})
-		}
-
-		// Secondary: virtual paths for active torrents (served by FUSE, not on disk).
-		// ListActiveTorrent() returns only in-memory torrents — no BoltDB deserialization.
-		// ListTorrent() would unmarshal all ~3000+ DB entries every cleanup cycle → OOM.
-		torrents := torr.ListActiveTorrent()
-		for _, t := range torrents {
-			if t == nil {
-				continue
-			}
-			for _, f := range t.Files() {
-				validFiles[filepath.Join(physicalSourcePath, f.Path())] = true
-			}
-		}
-
-		// Protezione streaming: i file attualmente in lettura non devono perdere
-		// la loro inode entry anche se WalkDir non li vede (es. rescan Plex concorrente).
-		for _, openPath := range globalOpenTracker.OpenPaths() {
-			validFiles[openPath] = true
-		}
-
-		// Prune ghost entries. Safety: skip if validFiles is empty (mount failure).
-		if len(validFiles) > 0 {
-			pruned := globalInodeMap.PruneMissing(validFiles)
-			if pruned > 0 {
-				stats.InodeMapPruned = pruned
-			}
-		}
-	}
+	stats.InodeMapPruned = cm.pruneInodes(physicalSourcePath)
 
 	// 6. V170-LeakFix: Cleanup PlaybackRegistry
 	// key: path(string), value: *PlaybackState
@@ -324,6 +289,87 @@ func (cm *CleanupManager) runCleanup() {
 }
 
 // --- Deleted Hashes Management ---
+
+// pruneInodes drops the inode entries of files the walk of root did not find and
+// returns how many it dropped.
+func (cm *CleanupManager) pruneInodes(root string) int {
+	if globalInodeMap == nil {
+		return 0
+	}
+	validFiles := make(map[string]bool)
+
+	// Primary: all physical files AND directories on disk (including virtual MKV stubs).
+	// Directories must be included — their inodes are in the InodeMap too, and pruning
+	// them causes FUSE to regenerate them on every Plex/Samba directory traversal.
+	walk := walkLibrary(root, validFiles)
+
+	// Secondary: virtual paths for active torrents (served by FUSE, not on disk).
+	// ListActiveTorrent() returns only in-memory torrents — no BoltDB deserialization.
+	// ListTorrent() would unmarshal all ~3000+ DB entries every cleanup cycle → OOM.
+	for _, t := range torr.ListActiveTorrent() {
+		if t == nil {
+			continue
+		}
+		for _, f := range t.Files() {
+			validFiles[filepath.Join(root, f.Path())] = true
+		}
+	}
+
+	// Protezione streaming: i file attualmente in lettura non devono perdere
+	// la loro inode entry anche se WalkDir non li vede (es. rescan Plex concorrente).
+	for _, openPath := range globalOpenTracker.OpenPaths() {
+		validFiles[openPath] = true
+	}
+
+	// The walk adds root itself, so an empty or unmounted library still leaves a
+	// non-empty set: the same guard as the start-up prune decides instead.
+	if !pruneGuard(cm.logger, "Inode", walk.complete, walk.errors, walk.stubs, &cm.inodePruneSkipped) {
+		return 0
+	}
+	return globalInodeMap.PruneMissing(validFiles)
+}
+
+// libraryWalk is what walkLibrary saw: both movies and tv present, the errors met and
+// the stubs found under them.
+type libraryWalk struct {
+	complete bool
+	errors   int
+	stubs    int
+}
+
+// walkLibrary adds every path under root, files and directories, to valid.
+func walkLibrary(root string, valid map[string]bool) libraryWalk {
+	var w libraryWalk
+	if root == "" {
+		return w
+	}
+	movies, tv := filepath.Join(root, "movies"), filepath.Join(root, "tv")
+	w.complete = isDir(movies) && isDir(tv)
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			w.errors++
+			return nil
+		}
+		valid[path] = true
+		if !d.IsDir() && filepath.Ext(path) == ".mkv" && (underDir(path, movies) || underDir(path, tv)) {
+			w.stubs++
+		}
+		return nil
+	})
+	if err != nil {
+		w.errors++
+	}
+	return w
+}
+
+func isDir(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
+}
+
+func underDir(path, dir string) bool {
+	return strings.HasPrefix(path, dir+string(filepath.Separator))
+}
 
 // --- File Offset Management ---
 
