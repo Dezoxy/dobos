@@ -805,13 +805,23 @@ func (d *DiskWarmupCache) writeHeadLocked(path string, off int64, data []byte) (
 
 // filePath and tailPath keep every cache path inside d.dir: a hash is hex, and Base strips
 // any directory part a caller-supplied hash could carry ("../x" stays a name in d.dir).
+// A hash with a path element in it names no torrent: it maps to a name that cannot exist.
 func (d *DiskWarmupCache) filePath(hash string, fileID int) string {
+	if strings.Contains(hash, "..") || strings.ContainsAny(hash, `/\`) {
+		hash = invalidHashName
+	}
 	return filepath.Join(d.dir, filepath.Base(hash+"-"+strconv.Itoa(fileID)+warmupSuffix))
 }
 
 func (d *DiskWarmupCache) tailPath(hash string, fileID int) string {
+	if strings.Contains(hash, "..") || strings.ContainsAny(hash, `/\`) {
+		hash = invalidHashName
+	}
 	return filepath.Join(d.dir, filepath.Base(hash+"-"+strconv.Itoa(fileID)+tailSuffix))
 }
+
+// invalidHashName replaces a hash carrying a path element; never a hex hash.
+const invalidHashName = "invalid-hash"
 
 // GetAvailableRange returns the contiguous bytes cached from offset 0. Callers treat the
 // result as coverage (pump start offset, warmup gates, ReadAt clamp), which holds only
