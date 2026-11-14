@@ -315,6 +315,40 @@ type DiskWarmupCache struct {
 // InitDiskWarmup creates the global warmup cache if UseDisk is enabled.
 var logf = log.New(os.Stdout, "[DiskWarmup] ", log.LstdFlags)
 
+// Start-up log lines operators grep for; tests pin them.
+const (
+	initialSizeFmt  = "[DiskWarmup] Initial size: %.1fGB (dropped %d stale cache files, %d residues)"
+	activeFmt       = "[DiskWarmup] Active — dir=%s quota=%dGB head=%dMB tail=%dMB persistent=%v"
+	denseCheckFmt   = "[DiskWarmup] WARNING: %s was missing: checked %d heads for holes, dropped %d (the one-shot density check; never delete that file by hand)"
+	corruptCacheFmt = "[DiskWarmup] CORRUPT CACHE detected (Size: %.1fMB > 128MB) for %s. Removing."
+)
+
+// StartInfo is what InitDiskWarmup found at start, for the daemon's startup report.
+type StartInfo struct {
+	Active           bool
+	Dir              string
+	InitialSizeBytes int64
+	Dropped          int
+	Residues         int
+	HeadsChecked     int // heads the one-shot density check looked at (0: the check did not run)
+	HeadsHoley       int
+}
+
+var startInfo atomic.Pointer[StartInfo]
+
+// Started returns what InitDiskWarmup found; the zero value (not active) when it did
+// not start a cache.
+func Started() StartInfo {
+	if p := startInfo.Load(); p != nil {
+		return *p
+	}
+	return StartInfo{}
+}
+
+// CorruptRemoved counts cache files removed as corrupt (oversized) since the process
+// started.
+var CorruptRemoved atomic.Int64
+
 // removeFile deletes a cache or coverage file. A file that stays behind is no
 // longer counted by the size accounting, so a failure is logged.
 func removeFile(path string) {
@@ -399,6 +433,7 @@ func InitDiskWarmup(opts Options) {
 		logf.Printf("[DiskWarmup] WARNING: warmup_dir is not a separate mount (%s shares its parent's filesystem): fine for a plain directory, but an unmounted cache disk looks the same", dir)
 	}
 
+	var info StartInfo
 	DiskWarmup = &DiskWarmupCache{
 		dir:     dir,
 		writeCh: make(chan warmupWrite, 32),
@@ -426,13 +461,13 @@ func InitDiskWarmup(opts Options) {
 		logf.Printf("[DiskWarmup] WARNING: start-up walk of %s failed: %v: the cache total starts at 0", dir, err)
 	} else {
 		atomic.StoreInt64(&DiskWarmup.totalSize, total)
-		logf.Printf("[DiskWarmup] Initial size: %.1fGB (dropped %d stale cache files, %d residues)", float64(total)/(1<<30), dropped, residues)
+		logf.Printf(initialSizeFmt, float64(total)/(1<<30), dropped, residues)
+		info.InitialSizeBytes, info.Dropped, info.Residues = total, dropped, residues
 		if checkHeads {
 			// A directory with no head in it (a fresh disk's lost+found) has nothing to
 			// warn about.
 			if DiskWarmup.headsChecked > 0 {
-				logf.Printf("[DiskWarmup] WARNING: %s was missing: checked %d heads for holes, dropped %d (the one-shot density check; never delete that file by hand)",
-					denseMarker, DiskWarmup.headsChecked, DiskWarmup.headsHoley)
+				logf.Printf(denseCheckFmt, denseMarker, DiskWarmup.headsChecked, DiskWarmup.headsHoley)
 			}
 			writeMarker(migrated)
 		}
@@ -441,8 +476,10 @@ func InitDiskWarmup(opts Options) {
 	go DiskWarmup.writeWorker()
 	go DiskWarmup.handleReaper()
 
-	logf.Printf("[DiskWarmup] Active — dir=%s quota=%dGB head=%dMB tail=%dMB persistent=%v",
-		dir, opts.QuotaGB, FileSize>>20, TailWarmupSize>>20, persistTails)
+	logf.Printf(activeFmt, dir, opts.QuotaGB, FileSize>>20, TailWarmupSize>>20, persistTails)
+	info.Active, info.Dir = true, dir
+	info.HeadsChecked, info.HeadsHoley = DiskWarmup.headsChecked, DiskWarmup.headsHoley
+	startInfo.Store(&info)
 }
 
 // scanExisting walks the cache at startup. A tail file stays only when persistTails is
@@ -850,7 +887,8 @@ func (d *DiskWarmupCache) GetAvailableRange(hash string, fileID int) int64 {
 	}
 
 	if fi.Size() > FileSize+(16*1024*1024) {
-		logf.Printf("[DiskWarmup] CORRUPT CACHE detected (Size: %.1fMB > 128MB) for %s. Removing.", float64(fi.Size())/(1<<20), hash[:8])
+		CorruptRemoved.Add(1)
+		logf.Printf(corruptCacheFmt, float64(fi.Size())/(1<<20), hash[:8])
 		d.closeHandle(path)
 		d.sizeCache.Delete(path)
 		removeFile(path)

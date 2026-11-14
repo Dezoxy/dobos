@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"math"
 	"os"
@@ -18,6 +19,9 @@ import (
 	"flodni/internal/gostorm/settings"
 	"flodni/internal/vfs"
 )
+
+// ghostInodesFmt is the startup GC line operators grep for.
+const ghostInodesFmt = "Startup GC: Pruned %d ghost inodes"
 
 // unstoredLogHashes is how many hashes the startup warning names.
 const unstoredLogHashes = 5
@@ -60,6 +64,18 @@ type StartupCacheBuilder struct {
 	// hasMetainfo says whether the engine stores the hash with its metainfo; a test
 	// swaps it.
 	hasMetainfo func(hash string) bool
+
+	// onDone gets the walk's outcome once the prunes have run; nil in tests that do not
+	// need it.
+	onDone func(scanResult)
+
+	// What the prunes and the unstored count left behind (guarded by mu).
+	readability pruneResult
+	fileState   pruneResult
+	inodes      pruneResult
+	unstoredRan bool
+	unstoredN   int
+	unstoredOf  int
 }
 
 // NewStartupCacheBuilder creates a new startup cache builder
@@ -130,7 +146,22 @@ func (b *StartupCacheBuilder) Start() {
 
 		// V142: Inode GC - Remove ghost entries (files that no longer exist)
 		b.pruneInodes(walked == 2)
+
+		if b.onDone != nil {
+			b.onDone(b.result())
+		}
 	}()
+}
+
+// result snapshots what the walk and its prunes found.
+func (b *StartupCacheBuilder) result() scanResult {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return scanResult{
+		invalidStubs: b.invalidStubs,
+		unstoredRan:  b.unstoredRan, unstoredN: b.unstoredN, unstoredOf: b.unstoredOf,
+		readability: b.readability, fileState: b.fileState, inodes: b.inodes,
+	}
 }
 
 // processDirectory walks directory and processes all .mkv files
@@ -269,14 +300,14 @@ func (b *StartupCacheBuilder) noteHash(url string) {
 // libraryIfWhole returns the hashes of the stubs the walk found, only when the walk saw
 // the library whole: a missing source directory, any walk error or an empty result
 // means it did not, and an unmounted library must not wipe a table.
-func (b *StartupCacheBuilder) libraryIfWhole(what string, complete bool) (map[string]bool, bool) {
+func (b *StartupCacheBuilder) libraryIfWhole(what string, complete bool) (map[string]bool, pruneResult, bool) {
 	b.mu.Lock()
 	errs, keep := b.errors, b.foundHashes
 	b.mu.Unlock()
 	if !pruneGuard(b.logger, what, complete, errs, len(keep), nil) {
-		return nil, false
+		return nil, pruneResult{Status: pruneSkipped, Reason: pruneReason(complete, errs, len(keep)), guarded: true}, false
 	}
-	return keep, true
+	return keep, pruneResult{}, true
 }
 
 // pruneGuard is the "the walk was whole" test every prune shares: the walk saw both
@@ -290,64 +321,94 @@ func pruneGuard(logger *log.Logger, what string, complete bool, errs, stubs int,
 		return true
 	}
 	if skipped == nil || !skipped.Swap(true) {
-		logger.Printf("%s prune skipped: complete=%v errors=%d stubs=%d", what, complete, errs, stubs)
+		logger.Printf("%s prune skipped: %s", what, pruneReason(complete, errs, stubs))
 	}
 	return false
+}
+
+// pruneReason is the part of the "prune skipped" line after the colon, and the reason
+// the startup report carries.
+func pruneReason(complete bool, errs, stubs int) string {
+	return fmt.Sprintf("complete=%v errors=%d stubs=%d", complete, errs, stubs)
 }
 
 // pruneInodes drops the inode entries of files the walk did not find, under the same
 // guard as the other prunes: a wrong or unmounted source path must not empty the file
 // rows.
 func (b *StartupCacheBuilder) pruneInodes(complete bool) {
+	res := b.runPruneInodes(complete)
+	b.mu.Lock()
+	b.inodes = res
+	b.mu.Unlock()
+}
+
+func (b *StartupCacheBuilder) runPruneInodes(complete bool) pruneResult {
 	if globalInodeMap == nil {
-		return
+		return pruneResult{Status: pruneSkipped, Reason: "inode map not initialised"}
 	}
 	b.mu.Lock()
 	errs, found := b.errors, b.foundFiles
 	n := len(found)
 	b.mu.Unlock()
 	if !pruneGuard(b.logger, "Inode", complete, errs, n, nil) {
-		return
+		return pruneResult{Status: pruneSkipped, Reason: pruneReason(complete, errs, n), guarded: true}
 	}
-	if pruned := globalInodeMap.PruneMissing(found); pruned > 0 {
-		b.logger.Printf("Startup GC: Pruned %d ghost inodes", pruned)
+	pruned := globalInodeMap.PruneMissing(found)
+	if pruned > 0 {
+		b.logger.Printf(ghostInodesFmt, pruned)
 	}
+	return pruneResult{Status: pruneRan, RowsPruned: pruned}
 }
 
 // pruneReadability drops readability rows of torrents that left the library. It runs
 // only after a complete walk. Rows touched since the process started are kept.
 func (b *StartupCacheBuilder) pruneReadability(complete bool) {
+	res := b.runPruneReadability(complete)
+	b.mu.Lock()
+	b.readability = res
+	b.mu.Unlock()
+}
+
+func (b *StartupCacheBuilder) runPruneReadability(complete bool) pruneResult {
 	if stateDB == nil {
-		return
+		return pruneResult{Status: pruneSkipped, Reason: "state database off"}
 	}
-	keep, ok := b.libraryIfWhole("Readability", complete)
+	keep, skipped, ok := b.libraryIfWhole("Readability", complete)
 	if !ok {
-		return
+		return skipped
 	}
 	n, err := stateDB.PruneReadability(keep, b.startTime)
 	if err != nil {
 		b.logger.Printf("WARNING: readability prune: %v", err)
-		return
+		return pruneResult{Status: pruneFailed, Reason: err.Error()}
 	}
 	if n > 0 {
 		b.logger.Printf("Readability prune: removed %d records of torrents no longer in the library", n)
 	}
+	return pruneResult{Status: pruneRan, RowsPruned: n}
 }
 
 // pruneFileState drops the played and evicted marks of torrents that left the library,
 // under the same guard as pruneReadability.
 func (b *StartupCacheBuilder) pruneFileState(complete bool) {
+	res := b.runPruneFileState(complete)
+	b.mu.Lock()
+	b.fileState = res
+	b.mu.Unlock()
+}
+
+func (b *StartupCacheBuilder) runPruneFileState(complete bool) pruneResult {
 	if stateDB == nil {
-		return
+		return pruneResult{Status: pruneSkipped, Reason: "state database off"}
 	}
-	keep, ok := b.libraryIfWhole("File state", complete)
+	keep, skipped, ok := b.libraryIfWhole("File state", complete)
 	if !ok {
-		return
+		return skipped
 	}
 	dropped, err := stateDB.PruneFileStates(keep, b.startTime)
 	if err != nil {
 		b.logger.Printf("WARNING: file state prune: %v", err)
-		return
+		return pruneResult{Status: pruneFailed, Reason: err.Error()}
 	}
 	for _, h := range dropped {
 		fileStates.ForgetMemory(h)
@@ -355,6 +416,7 @@ func (b *StartupCacheBuilder) pruneFileState(complete bool) {
 	if len(dropped) > 0 {
 		b.logger.Printf("File state prune: removed the marks of %d torrents no longer in the library", len(dropped))
 	}
+	return pruneResult{Status: pruneRan, RowsPruned: len(dropped)}
 }
 
 // warnUnstored counts the library torrents the engine stores no metainfo for, logs a
@@ -382,6 +444,9 @@ func (b *StartupCacheBuilder) warnUnstored() {
 	}
 	n := len(missing)
 	libraryUnstored.Store(&n)
+	b.mu.Lock()
+	b.unstoredRan, b.unstoredN, b.unstoredOf = true, n, len(hashes)
+	b.mu.Unlock()
 	if n == 0 {
 		b.logger.Printf("Library torrents with no stored engine record with metainfo: 0 of %d", len(hashes))
 		return

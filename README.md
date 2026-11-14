@@ -124,6 +124,40 @@ it never changes `status` or the HTTP code, so a deployment without a play
 webhook stays healthy. The array is computed from memory, without a check.
 See "Play webhook" below for what raises it.
 
+## Startup report
+
+Once the FUSE mount is up and the startup walk with its prunes has finished, the
+daemon logs one line, `[Startup] report {json}`, and serves the same object at
+`GET /api/startup` on the control port. It needs the token like every route but
+the panel page and `/api/health`, and answers 503 until the report exists.
+It is built once and does not change afterwards. A pre-upgrade rehearsal can
+read it instead of grepping the startup lines; those lines keep their text for
+now (a test pins them), and the report is the interface that will stay stable
+when logging changes.
+
+`schema` is 1. A new field keeps it; a rename, a removal or a changed meaning
+raises it.
+
+| Field | Meaning |
+| --- | --- |
+| `version`, `config_path` | The build and the config file it read. |
+| `warmup` | `active`, `dir`, `initial_size_bytes`, `dropped_stale`, `residues_dropped`: the `[DiskWarmup]` start lines. Not active: zeros and an empty `dir`. |
+| `state_db` | `active`, `path`, `migration`: `already_completed`, `migrated`, `failed` (the open or the migration failed; the daemon runs on JSON) or `disabled`. |
+| `inode_map.files_loaded` | Files in the inode map before the startup walk. |
+| `fuse` | `mount_path`, `mounted`. |
+| `library_unstored` | `n` of `of`: library torrents with no stored engine record with metainfo. `null` when no stub was found to count. |
+| `prunes` | `readability`, `file_state`, `inodes`, each `status` (`ran`, `skipped` or `failed`), a `reason` when not `ran`, and `rows_pruned`. A guarded skip carries the walk's `complete`, `errors` and `stubs`. |
+| `invalid_stubs` | Stubs that parse but declare a size out of range. |
+| `alarms` | Ids of the alarm conditions that fired, `[]` when none. |
+
+Alarm ids: `config_parse_failed`, `config_paths_differ`, `settings_migrated`,
+`settings_corrupt`, `torrents_migrated` (a legacy `torrserver.db` was carried
+over), `head_density_check` (the one-shot head check ran; see Cache disk),
+`corrupt_cache`, `statedb_migrated`, `statedb_open_failed`,
+`statedb_migration_failed`, `prune_skipped`, `ghost_inodes_pruned` and
+`state_not_on_mounted_volume` (the container entrypoint's warning). The report
+is taken once, so a `corrupt_cache` removal after it is not in it.
+
 ## Play webhook
 
 Some features act on a play that the media server reports by webhook, and do
