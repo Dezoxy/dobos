@@ -680,10 +680,28 @@ whole media files, head and tail together. Files never played go first, then
 played files; each class goes oldest written first. This is built and runs
 today. The cache also keeps an in-memory list of which files are warm; it is
 internal and not served, and only the aggregates below are exported
-(`flodni_warmup_files`). What is not built: evicting the least recently read
-file (an idea in `docs/ideas.md`, not planned). Warm on add and its catch-up,
+(`flodni_warmup_files`). Evicting the least recently read file is built but
+off by default (`warmup_eviction_order`, below). Warm on add and its catch-up,
 which fill windows on their own, are described in their own section below; both
 are off by default.
+
+- **Eviction order (built, off by default).** `warmup_eviction_order` is
+  `"written"` (the default, the order above) or `"read"`: inside each class
+  (never played first, then played) the file read least recently goes first.
+  A file's read time is the last cache hit on its head or tail, kept in memory
+  only (not persisted, not served); a file not read since the daemon started
+  ranks by its write time, and a file written after its last read ranks by that
+  write. The tracking costs one atomic load on the read path and nothing is
+  stamped under the default order. The played protection, the protected files of
+  a fill in flight and the lock order of the quota walk are unchanged. An
+  unknown value is logged at load and replaced by `"written"`; it is read at
+  start. **The measurement that should decide switching it on:**
+  `flodni_warmup_cold_reopen_total{previously_played="true"}` over
+  `flodni_playback_starts_total` reaching 5% of plays over a few weeks at a
+  full quota. The `previously_played="false"` series is a different problem
+  (warm data evicted before its first play points at the quota or the order, not
+  at recency) and does not argue for this switch. Not measured yet: it has not
+  run against real plays.
 
 - **Played** means a playback confirmed by Plex's play webhook, never a
   scanner's read. A webhook marks at most one file: a movie by file name,
@@ -1095,6 +1113,47 @@ closed torrent and reports the engine's state for it before the pass).
   `warm_on_add` was off keeps its removal mark until a restart: catch-up lists
   it as `pending` every pass and feeds nothing.
 
+### Warm the next episode (built, off by default)
+
+`warm_next_episode` (default `false`) fills the windows of the next episode
+while one plays, so a binge starts at once. It is built and has not run against
+real plays yet. It reuses warm on add's warmer, so it needs `warm_on_add` on and
+`warmup_dir` set; without them Flodni logs one warning and does nothing. With
+it off nothing is listed, queued or counted.
+
+- **When.** A play the media server's webhook confirmed (the same single-file
+  resolution that marks a file played). Flodni lists the library, finds that
+  episode and takes the next one in the same show: the next episode of the
+  season, else the first of the next season, by the season and episode in the
+  stub names. The show is the stub's show directory. A file that is not a
+  library episode (a movie) does nothing and counts nothing.
+- **One at a time.** At most one next-episode fill is in flight per playing
+  show; a second confirmed play of the show meanwhile counts `in_flight`. The
+  fills run on their own worker, one after another, and a playback does not
+  pause them, which is the point (every other fill pauses for a playback).
+- **Never evicts.** Before it queues anything it asks the cache whether the
+  windows are warm already (`already_warm`) and whether they fit without
+  evicting (`no_room`, then it skips). The fill itself runs under the
+  never-evict policy, is not retried after a cache failure and stops at a
+  removal or a shutdown; the next confirmed play asks again.
+- **A season pack is skipped.** When the next episode is a file of the torrent
+  being played (a pack), it is skipped (`same_torrent`) unless
+  `warm_next_episode_same_torrent` is `true` (default `false`): a second reader
+  on the playing torrent splits the engine's read-ahead, and a playing stream
+  that slows down costs more than the head start gains. Only a next episode in
+  another torrent is filled by default.
+- **Metrics.** `flodni_warm_next_episode_total{outcome}`: `queued`, `no_next`,
+  `same_torrent`, `no_room`, `already_warm`, `in_flight` and `error`, every
+  value present from 0. The fills themselves show as
+  `flodni_warm_fills_total{trigger="next"}`.
+- **What should decide switching it on.** Not measured yet. Switch it on for a
+  trial when a series is watched episode after episode and the first read of
+  the next one is slow: `flodni_session_first_byte_seconds` of a binge's
+  later episodes. Then check that the playing stream does not slow down while
+  a fill runs: `flodni_read_stalls_total{confirmed="true"}` should not rise
+  against the same weeks with it off, and `flodni_warm_next_episode_total{outcome="no_room"}`
+  should be small (a full cache is skipped, never evicted for this).
+
 ### A stub the engine does not store
 
 A closed torrent is woken from the engine's stored record only, and a hash
@@ -1217,7 +1276,8 @@ scraper on the same host or Docker network.
 | `flodni_warmup_cache_quota_bytes` | gauge | none | Its size limit; only with the cache enabled. |
 | `flodni_warmup_evictions_total` | counter | `window` | Files removed by quota eviction, `head` or `tail`. |
 | `flodni_warmup_evicted_bytes_total` | counter | `window` | Their apparent size in bytes. |
-| `flodni_warm_fills_total` | counter | `trigger`, `outcome` | Warm fills. `trigger="mount"`: per-file records the mount path wrote, `outcome` `warmed` (the engine holds a swarm delivery stamp) or `cached` (it does not); needs the state database and index mode. `trigger="add"` and `trigger="catchup"`: warm on add and catch-up attempts, `outcome` as in "Warm on add", every value present from 0. |
+| `flodni_warm_fills_total` | counter | `trigger`, `outcome` | Warm fills. `trigger="mount"`: per-file records the mount path wrote, `outcome` `warmed` (the engine holds a swarm delivery stamp) or `cached` (it does not); needs the state database and index mode. `trigger="add"`, `trigger="catchup"` and `trigger="next"`: warm on add, catch-up and next-episode attempts, `outcome` as in "Warm on add", every value present from 0. |
+| `flodni_warm_next_episode_total` | counter | `outcome` | Confirmed plays of a library episode seen with `warm_next_episode` on: `queued`, `no_next`, `same_torrent`, `no_room`, `already_warm`, `in_flight`, `error`; every value present from 0. See "Warm the next episode". |
 | `flodni_warm_fill_bytes_total` | counter | `trigger`, `window` | Bytes warm on add and catch-up wrote, `window` `head` or `tail`, also by fills that did not finish. |
 | `flodni_warm_cache_failures_total` | counter | `reason` | Warm on add and catch-up attempts that lost a window or could not write it: `lost` or `write_failed`. |
 | `flodni_warm_queue_files` | gauge | none | Files waiting for warm on add or catch-up. |

@@ -282,6 +282,7 @@ func Run() {
 	// torrent's records are forgotten.
 	addWarmer = warmer.New(addWarmerDeps(fileStates, backgroundStopChan))
 	warmup.OnHashRemoved = onHashRemoved(addWarmer, fileStates)
+	warmup.SetEvictionOrder(gc().WarmupEvictionOrder) // "written" unless the owner opted in
 	warmup.InitDiskWarmup(warmup.Options{
 		QuotaGB: gc().DiskWarmupQuotaGB,
 		Dir:     gc().WarmupDir,
@@ -727,6 +728,8 @@ func Run() {
 		}
 		// Catch-up (idle unless warm_on_add is on): warms the titles already filed.
 		startCatchup(libMgr)
+		// Next episode (idle unless warm_next_episode is on): see warm_next.go.
+		startWarmNext(libMgr)
 		libHandler := library.NewHandler(libMgr)
 		mux.HandleFunc("/api/library/add", libHandler.Add)
 		mux.HandleFunc("/api/library/remove", libHandler.Remove)
