@@ -150,6 +150,9 @@ func EpisodeKey(show string, season, episode int) string {
 	return fmt.Sprintf("%s_s%02de%02d", reNonWord.ReplaceAllString(foldLatin(strings.ToLower(show)), ""), season, episode)
 }
 
+// latinFold is a persisted key format: it decides the registry key of every accented
+// show, so editing an entry silently re-keys shows already filed (the legacy alias
+// covers only the form from before folding existed).
 // latinFold maps lower-case Latin-1 and Latin Extended-A letters to ASCII. A table, not
 // golang.org/x/text: the module is only an indirect dependency, and NFD would still
 // leave ø, ł, đ, ß and the ligatures.

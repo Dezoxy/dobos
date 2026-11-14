@@ -749,9 +749,12 @@ renamed and its registry row is never re-keyed, and stubs are found by the
   season's episode 1. A single-episode add does not take a special's file for
   the requested episode either.
 - **Samples.** A video file is skipped when "sample" is a word in its name or
-  in a folder it sits in and it is under 50 MiB, even when no larger file names
-  the same episode. Each skip is logged (`ignored sample`). An explicit
-  `file_index` still files the file it names.
+  in the folder directly above it (not the release's root folder) and it is
+  under 50 MiB, even when no larger file names the same episode. Each skip is
+  logged (`ignored sample`). An explicit `file_index` still files the file it
+  names. A single-episode add whose torrent does not name the episode takes
+  the largest file that names no episode at all, never one named for another
+  episode or a special.
 - **Movie year.** The year in a movie's stub name is the request's
   `release_date` year. A number in the title (`Blade Runner 2049`,
   `Dune (2021)`) is part of the title and is not read as a second year. A title

@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"flodni/internal/metadb"
@@ -396,7 +397,6 @@ func TestSingleEpisodePicksTheFileNamingItAndFallsBackToLargest(t *testing.T) {
 	}{
 		{"the file naming the episode beats a larger sibling", episodeTorrent, 2, 3, 0, 2},
 		{"another episode of the same torrent", episodeTorrent, 2, 4, 0, 3},
-		{"a season mismatch does not count", episodeTorrent, 1, 3, 0, 3},
 		{"no file names it: the largest video file", []FileStat{
 			{ID: 1, Path: "a.mkv", Length: 10}, {ID: 2, Path: "b.mkv", Length: 30}}, 1, 5, 0, 2},
 		{"an explicit file index wins", episodeTorrent, 2, 3, 3, 3},
@@ -1171,4 +1171,105 @@ func TestFindByHashSkipsAMalformedStubAndLogsOnce(t *testing.T) {
 	if n := strings.Count(buf.String(), "\n"); n != 1 || !strings.Contains(buf.String(), "skipped 2 stub(s)") {
 		t.Fatalf("log = %q, want one line naming 2 skipped stubs", buf.String())
 	}
+}
+
+func TestLegacyFallbackNeverTakesAnotherShowsRow(t *testing.T) {
+	e := newCharEnv(t, FileStat{ID: 1, Path: "Show.S01E02.mkv", Length: 1 << 20})
+	seed := func(show, key string) string {
+		p := filepath.Join(e.tv, show, "Season.01", EpisodeFilename(show, 1, 2, "deadbeef"))
+		if err := WriteStub(p, "http://engine/stream?link="+charOtherHash, 1, "", ""); err != nil {
+			t.Fatal(err)
+		}
+		e.reg.rows[key] = metadb.EpisodeEntry{EpisodeKey: key, Hash: charOtherHash, FilePath: p}
+		return p
+	}
+	lite := seed("Lite", "lite_s01e02")        // Elite's legacy key, Lite's own
+	rose := seed("Rose", "rose_s01e02")        // Rose-with-accent's folded key, Rose's own
+	roseAcc := seed("Ros\u00e9", "ros_s01e02") // its own legacy row
+
+	for _, title := range []string{"\u00c9lite", "Ros\u00e9"} {
+		if _, err := e.add(AddRequest{Type: "tv", Title: title, Hash: charThirdHash, Season: 1, Episode: 2}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !exists(lite) || e.reg.rows["lite_s01e02"].FilePath != lite {
+		t.Error("the accented title replaced Lite's episode")
+	}
+	if _, ok := e.reg.rows["elite_s01e02"]; !ok {
+		t.Error("the accented title was not registered under its folded key")
+	}
+	if !exists(rose) || e.reg.rows["rose_s01e02"].FilePath != rose {
+		t.Error("the accented title replaced Rose's episode")
+	}
+	if exists(roseAcc) || e.reg.rows["ros_s01e02"].Hash != charThirdHash {
+		t.Error("the accented title's own legacy row was not replaced in place")
+	}
+}
+
+// A single-episode request whose naming file is a dropped sample must not fall back to
+// a file that names another episode, or to a special.
+func TestSingleEpisodeFallbackOnlyTakesFilesNamingNoEpisode(t *testing.T) {
+	small := int64(20 << 20)
+	e := newCharEnv(t,
+		FileStat{ID: 1, Path: "p/Show.S01E02.sample.mkv", Length: small},
+		FileStat{ID: 2, Path: "p/Show.S01E03.mkv", Length: 900 << 20},
+		FileStat{ID: 3, Path: "p/Show.S00E02.Special.mkv", Length: 900 << 20})
+	_, err := e.add(AddRequest{Type: "tv", Title: "Show", Hash: charPackHash, Season: 1, Episode: 2})
+	if statusOf(t, err) != http.StatusUnprocessableEntity {
+		t.Fatalf("err = %v, want 422", err)
+	}
+	if len(e.reg.rows) != 0 || len(mkvs(t, e.tv)) != 0 {
+		t.Fatalf("rows = %v, stubs = %v, want nothing filed", e.reg.rows, mkvs(t, e.tv))
+	}
+}
+
+func TestSampleWordInTheTitleFolderDoesNotDropARealFile(t *testing.T) {
+	// Only the file's own name and its immediate parent count; the root folder is exempt.
+	if isSample(FileStat{Path: "Sample.Show.S01/Show.S01E01.mkv", Length: 30 << 20}) {
+		t.Error("the root folder's word dropped a file")
+	}
+	if !isSample(FileStat{Path: "Show.S01/Sample/Show.S01E01.mkv", Length: 30 << 20}) {
+		t.Error("a Sample parent folder did not drop the file")
+	}
+}
+
+type gapRegistry struct {
+	*memRegistry
+	mu      sync.Mutex
+	cleared []string
+}
+
+func (g *gapRegistry) ClearEpisodeGap(k string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.cleared = append(g.cleared, k)
+	return nil
+}
+
+func TestLegacyEpisodeGapIsClearedUnderBothKeys(t *testing.T) {
+	e := newCharEnv(t, FileStat{ID: 1, Path: "Show.S01E02.mkv", Length: 1 << 20})
+	g := &gapRegistry{memRegistry: e.reg}
+	e.m.cfg.Registry = g
+	if _, err := e.add(AddRequest{Type: "tv", Title: "\u00c9lite", Hash: charThirdHash, Season: 1, Episode: 2}); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(g.cleared)
+	if want := []string{"elite_s01e02", "lite_s01e02"}; !reflect.DeepEqual(g.cleared, want) {
+		t.Fatalf("cleared = %v, want %v", g.cleared, want)
+	}
+}
+
+// Elite and Lite can write the same registry row through the legacy fallback, so both
+// take both episode locks, in one order.
+func TestAccentedAndPlainAddsOfTheSameEpisodeDoNotDeadlockOrRace(t *testing.T) {
+	e := newCharEnv(t, FileStat{ID: 1, Path: "Show.S01E02.mkv", Length: 1 << 20})
+	var wg sync.WaitGroup
+	for _, title := range []string{"\u00c9lite", "Lite", "\u00c9lite", "Lite"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = e.add(AddRequest{Type: "tv", Title: title, Hash: charThirdHash, Season: 1, Episode: 2})
+		}()
+	}
+	wg.Wait()
 }
