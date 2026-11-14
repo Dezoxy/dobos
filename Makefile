@@ -8,7 +8,7 @@
 # The Structurizr image your viewer runs. Keep it identical to the server's pin
 # so the parser here is the parser there. The PNG/SVG export uses its
 # -playwright tag.
-STRUCTURIZR_IMAGE ?= structurizr/structurizr:2026.09.19
+STRUCTURIZR_IMAGE ?= structurizr/structurizr:2026.10.26
 # Pandoc with LaTeX and the Eisvogel template, for `make pdf` (~2 GB).
 PANDOC_IMAGE      ?= pandoc/extra:3.11.0.0-debian
 # Mermaid CLI, for `make mermaid-render` and `make pdf`: draws Mermaid blocks

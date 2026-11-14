@@ -597,8 +597,8 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 
 	hashStr, urlFileIdx := vfs.ExtractHashAndIndex(n.vMeta.URL)
 
-	// hasFullWarmup: Open returns instantly only if both head and tail warmup files are ready.
-	// headReady: Allows async Wake and direct ID injection for instant start.
+	// headReady: the warm path (async Wake, direct ID injection, instant start) needs the
+	// head warmup file only. tailReady is not a gate; it feeds the [TTFF] line.
 	headReady := false
 	tailReady := false
 	if warmup.DiskWarmup != nil && hashStr != "" {
