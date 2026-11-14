@@ -914,7 +914,11 @@ func (d *DiskWarmupCache) GetAvailableRange(hash string, fileID int) int64 {
 	}
 
 	if fi.Size() > FileSize+(16*1024*1024) {
-		logf.Printf("[DiskWarmup] CORRUPT CACHE detected (Size: %.1fMB > 128MB) for %s. Removing.", float64(fi.Size())/(1<<20), hash[:8])
+		short := hash
+		if len(short) > 8 {
+			short = short[:8] // a caller-supplied hash may be shorter: never slice past it
+		}
+		logf.Printf("[DiskWarmup] CORRUPT CACHE detected (Size: %.1fMB > 128MB) for %s. Removing.", float64(fi.Size())/(1<<20), short)
 		d.removeCorrupt(path)
 		return 0
 	}
