@@ -91,7 +91,7 @@ func TestLevelsAreHonoured(t *testing.T) {
 		l.Warn("w")
 		l.Error("e")
 	}
-	cases := map[string]string{"INFO": "i\nw\ne\n", "": "i\nw\ne\n", "bogus": "i\nw\ne\n", "DEBUG": "d\ni\nw\ne\n", "WARN": "w\ne\n", "WARNING": "w\ne\n", "ERROR": "e\n"}
+	cases := map[string]string{"INFO": "i\nw\ne\n", "": "i\nw\ne\n", "bogus": "i\nw\ne\n", "DEBUG": "d\ni\nw\ne\n", "WARN": "i\nw\ne\n", "WARNING": "i\nw\ne\n", "ERROR": "i\nw\ne\n"}
 	for level, want := range cases {
 		SetLevel(level)
 		emit()
@@ -130,11 +130,10 @@ func TestPrintfClassifiesTheRenderedText(t *testing.T) {
 	reset(t)
 	var buf bytes.Buffer
 	l := NewText(&buf)
-	SetLevel("WARN")
 	Printf(l, "info %d", 1)
 	Printf(l, "WARNING: %s", "x")
 	Logf(l)("ERROR: %v", errors.New("e"))
-	if buf.String() != "WARNING: x\nERROR: e\n" {
+	if buf.String() != "info 1\nWARNING: x\nERROR: e\n" {
 		t.Fatalf("got %q", buf.String())
 	}
 }

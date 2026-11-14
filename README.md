@@ -1050,7 +1050,7 @@ structured fields appends the ones its message does not already show, as
 | Key | Env | Values | Default |
 | --- | --- | --- | --- |
 | `log_format` | `MKV_PROXY_LOG_FORMAT` | `text`, `json` | `text` |
-| `log_level` | `MKV_PROXY_LOG_LEVEL` | `DEBUG`, `INFO`, `WARN`, `ERROR` | `INFO` |
+| `log_level` | `MKV_PROXY_LOG_LEVEL` | `DEBUG`, `INFO` (`WARN`, `ERROR`: reserved, behave like `INFO`) | `INFO` |
 
 `log_format` `json` prints one JSON object per line instead: `time`,
 `level`, `msg`, `logger` (the `[Name]` prefix, when there is one) and the
@@ -1059,12 +1059,13 @@ documented line keeps its wording and payload in both formats. An unknown
 `log_format` falls back to `text` with a warning. Both keys apply at start
 and on a save from the Control Panel.
 
-`log_level` is a threshold. A line whose text starts with `[DEBUG]` is
-Debug (hidden unless the level is `DEBUG`), one with `WARNING` or `Warning`
-near its start is Warn, one with `ERROR` or `[PANIC]` is Error, everything
-else is Info. Setting `WARN` or `ERROR` hides the Info lines too, the
-documented `[Session]`, `[Warm]` and `[WarmupEvict]` lines among them; leave
-the level at `INFO` if you read those.
+`log_level` `DEBUG` shows the debug lines; any other value shows Info and
+above. `WARN` and `ERROR` are accepted but reserved: they behave like `INFO`,
+so a `log_level` never hides a contract line (`[Session]`, `[Warm]`,
+`[WarmupEvict]`, `[Webhook]`, `[ReaderBudget]`, `[DeadSwarm]`). A line whose
+text starts with `[DEBUG]` is Debug (hidden unless the level is `DEBUG`), one
+with `WARNING` or `Warning` near its start is Warn, one with `ERROR` or
+`[PANIC]` is Error, everything else is Info.
 
 **Stable lines.** The text of these lines does not change without a note
 here, in either format; match them by substring: `[DiskWarmup] Initial

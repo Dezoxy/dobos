@@ -94,18 +94,17 @@ func TestLogFormatAndLevelFromConfig(t *testing.T) {
 	t.Cleanup(func() { _ = flog.Configure("text", "INFO") })
 
 	cfg := *gc()
-	cfg.LogFormat, cfg.LogLevel = "json", "WARN"
+	cfg.LogFormat, cfg.LogLevel = "json", "INFO"
 	globalConfig.Store(&cfg)
 	applyLogConfig()
 	logger.Debug("d")
 	logger.Info("i")
 	logger.Warn("WARNING: w")
-	logger.Error("ERROR: e")
 	lines := strings.Split(strings.TrimSuffix(buf.String(), "\n"), "\n")
 	if len(lines) != 2 {
-		t.Fatalf("log_level WARN: want the warning and the error only, got %q", buf.String())
+		t.Fatalf("log_level INFO: want info and warn only, got %q", buf.String())
 	}
-	for i, level := range []string{"WARN", "ERROR"} {
+	for i, level := range []string{"INFO", "WARN"} {
 		var obj map[string]any
 		if err := json.Unmarshal([]byte(lines[i]), &obj); err != nil || obj["level"] != level {
 			t.Fatalf("line %d: %v %v", i, err, obj)
@@ -119,5 +118,29 @@ func TestLogFormatAndLevelFromConfig(t *testing.T) {
 	logger.Debug("[DEBUG] shown at DEBUG")
 	if !strings.Contains(buf.String(), "[DEBUG] shown at DEBUG") || strings.HasPrefix(buf.String(), "{") {
 		t.Fatalf("log_level DEBUG, text: %q", buf.String())
+	}
+}
+
+// log_level never hides a contract line: ERROR (reserved) behaves like INFO.
+func TestLogLevelErrorKeepsContractLinesAndHidesDebug(t *testing.T) {
+	useTestGlobals(t)
+	var buf bytes.Buffer
+	logger = flog.New(&buf, "GoProxy", true)
+	t.Cleanup(func() { _ = flog.Configure("text", "INFO") })
+
+	cfg := *gc()
+	cfg.LogFormat, cfg.LogLevel = "text", "ERROR"
+	globalConfig.Store(&cfg)
+	applyLogConfig()
+
+	logSessionRecord(sessionRecord{Path: "/m/x.mkv", Hash: "h", Outcome: "served"})
+	flog.Printf(logger, "%s", `[Warm] {"hash":"h","file":1,"trigger":"add","outcome":"warmed"}`)
+	logger.Debug("[DEBUG] must stay hidden")
+	out := buf.String()
+	if !strings.Contains(out, "[Session] {") || !strings.Contains(out, "[Warm] {") {
+		t.Fatalf("log_level ERROR dropped a contract line: %q", out)
+	}
+	if strings.Contains(out, "[DEBUG]") {
+		t.Fatalf("log_level ERROR showed a debug line: %q", out)
 	}
 }

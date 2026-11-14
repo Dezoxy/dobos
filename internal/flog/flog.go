@@ -61,21 +61,18 @@ func Format() string {
 	return "text"
 }
 
-// SetLevel maps a log_level value to the threshold: DEBUG, INFO, WARN (or
-// WARNING) and ERROR; anything else is INFO.
+// SetLevel maps a log_level value to the threshold. Only DEBUG changes
+// anything: it shows Debug lines. Every other value, WARN and ERROR included,
+// behaves like INFO, so a log_level never hides a contract line.
 func SetLevel(name string) {
 	Level.Set(ParseLevel(name))
 }
 
-// ParseLevel maps a log_level value to a slog level; unknown means Info.
+// ParseLevel returns the handler's minimum level: Debug for DEBUG, otherwise
+// Info (WARN and ERROR are reserved and behave like INFO).
 func ParseLevel(name string) slog.Level {
-	switch strings.ToUpper(strings.TrimSpace(name)) {
-	case "DEBUG":
+	if strings.EqualFold(strings.TrimSpace(name), "DEBUG") {
 		return slog.LevelDebug
-	case "WARN", "WARNING":
-		return slog.LevelWarn
-	case "ERROR":
-		return slog.LevelError
 	}
 	return slog.LevelInfo
 }

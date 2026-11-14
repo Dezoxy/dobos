@@ -27,7 +27,7 @@ type Config struct {
 	MetadataCacheSizeMB    int64  `json:"metadata_cache_size_mb"`   // Size of metadata LRU cache in MB (V178)
 	FuseBlockSize          int    `json:"fuse_block_size_bytes"`
 	StreamingThresholdKB   int64  `json:"streaming_threshold_kb"`
-	LogLevel               string `json:"log_level"`  // DEBUG, INFO (default), WARN or ERROR
+	LogLevel               string `json:"log_level"`  // DEBUG shows debug lines; anything else is INFO (WARN, ERROR reserved, behave like INFO)
 	LogFormat              string `json:"log_format"` // "text" (default) or "json"
 
 	// --- FUSE Timing ---
