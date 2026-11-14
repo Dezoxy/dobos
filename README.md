@@ -129,8 +129,10 @@ See "Play webhook" below for what raises it.
 
 Once the FUSE mount is up and the startup walk with its prunes has finished, the
 daemon logs one line, `[Startup] report {json}`, and serves the same object at
-`GET /api/startup` on the control port. It needs the token like every route but
-the panel page and `/api/health`, and answers 503 until the report exists.
+`GET /api/startup` on the control port; in the `json` log format the line's
+`msg` carries that object byte for byte, as in the text format. The endpoint
+needs the token like every route but the panel page and `/api/health`, and
+answers 503 until the report exists.
 It is built once and does not change afterwards. A pre-upgrade rehearsal can
 read it instead of grepping the startup lines; those lines keep their text for
 now (a test pins them), and the report is the interface that will stay stable
@@ -1604,7 +1606,7 @@ and on a save from the Control Panel.
 `log_level` `DEBUG` shows the debug lines; any other value shows Info and
 above. `WARN` and `ERROR` are accepted but reserved: they behave like `INFO`,
 so a `log_level` never hides a contract line (`[Session]`, `[Warm]`,
-`[WarmupEvict]`, `[Webhook]`, `[ReaderBudget]`, `[DeadSwarm]`). A line whose
+`[WarmupEvict]`, `[Startup]`, `[Webhook]`, `[ReaderBudget]`, `[DeadSwarm]`). A line whose
 text starts with `[DEBUG]` is Debug (hidden unless the level is `DEBUG`), one
 with `WARNING` or `Warning` near its start is Warn, one with `ERROR` or
 `[PANIC]` is Error, everything else is Info.
@@ -1619,8 +1621,8 @@ stored engine record with metainfo`, `Failed to parse`, `physical_source_path
 from the GoStorm engine, `Successfully migrated`, `Settings file was corrupt`
 and `Migrate torrent`. The container entrypoint's `is NOT on a mounted
 volume` warning is printed by the shell and is not affected. The JSON
-contract lines, `[Session]`, `[Warm]`, `[WarmupEvict]` and the `[Webhook]`
-status line, are described in their own sections and are byte-identical in
+contract lines, `[Session]`, `[Warm]`, `[WarmupEvict]`, `[Startup] report` and
+the `[Webhook]` status line, are described in their own sections and are byte-identical in
 both formats; `[DeadSwarm]` and `[TTFF]` wording is not a contract. The
 GoStorm engine's own log lines still use the standard logger, so they keep
 their old shape in both formats.

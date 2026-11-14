@@ -42,6 +42,7 @@ var stableLines = []struct {
 	{"prune skipped", []string{"prune skipped"}, false},
 	{"session line prefix", []string{"[Session] "}, false},
 	{"warm line prefix", []string{"[Warm] "}, false},
+	{"startup report", []string{"[Startup] report"}, false},
 	{"dead swarm", []string{"[DeadSwarm] "}, false},
 	{"webhook status", []string{"[Webhook] "}, false},
 	{"settings migrated", []string{"Successfully migrated "}, true},

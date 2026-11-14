@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"flodni/internal/flog"
+	"net/http"
 	"regexp"
 	"strings"
 	"testing"
@@ -63,6 +64,36 @@ func TestSessionLineIsByteIdenticalInBothFormats(t *testing.T) {
 	}
 	if obj["msg"] != want || obj["level"] != "INFO" || obj["logger"] != "GoProxy" {
 		t.Fatalf("json line: %v", obj)
+	}
+}
+
+// The startup report is one line and its JSON is the GET /api/startup body,
+// byte for byte, in the text and the json log format.
+func TestStartupReportLineIsTheEndpointBodyInBothFormats(t *testing.T) {
+	var bodies []string
+	text, obj := emitBoth(t, func() {
+		r := &startupReporter{logf: flog.Logf(logger)}
+		r.markMounted("/mnt/virtual")
+		r.markScanned(scanResult{})
+		rec := getStartup(t, http.HandlerFunc(r.handler))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /api/startup = %d", rec.Code)
+		}
+		bodies = append(bodies, rec.Body.String())
+	})
+	if len(bodies) != 2 {
+		t.Fatalf("emitted %d times, want once per format", len(bodies))
+	}
+	if want := "[Startup] report " + bodies[0]; text != want {
+		t.Fatalf("text line:\n got %s\nwant %s", text, want)
+	}
+	if want := "[Startup] report " + bodies[1]; obj["msg"] != want || obj["level"] != "INFO" {
+		t.Fatalf("json line: %v\nwant msg %s", obj, want)
+	}
+	for _, b := range bodies {
+		if strings.Contains(b, "\n") || !json.Valid([]byte(b)) {
+			t.Fatalf("body is not one line of JSON: %q", b)
+		}
 	}
 }
 

@@ -374,7 +374,7 @@ func TestWalkLibraryNeedsStubsInBothDirectories(t *testing.T) {
 				}
 				mc.Put(path, &vfs.Metadata{URL: "http://engine/stream?link=" + inLibHash + "&index=1&play"}, 100)
 			}
-			b := NewStartupCacheBuilder(root, mc, log.New(io.Discard, "", 0))
+			b := NewStartupCacheBuilder(root, mc, flog.NewText(io.Discard))
 
 			walked, whole := b.walkLibrary()
 
