@@ -174,6 +174,36 @@ func TestCorruptRemovalSubtractsTheFile(t *testing.T) {
 	}
 }
 
+// A stale size entry and an expired miss on a head that turns out corrupt: the removal
+// clears both, leaves a fresh miss, gives the bytes back once, and a later write is seen.
+func TestCorruptRemovalWithStaleEntryAndMiss(t *testing.T) {
+	d := indexCache(t, t.TempDir())
+	path := corruptHead(t, d)
+	old := time.Now().Add(-time.Minute)
+	d.sizeCache.Store(path, sizeEntry{size: 1, updatedAt: old})
+	d.missing.Store(path, old)
+
+	for i := range 2 {
+		if got := d.GetAvailableRange("cccccccc", 1); got != 0 {
+			t.Fatalf("call %d: range of a corrupt head = %d, want 0", i, got)
+		}
+		if got := tailTotal(d); got != 0 {
+			t.Fatalf("call %d: total = %d, want 0 (a removed file must not be credited again)", i, got)
+		}
+	}
+	if _, ok := d.sizeCache.Load(path); ok {
+		t.Fatal("the stale size entry survived the removal")
+	}
+	if v, ok := d.missing.Load(path); !ok || time.Since(v.(time.Time)) > time.Second {
+		t.Fatal("the removal did not leave a fresh miss")
+	}
+
+	d.processWrite("cccccccc", 1, bytes.Repeat([]byte{1}, 8192), 0)
+	if got := d.GetAvailableRange("cccccccc", 1); got != 8192 {
+		t.Fatalf("range after a rewrite = %d, want 8192", got)
+	}
+}
+
 func TestCorruptRemovalHoldsTailMu(t *testing.T) {
 	d := indexCache(t, t.TempDir())
 	corruptHead(t, d)
