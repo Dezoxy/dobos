@@ -523,11 +523,26 @@ with no record is not listed here at all.
 
 ### Tracker scrape (experimental)
 
-**Experimental** until a consumer has run against it, outside the contract
-sentence above like `files` and `swarm`. Flodni asks each stored torrent's own
+**Experimental**, apart from the stable fields listed below, and outside the
+contract sentence above like `files` and `swarm`. Flodni asks each stored torrent's own
 trackers how many seeders and leechers they know and reports the best answer
 per torrent. Built and tested against local fake trackers (HTTP and UDP), not
 against a real tracker.
+
+**Stable fields.** These keys now have a consumer and are stable: they keep
+their name and JSON type, and they are present in every object, null included.
+- In each torrent's `scrape`:
+  - `seeders` (number or null);
+  - `answered`, `failed` and `unknown` (numbers);
+  - `source` (`"http"`, `"udp"` or null);
+  - `error` (string or null);
+  - `run_id` (number).
+- The top-level `scrape_pass.run_id` (number).
+
+A test pins them (`scrape_contract_test.go`). The other fields stay
+experimental: `leechers`, `scraped_at`, `unscrapable` and
+`scrape_pass.finished_at`. So does the wording of `error`; its value set may
+grow.
 
 - **Which trackers.** The announce list of the torrent's stored record, as it
   is. A private torrent (BEP 27), and one whose metadata is not known yet and

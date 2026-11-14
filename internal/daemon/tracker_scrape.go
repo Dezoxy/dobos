@@ -21,9 +21,10 @@ import (
 // nil when a test does not need it. The handlers and the health response read it.
 var trackerScraper atomic.Pointer[trackscrape.Scraper]
 
-// scrapeHealth is the EXPERIMENTAL "scrape" object of /api/torrents/health. seeders and
-// leechers are the most over the trackers that gave a count, null when none did; a failed
-// pass is an error, never a 0.
+// scrapeHealth is the "scrape" object of /api/torrents/health. seeders, answered, failed,
+// unknown, source, error and run_id are stable (scrape_contract_test.go); the rest is
+// EXPERIMENTAL. seeders and leechers are the most over the trackers that gave a count,
+// null when none did; a failed pass is an error, never a 0.
 // run_id is the pass the entry came from: a torrent a pass did not reach keeps the
 // entry, and the run_id, of the pass that did.
 type scrapeHealth struct {
