@@ -1,24 +1,42 @@
-FROM golang:1.27-bookworm AS build
+FROM golang:1.27-bookworm AS build-deps
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential pkg-config libfuse3-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
+
+# Modules first, in their own layer: it is rebuilt only when go.mod or go.sum change.
+# The root go.mod replaces the vendored engine, which is its own module, so its go.mod
+# and go.sum are needed for the download too.
+COPY go.mod go.sum ./
+COPY internal/anacrolix-torrent/go.mod internal/anacrolix-torrent/go.sum ./internal/anacrolix-torrent/
+RUN go mod download
+
+# The source, shared by every target below. It carries no build argument, so a build of
+# the seeder reuses the layers of a build of the daemon.
+FROM build-deps AS src
 COPY . .
 
+FROM src AS build
 # Use Docker's automatic TARGETARCH variable for multi-arch support
 ARG TARGETARCH
 ARG APP_VERSION=dev
 # CGO_ENABLED=1 is required for FUSE integration.
 # -pgo=auto ensures we use profile-guided optimization if default.pgo is present.
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH go build -pgo=auto -ldflags "-X flodni/internal/daemon.AppVersion=${APP_VERSION}" -o /out/flodni ./cmd/flodni
+# The cache mount keeps Go's build cache between builds, so a changed source file
+# recompiles only the packages it touches; it is not part of the image, so the binary is
+# the same with or without it. There is no cache mount for the module cache on purpose:
+# the modules sit in the layer above, and a mount at /go/pkg/mod would hide them.
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH go build -pgo=auto -ldflags "-X flodni/internal/daemon.AppVersion=${APP_VERSION}" -o /out/flodni ./cmd/flodni
 
 # End-to-end test seeder (tests/e2e). Built only on request (--target e2e-seeder);
 # the runtime stage below stays last so the default target is the shipped image.
-FROM build AS e2e-seeder
+FROM src AS e2e-seeder
 ARG TARGETARCH
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH go build -o /out/seeder ./tests/e2e/seeder
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH go build -o /out/seeder ./tests/e2e/seeder
 ENTRYPOINT ["/out/seeder"]
 
 FROM debian:bookworm-slim
