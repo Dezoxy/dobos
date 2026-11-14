@@ -69,7 +69,12 @@ type Config struct {
 	// FileState, when set, reports the daemon's per-file facts (warm record, played and
 	// eviction marks, an open session) for GET /api/library/file; nil reads as none.
 	FileState func(hash string, fileIndex int) FileFacts
-	Logger    *log.Logger
+	// Confirm, when set, records a play of the file the way a play webhook does for the
+	// file it resolves to (POST /api/library/confirm). TokenSet says whether the control
+	// port has an api_token; the route answers 403 unless it does.
+	Confirm  func(hash string, fileIndex int)
+	TokenSet func() bool
+	Logger   *log.Logger
 	// MediaServer, when set, is asked to rescan the section a stub was added to or
 	// removed from. MovieSection and TVSection are its library ids.
 	MediaServer  MediaServer

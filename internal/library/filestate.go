@@ -197,3 +197,52 @@ func (h *Handler) File(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
+
+// ConfirmRequest names the file a manual play mark is for.
+type ConfirmRequest struct {
+	Hash      string `json:"hash"`
+	FileIndex *int   `json:"file_index"`
+}
+
+// Confirm records a play of the file by hand, the way a play webhook does for the one
+// file it resolves to, and answers with the file's state. It records the play only: it
+// does not confirm a session, so a reader-budget hold stays as it is. A file no stub
+// links to is a 404 and nothing is recorded.
+func (m *Manager) Confirm(req ConfirmRequest) (*FileStateResponse, error) {
+	if req.FileIndex == nil {
+		return nil, errf(http.StatusBadRequest, "hash and file_index are required")
+	}
+	if _, _, err := m.findFile(req.Hash, *req.FileIndex); err != nil {
+		return nil, err
+	}
+	if m.cfg.Confirm == nil {
+		return nil, errf(http.StatusServiceUnavailable, "play marks are unavailable")
+	}
+	m.cfg.Confirm(canonicalHashKey(strings.ToLower(strings.TrimSpace(req.Hash))), *req.FileIndex)
+	return m.FileState(req.Hash, *req.FileIndex)
+}
+
+// Confirm serves POST /api/library/confirm. A manual play mark changes what eviction
+// protects, so it fails closed: with no api_token set the control port is open to
+// anyone who can reach it, and this route answers 403 and records nothing.
+func (h *Handler) Confirm(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if h.mgr.cfg.TokenSet == nil || !h.mgr.cfg.TokenSet() {
+		writeError(w, http.StatusForbidden, "confirm needs api_token to be set: a manual play mark changes eviction protection")
+		return
+	}
+	var req ConfirmRequest
+	if err := decode(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	resp, err := h.mgr.Confirm(req)
+	if err != nil {
+		writeAPIError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}

@@ -84,6 +84,10 @@ func GetEffectiveConcurrencyLimit() int {
 	return gc().MasterConcurrencyLimit
 }
 
+// controlToken is the bearer token the control server enforces, fixed at start-up.
+// Empty means the port is open. Never read gc().APIToken to decide that.
+var controlToken string
+
 var tailFillTargets sync.Map // path -> tailFillTarget
 
 // StateDB is the optional SQLite backend for persistent state.
@@ -666,6 +670,10 @@ func Run() {
 	// torrent, wait for its file list, write the stub. It exists so an agent that has
 	// no access to the filesystem can still file a title into the library.
 	{
+		// One token for both the bearer gate and the routes that fail closed without
+		// one: read once here, because the middleware enforces the start-up value and a
+		// later POST /api/config must not make the two disagree.
+		controlToken = gc().APIToken
 		var registry library.EpisodeRegistry
 		if stateDB != nil {
 			registry = stateDB
@@ -678,6 +686,8 @@ func Run() {
 			Registry:       registry,
 			StoredFiles:    func(hash string) []library.TorrentFile { return storedFileList(hash) },
 			FileState:      libraryFileFacts,
+			Confirm:        confirmPlayByHand,
+			TokenSet:       apiTokenSet,
 			InvalidatePath: invalidateSyncRemovedPath,
 			// Read-only view of the holes the reaper left, for a client that can decide
 			// what to do about them.
@@ -735,6 +745,7 @@ func Run() {
 		mux.HandleFunc("/api/library/inspect", libHandler.Inspect)
 		mux.HandleFunc("/api/library/audit", libHandler.Audit)
 		mux.HandleFunc("/api/library/file", libHandler.File)
+		mux.HandleFunc("/api/library/confirm", libHandler.Confirm)
 	}
 
 	// Control server: metrics, dashboard API and the library API.
@@ -754,7 +765,7 @@ func Run() {
 	}
 	controlSrv := &http.Server{
 		Addr:              fmt.Sprintf(":%d", gc().MetricsPort),
-		Handler:           apiauth.Middleware(gc().APIToken, logger, mux),
+		Handler:           apiauth.Middleware(controlToken, logger, mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
 		WriteTimeout:      600 * time.Second,

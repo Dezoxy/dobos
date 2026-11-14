@@ -326,8 +326,42 @@ func countConfirmedPlay(path string, k warmup.FileKey, ok bool) {
 			}
 		}
 	}
-	fileStates.MarkPlayed(k)
+	recordPlay(k, playSourceWebhook)
 }
+
+// Where a recorded play came from, the label of flodni_played_marks_total.
+const (
+	playSourceWebhook = iota
+	playSourceManual
+)
+
+var playSources = [...]string{playSourceWebhook: "webhook", playSourceManual: "manual"}
+
+// playMarks counts the plays recorded since the process started, by source.
+var playMarks [len(playSources)]atomic.Int64
+
+// recordPlay is the played mark itself: the one write a media-server webhook and a
+// manual confirm share, so a file played either way is protected the same.
+func recordPlay(k warmup.FileKey, source int) {
+	fileStates.MarkPlayed(k)
+	playMarks[source].Add(1)
+}
+
+// confirmPlayByHand is library.Config.Confirm (POST /api/library/confirm): it clears the
+// file's eviction mark and records the play, so the protection applies. It touches no
+// session: it does not confirm one, and a reader-budget hold waits for a webhook as
+// before. It counts no playback start (that is the webhook's), only a play mark with
+// source "manual".
+func confirmPlayByHand(hash string, fileIdx int) {
+	k := warmup.FileKey{Hash: strings.ToLower(hash), FileIdx: fileIdx}
+	fileStates.ClearEvicted(k)
+	recordPlay(k, playSourceManual)
+}
+
+// apiTokenSet reports whether the control server enforces a bearer token: the start-up
+// value the middleware was built with (controlToken), not the live config, which a
+// POST /api/config can change on an open port without any enforcement following.
+func apiTokenSet() bool { return controlToken != "" }
 
 // libraryFileFacts is library.Config.FileState: the per-file facts GET /api/library/file
 // reports, read from the process-wide index and the live sessions.
