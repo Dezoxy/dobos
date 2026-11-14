@@ -5,14 +5,14 @@ import (
 )
 
 type ajwernerBtree struct {
-	btree btree.Set[pieceRequestOrderItem]
+	btree *btree.Set[pieceRequestOrderItem]
 }
 
 var _ Btree = (*ajwernerBtree)(nil)
 
 func NewAjwernerBtree() *ajwernerBtree {
 	return &ajwernerBtree{
-		btree: btree.MakeSet(func(t, t2 pieceRequestOrderItem) int {
+		btree: btree.NewSet(func(t, t2 pieceRequestOrderItem) int {
 			return pieceOrderLess(&t, &t2).OrderingInt()
 		}),
 	}
@@ -25,7 +25,8 @@ func mustValue[V any](b bool, panicValue V) {
 }
 
 func (a *ajwernerBtree) Delete(item pieceRequestOrderItem) {
-	mustValue(a.btree.Delete(item), item)
+	_, ok := a.btree.Delete(item)
+	mustValue(ok, item)
 }
 
 func (a *ajwernerBtree) Add(item pieceRequestOrderItem) {
@@ -37,7 +38,7 @@ func (a *ajwernerBtree) Scan(f func(pieceRequestOrderItem) bool) {
 	it := a.btree.Iterator()
 	it.First()
 	for it.First(); it.Valid(); it.Next() {
-		if !f(it.Cur()) {
+		if !f(it.Item()) {
 			break
 		}
 	}
