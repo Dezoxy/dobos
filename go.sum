@@ -12,6 +12,8 @@ github.com/RoaringBitmap/roaring v0.4.17/go.mod h1:D3qVegWTmfCaX4Bl5CrBE9hfrSrrX
 github.com/RoaringBitmap/roaring v0.4.23/go.mod h1:D0gp8kJQgE1A4LQ5wFLggQEyvDi06Mq5mKs52e1TwOo=
 github.com/RoaringBitmap/roaring v1.9.4 h1:yhEIoH4YezLYT04s1nHehNO64EKFTop/wBhxv2QzDdQ=
 github.com/RoaringBitmap/roaring v1.9.4/go.mod h1:6AXUsoIEzDTFFQCe1RbGA6uFONMhvejWj5rqITANK90=
+github.com/RoaringBitmap/roaring/v2 v2.30.0 h1:1sD4xsCenNd9n/gOWaExCWanP9WTyiNuqLAvaDQ5jkY=
+github.com/RoaringBitmap/roaring/v2 v2.30.0/go.mod h1:BZufmFbox589n3j5eOmyTaLSGXbRLc2LmQvjKjzSEGU=
 github.com/Shopify/sarama v1.19.0/go.mod h1:FVkBWblsNy7DGZRfXLU0O9RCGt5g3g3yEuWXgklEdEo=
 github.com/Shopify/toxiproxy v2.1.4+incompatible/go.mod h1:OXgGpZ6Cli1/URJOF1DMxUHB2q5Ap20/P/eIdh4G0pI=
 github.com/ajwerner/btree v0.3.0 h1:hQoQ5izdFMWpdYX4LHxLh8R8mO8DBmpXY0h6wCsB5FQ=
@@ -59,6 +61,8 @@ github.com/anacrolix/missinggo/v2 v2.2.0/go.mod h1:o0jgJoYOyaoYQ4E2ZMISVa9c88BbU
 github.com/anacrolix/missinggo/v2 v2.5.1/go.mod h1:WEjqh2rmKECd0t1VhQkLGTdIWXO6f6NLjp5GlMZ+6FA=
 github.com/anacrolix/missinggo/v2 v2.10.0 h1:pg0iO4Z/UhP2MAnmGcaMtp5ZP9kyWsusENWN9aolrkY=
 github.com/anacrolix/missinggo/v2 v2.10.0/go.mod h1:nCRMW6bRCMOVcw5z9BnSYKF+kDbtenx+hQuphf4bK8Y=
+github.com/anacrolix/missinggo/v2 v2.11.0 h1:9vYHTNHa5q8tLeDbA6XWFyYeKrxrhfw7GZe9KpS2Wnw=
+github.com/anacrolix/missinggo/v2 v2.11.0/go.mod h1:gcZICf9xhHZEuLIaxXG1gRg4hpbL7lqgVrq5jsYtQU4=
 github.com/anacrolix/mmsg v1.0.1 h1:TxfpV7kX70m3f/O7ielL/2I3OFkMPjrRCPo7+4X5AWw=
 github.com/anacrolix/mmsg v1.0.1/go.mod h1:x8kRaJY/dCrY9Al0PEcj1mb/uFHwP6GCJ9fLl4thEPc=
 github.com/anacrolix/multiless v0.4.0 h1:lqSszHkliMsZd2hsyrDvHOw4AbYWa+ijQ66LzbjqWjM=
