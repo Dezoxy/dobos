@@ -33,11 +33,16 @@ type checkResult struct {
 type healthChecks struct {
 	mount, engine, stateDB func() checkResult
 	timeout                time.Duration
+	// warnings lists the advisory warnings (nil = none). It must read memory only: it
+	// is not a check, and it never changes the status or the HTTP code.
+	warnings func() []string
 }
 
 type healthReport struct {
 	Status string                 `json:"status"`
 	Checks map[string]checkResult `json:"checks"`
+	// Warnings is always present, [] when clear. Fixed words only: the endpoint is open.
+	Warnings []string `json:"warnings"`
 }
 
 // runCheck runs fn in its own goroutine and gives up after d. A check stuck in
@@ -82,9 +87,14 @@ func (h healthChecks) report() healthReport {
 		n := <-out
 		checks[n.name] = n.res
 	}
+	warnings := []string{}
+	if h.warnings != nil {
+		warnings = append(warnings, h.warnings()...)
+	}
 	return healthReport{
-		Status: healthStatus(checks["mount"], checks["engine"], checks["state_db"]),
-		Checks: checks,
+		Status:   healthStatus(checks["mount"], checks["engine"], checks["state_db"]),
+		Checks:   checks,
+		Warnings: warnings,
 	}
 }
 
@@ -111,10 +121,11 @@ func (h healthChecks) handler(w http.ResponseWriter, r *http.Request) {
 // proves the port the library and the bridge's callers use is answering.
 func newHealthChecks() healthChecks {
 	return healthChecks{
-		mount:   checkMount,
-		engine:  checkEngine,
-		stateDB: checkStateDB,
-		timeout: healthCheckTimeout,
+		mount:    checkMount,
+		engine:   checkEngine,
+		stateDB:  checkStateDB,
+		timeout:  healthCheckTimeout,
+		warnings: activeWarnings,
 	}
 }
 

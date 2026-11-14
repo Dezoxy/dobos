@@ -239,3 +239,39 @@ func TestMigrationFromTheFourColumnTable(t *testing.T) {
 		_ = d.Close()
 	}
 }
+
+// A refused wake is its own reason, not a failed swarm read: the streak, whatever it
+// was, is untouched, and a row it creates starts none.
+func TestNotStoredLeavesTheStreakAlone(t *testing.T) {
+	d := openTest(t)
+	const fresh, running = "bbbb", "cccc"
+
+	if err := d.RecordNotStored(fresh, "mount", t0); err != nil {
+		t.Fatal(err)
+	}
+	r := one(t, d, fresh)
+	if r.FailCount != 0 || r.FirstFail != 0 || r.LastSwarmRead != 0 ||
+		r.LastReason != NotStoredReason || r.LastSource != "mount" || r.LastFail != t0.Unix() {
+		t.Fatalf("fresh row = %+v", r)
+	}
+	if rows, err := d.ListReadability(1); err != nil || len(rows) != 0 {
+		t.Fatalf("a refusal is listed as a failing torrent: %+v, %v", rows, err)
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := d.RecordMetadataFailure(running, "no_peers", "mount", t0.Add(time.Duration(i)*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := one(t, d, running)
+	if err := d.RecordNotStored(running, "mount", t0.Add(3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	after := one(t, d, running)
+	if after.FailCount != before.FailCount || after.FirstFail != before.FirstFail {
+		t.Fatalf("a refusal changed the streak: %+v -> %+v", before, after)
+	}
+	if after.LastReason != NotStoredReason {
+		t.Fatalf("last reason = %q, want %q", after.LastReason, NotStoredReason)
+	}
+}

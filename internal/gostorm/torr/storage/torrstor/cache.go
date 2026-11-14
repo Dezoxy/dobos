@@ -170,6 +170,28 @@ func (c *Cache) Init(info *metainfo.Info, hash metainfo.Hash) {
 	}
 }
 
+// LastDelivery returns the latest completion time (Unix seconds) among pieces
+// first..last inclusive, and how many of them carry a stamp (Dezoxy fork). It reads
+// 0, 0 for a nil or closed cache.
+func (c *Cache) LastDelivery(first, last int) (unix int64, pieces int) {
+	if c == nil {
+		return 0, 0
+	}
+	c.muReaders.RLock()
+	defer c.muReaders.RUnlock()
+	for i := first; i <= last; i++ {
+		p := c.pieces[i]
+		if p == nil {
+			continue
+		}
+		if at := p.completedAt.Load(); at > 0 {
+			pieces++
+			unix = max(unix, at)
+		}
+	}
+	return unix, pieces
+}
+
 func (c *Cache) SetTorrent(torr *torrent.Torrent) {
 	if c == nil {
 		return
@@ -595,9 +617,8 @@ func (c *Cache) dropPriority(id int) {
 	}
 	c.muPriority.Lock()
 	defer c.muPriority.Unlock()
-	if _, ok := c.localPriority[id]; !ok {
-		return
-	}
+	// Not only ids in localPriority: RequestRange raises pieces to Normal through the engine's
+	// DownloadPieces without this cache knowing, and only RAM eviction would clear that.
 	delete(c.localPriority, id)
 	torr.Piece(id).SetPriority(torrent.PiecePriorityNone)
 }

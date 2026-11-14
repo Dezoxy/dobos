@@ -5,7 +5,6 @@ import (
 
 	"flodni/internal/gostorm/settings"
 	"flodni/internal/gostorm/torr/state"
-	"flodni/internal/gostorm/torr/utils"
 
 	"github.com/anacrolix/torrent/metainfo"
 )
@@ -16,7 +15,9 @@ type tsFiles struct {
 	} `json:"GoStorm"`
 }
 
-func AddTorrentDB(torr *Torrent) {
+// AddTorrentDB writes the record. posterOK says the poster URL passed CheckImgUrl; the
+// caller checks it first, because that is a network call and must not run under lifeMu.
+func AddTorrentDB(torr *Torrent, posterOK bool) {
 	t := new(settings.TorrentDB)
 	t.TorrentSpec = torr.TorrentSpec
 	t.Title = torr.Title
@@ -32,7 +33,7 @@ func AddTorrentDB(torr *Torrent) {
 	} else {
 		t.Data = torr.Data
 	}
-	if utils.CheckImgUrl(torr.Poster) {
+	if posterOK {
 		t.Poster = torr.Poster
 	}
 	t.Size = torr.Size
@@ -43,6 +44,32 @@ func AddTorrentDB(torr *Torrent) {
 	t.Timestamp = torr.Timestamp // time.Now().Unix()
 
 	settings.AddTorrent(t)
+}
+
+// StoredFiles is the engine's file list saved with a torrent's record (id, path, length),
+// read without waking or loading the torrent (Dezoxy fork). The ids are the ones
+// AddTorrentDB wrote from Status().FileStats: the engine's own, neither the metainfo's
+// order nor a fresh sort. It takes only the settings mutex and the database read: no
+// lifeMu, btsMu, bt.mu or muTorrent. Nil when there is no record, no list (saved before
+// the metainfo) or an unreadable one.
+func StoredFiles(hashHex string) []*state.TorrentFileStat {
+	hash, ok := parseHash(hashHex)
+	if !ok {
+		return nil
+	}
+	db := settings.GetTorrent(hash)
+	if db == nil || db.Data == "" {
+		return nil
+	}
+	return parseStoredFiles(db.Data)
+}
+
+func parseStoredFiles(data string) []*state.TorrentFileStat {
+	var f tsFiles
+	if err := json.Unmarshal([]byte(data), &f); err != nil {
+		return nil
+	}
+	return f.GoStorm.Files
 }
 
 func GetTorrentDB(hash metainfo.Hash) *Torrent {

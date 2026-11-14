@@ -432,6 +432,15 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 			return
 		}
 
+		// Reader budget: park, never cancel, while the next chunk is refused. The engine reader
+		// stays open and unread (the state of the lead-limit park below); a confirmation
+		// resumes the pump with no recovery, and the exits above and the context still run.
+		if budgetBlocksFetch(h.path, offset, chunkSize, h.size) {
+			watchSamples = watchSamples[:0]
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+
 		// Sync to primary handles only; secondary metadata probes cause false 10GB+ jumps.
 		now := time.Now()
 		playerOff := int64(0)
@@ -753,11 +762,7 @@ func shouldServeTailFromSSD(off, size, tailWarmupSize int64) bool {
 	if size <= 0 || tailWarmupSize <= 0 {
 		return false
 	}
-	tailStart := size - tailWarmupSize
-	if tailStart < 0 {
-		tailStart = 0
-	}
-	return off >= tailStart
+	return off >= warmup.TailStartFor(size, tailWarmupSize)
 }
 
 // shouldRecordResumeOff reports whether a read may update the persisted resume position.

@@ -2,6 +2,7 @@ package library
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -80,5 +81,33 @@ func TestGoStormClientNoTokenNoHeader(t *testing.T) {
 		if h != "" {
 			t.Errorf("%s: Authorization = %q, want none", path, h)
 		}
+	}
+}
+
+// A magnet add must ask the engine to store the record: the handler reads
+// save_to_db, so any other key leaves the torrent unsaved until its first idle
+// close or mount open.
+func TestAddTorrentAsksTheEngineToSave(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"hash":"` + testHash + `"}`))
+	}))
+	defer srv.Close()
+
+	c := NewGoStormClient(srv.URL, "")
+	if _, err := c.AddTorrent(context.Background(), "magnet:?xt=urn:btih:"+testHash, "t"); err != nil {
+		t.Fatalf("AddTorrent: %v", err)
+	}
+	if body["action"] != "add" || body["link"] != "magnet:?xt=urn:btih:"+testHash {
+		t.Errorf("body = %v, want action add and the magnet", body)
+	}
+	if body["save_to_db"] != true {
+		t.Errorf("save_to_db = %v, want true (body %v)", body["save_to_db"], body)
+	}
+	if _, stale := body["save"]; stale {
+		t.Errorf("body carries the unread key \"save\": %v", body)
 	}
 }

@@ -1,8 +1,8 @@
 package torrent
 
 import (
-	rbm "github.com/RoaringBitmap/roaring"
-	roaring "github.com/RoaringBitmap/roaring/BitSliceIndexing"
+	rbm "github.com/RoaringBitmap/roaring/v2"
+	roaring "github.com/RoaringBitmap/roaring/v2/BitSliceIndexing"
 )
 
 type pendingRequests struct {

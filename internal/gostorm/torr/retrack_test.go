@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"testing"
 
+	sets "flodni/internal/gostorm/settings"
+
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/bencode"
 	"github.com/anacrolix/torrent/metainfo"
@@ -119,6 +121,51 @@ func TestDropPublicTrackersOnWake(t *testing.T) {
 		dropPublicTrackers(spec, public)
 		if !reflect.DeepEqual(spec.Trackers, c.want) {
 			t.Errorf("%s: trackers = %v, want %v", c.name, spec.Trackers, c.want)
+		}
+	}
+}
+
+// A wake (LoadStored, reached from native.Wake and WakeStored) adds a closed torrent
+// from its stored record alone: the spec NewTorrent gets is the record's own, with no
+// magnet parsed and no tracker merged in. For a private torrent that spec must then
+// carry its own tracker only, whatever the retracker mode (hard rule 3). The spec
+// here is the one the real wake path hands to the engine.
+func TestWakeOfAStoredPrivateTorrentKeepsOnlyItsOwnTrackers(t *testing.T) {
+	warmupFixture(t)
+	yes := true
+	own := "http://seeder.example/announce"
+	def := func() []string { return []string{"udp://public.example:1337/announce"} }
+	file := func() []string { return []string{"udp://file.example:80/announce"} }
+	public := func() []string { return append(def(), file()...) }
+	h := metainfo.NewHashFromHex(removeTestHash)
+	// A record saved before the retracker gate carries the public lists too.
+	sets.AddTorrent(&sets.TorrentDB{TorrentSpec: &torrent.TorrentSpec{
+		InfoHash:  h,
+		InfoBytes: testInfoBytes(t, &yes),
+		Trackers:  [][]string{{own}, def(), file()},
+	}})
+
+	var got *torrent.TorrentSpec
+	prev := newTorrent
+	newTorrent = func(spec *torrent.TorrentSpec, _ *BTServer) (*Torrent, error) {
+		got = spec
+		return &Torrent{TorrentSpec: spec}, nil
+	}
+	defer func() { newTorrent = prev }()
+
+	for mode := 0; mode <= 3; mode++ {
+		got = nil
+		if _, err := LoadStored(h.HexString()); err != nil {
+			t.Fatalf("mode %d: LoadStored: %v", mode, err)
+		}
+		if got == nil || len(got.InfoBytes) == 0 {
+			t.Fatalf("mode %d: the wake did not hand the record's metainfo to the engine", mode)
+		}
+		// What NewTorrent applies before the client sees the spec.
+		dropPublicTrackers(got, public)
+		retrackSpec(got, mode, def, file)
+		if want := [][]string{{own}}; !reflect.DeepEqual(got.Trackers, want) {
+			t.Errorf("mode %d: trackers = %v, want %v", mode, got.Trackers, want)
 		}
 	}
 }

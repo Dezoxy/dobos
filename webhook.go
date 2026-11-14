@@ -275,6 +275,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 				logger.Printf("[PLEX] IMDB ID cached for future matching: %s → %s", filepath.Base(exactMatch), webhookImdbID)
 			}
 			exactState.mu.Unlock()
+			invalidateConfirmed() // after IsStopped is cleared: the keep-alive sees the confirmation at once
 			logger.Printf("[PLEX] Playback confirmed by webhook for: %s", filepath.Base(exactMatch))
 
 			if exactState.Hash != "" {
@@ -286,6 +287,10 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		// After the confirmation, never before it: this stamp writes to SQLite when its
+		// hourly write is due (usually the first webhook of a play), and a read held by
+		// budgetGate waits for SetHealthy above, not for the database.
+		webhookStatus.noteWebhook(exactMatch != "" && exactState != nil)
 	} else if payload.Event == "media.stop" {
 		targetTitle := strings.ToLower(payload.Metadata.Title)
 		seriesTitle := strings.ToLower(payload.Metadata.GrandparentTitle)
@@ -400,6 +405,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			stopState.IsStopped = true
 			stopState.mu.Unlock()
 			stopState.SetHealthy(false) // persists with IsStopped=true
+			invalidateConfirmed()       // the keep-alive releases the torrent at once
 			logger.Printf("[PLEX] STOP applied for: %s (Event: %s)", filepath.Base(stopMatch), payload.Event)
 
 			if val, ok := activePumps.Load(stopMatch); ok {

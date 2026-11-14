@@ -22,11 +22,14 @@ type fileStateStore interface {
 	ClearFileEvicted(hash string, fileIdx int) error
 	DeleteFileStates(hash string) error
 	LoadFileStates() ([]metadb.FileState, error)
+	SaveFileWarm(w metadb.FileWarm) error
 }
 
 type fileStateEntry struct {
 	lastPlayed time.Time // zero = never played
-	evicted    bool
+	evicted    bool      // eviction mark, cleared by a cold play
+	evictedAt  int64     // Unix time of the last eviction, kept for the warmer's EvictedSince
+	warm       fileWarm  // the per-file warm record, see filewarm.go
 }
 
 // fileStateIndex is the in-memory view of what the cache remembers per media file:
@@ -41,6 +44,18 @@ type fileStateIndex struct {
 	now     func() time.Time
 	logf    func(format string, v ...interface{})
 	m       map[warmup.FileKey]*fileStateEntry
+
+	// warmMu orders the store writes of the warm record and of eviction marks: it is
+	// held from computing a record to writing it, so two writers cannot reach the store
+	// in the opposite order of the memory update. Taken before mu, never inside it.
+	warmMu sync.Mutex
+	// pending and wake feed the recorder (filewarm.go); both guarded by mu.
+	pending     map[warmup.FileKey]int64
+	wake        chan struct{}
+	deliveredAt func(k warmup.FileKey, fileSize int64) time.Time
+	// playLatch is set once any play is recorded, here or in the store. Warm on add
+	// evicts only with that evidence: without it every file ranks as never played.
+	playLatch bool
 }
 
 func newFileStateIndex(store fileStateStore, protectionDays int) *fileStateIndex {
@@ -50,6 +65,8 @@ func newFileStateIndex(store fileStateStore, protectionDays int) *fileStateIndex
 		now:     time.Now,
 		logf:    func(string, ...interface{}) {},
 		m:       map[warmup.FileKey]*fileStateEntry{},
+		pending: map[warmup.FileKey]int64{},
+		wake:    make(chan struct{}, 1),
 	}
 }
 
@@ -83,8 +100,13 @@ func (x *fileStateIndex) attach(store fileStateStore) error {
 			x.m[k] = e
 		}
 		e.evicted = e.evicted || r.EvictedAt > 0
+		e.evictedAt = max(e.evictedAt, r.EvictedAt)
+		e.warm.merge(r)
 		if t := time.Unix(r.LastPlayedAt, 0); r.LastPlayedAt > 0 && t.After(e.lastPlayed) {
 			e.lastPlayed = t
+		}
+		if r.LastPlayedAt > 0 {
+			x.playLatch = true
 		}
 	}
 	return nil
@@ -109,6 +131,14 @@ func (x *fileStateIndex) IsPlayed(k warmup.FileKey) bool {
 	return x.protect == 0 || x.now().Sub(e.lastPlayed) < x.protect
 }
 
+// PlayRecorded reports whether any confirmed play is recorded, here or in the store:
+// played-file protection has something to protect.
+func (x *fileStateIndex) PlayRecorded() bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	return x.playLatch
+}
+
 // EverPlayed reports whether any confirmed play was ever recorded for the file, expired
 // or not.
 func (x *fileStateIndex) EverPlayed(k warmup.FileKey) bool {
@@ -127,6 +157,28 @@ func (x *fileStateIndex) HasEvictedMark(k warmup.FileKey) bool {
 	return e != nil && e.evicted
 }
 
+// WarmPolicy is the eviction policy warm on add may use: EvictNeverPlayed only when the
+// state database is attached and some play was recorded (step 1 decision 6). Without
+// that evidence "never played" is every file, so it evicts nothing: EvictNone.
+func (x *fileStateIndex) WarmPolicy() warmup.EvictPolicy {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.store != nil && x.playLatch {
+		return warmup.EvictNeverPlayed
+	}
+	return warmup.EvictNone
+}
+
+// EvictedSince reports whether quota eviction removed the file at or after since. The
+// eviction mark alone can be weeks old; the time tells whether it explains a fill that
+// just lost its windows. Times are whole seconds.
+func (x *fileStateIndex) EvictedSince(k warmup.FileKey, since time.Time) bool {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	e := x.m[normKey(k)]
+	return e != nil && e.evictedAt > 0 && e.evictedAt >= since.Unix()
+}
+
 // MarkPlayed records a confirmed play.
 func (x *fileStateIndex) MarkPlayed(k warmup.FileKey) {
 	k = normKey(k)
@@ -138,6 +190,7 @@ func (x *fileStateIndex) MarkPlayed(k warmup.FileKey) {
 		x.m[k] = e
 	}
 	e.lastPlayed = now
+	x.playLatch = true
 	st := x.store
 	x.mu.Unlock()
 	if st != nil {
@@ -152,6 +205,8 @@ func (x *fileStateIndex) MarkPlayed(k warmup.FileKey) {
 func (x *fileStateIndex) OnEvicted(evs []warmup.Eviction) {
 	now := x.now()
 	keys := make([]metadb.FileKey, 0, len(evs))
+	x.warmMu.Lock()
+	defer x.warmMu.Unlock()
 	x.mu.Lock()
 	for _, ev := range evs {
 		k := normKey(ev.Key)
@@ -164,6 +219,8 @@ func (x *fileStateIndex) OnEvicted(evs []warmup.Eviction) {
 			x.m[k] = e
 		}
 		e.evicted = true
+		e.evictedAt = now.Unix()
+		e.warm.cache = cacheEvicted // readability stays: an eviction says nothing about the swarm
 		keys = append(keys, metadb.FileKey{Hash: k.Hash, FileIdx: k.FileIdx})
 	}
 	st := x.store
@@ -204,11 +261,19 @@ func (x *fileStateIndex) ForgetMemory(hash string) {
 			delete(x.m, k)
 		}
 	}
+	for k := range x.pending {
+		if k.Hash == hash {
+			delete(x.pending, k)
+		}
+	}
 	x.mu.Unlock()
 }
 
 // ForgetHash drops a torrent that left the library, in memory and in the store.
 func (x *fileStateIndex) ForgetHash(hash string) {
+	// After any warm write in flight: its row must not land behind the delete.
+	x.warmMu.Lock()
+	defer x.warmMu.Unlock()
 	x.ForgetMemory(hash)
 	if st := x.storeRef(); st != nil {
 		if err := st.DeleteFileStates(strings.ToLower(hash)); err != nil {

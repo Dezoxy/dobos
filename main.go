@@ -27,6 +27,7 @@ import (
 	"flodni/internal/registry"
 	"flodni/internal/tuner"
 	"flodni/internal/vfs"
+	"flodni/internal/warmer"
 	"flodni/internal/warmup"
 	"fmt"
 	"golang.org/x/sys/cpu"
@@ -257,6 +258,13 @@ func main() {
 	// Before the engine starts serving streams (Dezoxy fork, see torrstor.BoundedReadahead).
 	torrstor.BoundedReadahead = !gc().PumpOnOpen
 	server.SetAPIToken(gc().APIToken)
+	// Keep-alive counters (Reliability step 8, phase a): count the engine's idle
+	// closes. Set before the engine and its ticker start. The hook only counts; it
+	// changes nothing about when a torrent closes.
+	torr.OnIdleClose = countIdleClose
+	// Keep-alive (phase b): the engine asks before it closes an idle torrent. The
+	// predicate reads the playback state only and never calls into the engine.
+	torr.HoldExpiry = keepaliveHold
 	go func() {
 		logger.Println("Starting Embedded GoStorm Engine...")
 		server.Start() // Starts Web Server on 8090 and Engine
@@ -270,7 +278,10 @@ func main() {
 	fileStates.logf = logger.Printf
 	warmup.IsPlayed = fileStates.IsPlayed
 	warmup.OnEvicted = fileStates.OnEvicted
-	warmup.OnHashRemoved = fileStates.ForgetHash
+	// Warm on add (idle until warm_on_add is set): a removal cancels it before the
+	// torrent's records are forgotten.
+	addWarmer = warmer.New(addWarmerDeps(fileStates, backgroundStopChan))
+	warmup.OnHashRemoved = onHashRemoved(addWarmer, fileStates)
 	warmup.InitDiskWarmup(warmup.Options{
 		QuotaGB: gc().DiskWarmupQuotaGB,
 		Dir:     gc().WarmupDir,
@@ -282,6 +293,9 @@ func main() {
 	if gc().WarmupDir != "" {
 		warmup.RangeVerified = func(hash string, fileID int, off, n int64) bool {
 			return torr.PeekTorrent(hash).RangeVerified(fileID, off, n)
+		}
+		warmup.PiecesVerified = func(hash string, fileID int, off, n int64) (int, int) {
+			return torr.PeekTorrent(hash).VerifiedPieces(fileID, off, n)
 		}
 		warmup.RequestPieces = func(hash string, fileID int, off, n int64) {
 			torr.PeekTorrent(hash).RequestRange(fileID, off, n)
@@ -331,7 +345,9 @@ func main() {
 
 	catalog.SetRetryDefaults(gc().MaxRetryAttempts, time.Duration(gc().RetryDelayMS)*time.Millisecond)
 
-	nativeBridge = nativeEngine{native.NewNativeClient()}
+	nativeClient := native.NewNativeClient()
+	nativeBridge = nativeEngine{nativeClient}
+	warmWake = nativeClient.WakeStored
 
 	go tuner.Start(context.Background())
 
@@ -367,8 +383,15 @@ func main() {
 					logger.Printf("WARNING: Failed to reload InodeMap from DB: %v", err)
 				}
 				registry.SetRegistryDB(stateDB)
+				webhookStatus.attach(stateDB)
 				if err := fileStates.attach(stateDB); err != nil {
-					logger.Printf("WARNING: Failed to load file state: %v (played marks stay in memory)", err)
+					logger.Printf("WARNING: Failed to load file state: %v (played marks stay in memory, no warm records)", err)
+				} else if gc().WarmupDir != "" {
+					// Index mode only: elsewhere writes are not verified, so nothing is recorded.
+					// Wired only after a successful attach, so a record is never held in memory alone.
+					fileStates.deliveredAt = warmDeliveredAt
+					warmup.OnWindowsCached = fileStates.windowsCached
+					go fileStates.runRecorder(backgroundStopChan)
 				}
 				// V750: Restore playback states from previous sessions
 				restorePlaybackStates(stateDB)
@@ -397,6 +420,8 @@ func main() {
 		}
 	}
 
+	startWebhookStatus(webhookStatus, backgroundStopChan)
+
 	finishGlobalInodeMapInit(logger)
 
 	// The dir cache must exist before the startup builder runs: a nil cache there
@@ -410,7 +435,7 @@ func main() {
 	globalCleanupManager = NewCleanupManager(logger, metaCache, nativeBridge)
 	globalCleanupManager.Start()
 
-	globalTorrentRemover = NewTorrentRemover(nativeBridge, logger)
+	globalTorrentRemover = NewTorrentRemover(logger)
 
 	// Own mux: nothing else in the process (expvar, pprof) can add routes to the control port.
 	mux := http.NewServeMux()
@@ -520,8 +545,9 @@ func main() {
 	if stateDB != nil {
 		healthStore = stateDB
 	}
-	mux.HandleFunc("/api/torrents/health", newTorrentsHealthHandler(healthStore, logger))
+	mux.HandleFunc("/api/torrents/health", newTorrentsHealthHandler(healthStore, fileStates.WarmSnapshot, logger))
 	mux.HandleFunc("/api/health", newHealthChecks().handler)
+	mux.HandleFunc("/api/warmup/evict", newWarmupEvictHandler(evictWarmupTo))
 
 	mux.HandleFunc("/control", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
@@ -686,10 +712,19 @@ func main() {
 				return globalTorrentRemover.addToBlacklist(hash, globalTorrentRemover.deriveTitleFromPath(path))
 			},
 			Logger:       logger,
+			OnAdded:      onLibraryAdded,
 			MediaServer:  mediaserver.New(gc().MediaServerType, gc().Plex.URL, gc().Plex.Token),
 			MovieSection: gc().Plex.LibraryID,
 			TVSection:    gc().Plex.TVLibraryID,
 		})
+		// rm through the mount removes the stub the same way the API does, and drops
+		// the torrent only when no other stub uses it.
+		unlinkRemove = func(ctx context.Context, path string) error {
+			_, err := libMgr.Remove(ctx, library.RemoveRequest{Path: path})
+			return err
+		}
+		// Catch-up (idle unless warm_on_add is on): warms the titles already filed.
+		startCatchup(libMgr)
 		libHandler := library.NewHandler(libMgr)
 		mux.HandleFunc("/api/library/add", libHandler.Add)
 		mux.HandleFunc("/api/library/remove", libHandler.Remove)
@@ -802,7 +837,7 @@ func main() {
 			// MaxReadAhead:             1024 * 1024,
 			MaxReadAhead:             4 * 1024 * 1024, // Samba Turbo: 4MB read-ahead
 			RememberInodes:           true,            // ENABLED: safe with explicit cache control
-			ExplicitDataCacheControl: true,            // PREVENTS kernel freezes during invalidation
+			ExplicitDataCacheControl: true,            // attribute-driven invalidation only, not open-time
 			SyncRead:                 false,           // ENABLED ASYNC READS for 4K performance
 			// NFS Export: Stable filesystem identification
 			FsName: "flodni",

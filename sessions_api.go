@@ -61,6 +61,12 @@ type sessionRecord struct {
 	SwarmServed     bool    `json:"swarm_served"`
 	DurationMS      int64   `json:"duration_ms"`
 	FailureReason   *string `json:"failure_reason"`
+	// Added with the keep-alive counters. Per-session values are lower bounds: a play
+	// with long gaps spans several sessions.
+	Reopens    int64 `json:"reopens"`
+	Stalls     int64 `json:"stalls"`
+	MaxStallMS int64 `json:"max_stall_ms"`
+	Confirmed  bool  `json:"confirmed"`
 }
 
 // record snapshots the session. closedAt is the zero time for an open session.
@@ -83,6 +89,10 @@ func (s *TTFFSession) record(closedAt time.Time, dead bool) sessionRecord {
 		BytesWarmupTail: s.bytesWarmupTail.Load(),
 		SwarmServed:     s.servedByNet.Load(),
 		FailureReason:   s.failReason.Load(),
+		Reopens:         s.reopens.Load(),
+		Stalls:          s.stallCount.Load(),
+		MaxStallMS:      s.maxStallMS.Load(),
+		Confirmed:       s.confirmed.Load(),
 	}
 	end := time.Now()
 	if fd := s.firstDataAt.Load(); fd > 0 {
