@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -539,19 +540,151 @@ func TestMultiSeasonPackFilesEachSeasonUnderItsOwnFolder(t *testing.T) {
 	}
 }
 
-// BEHAVIOUR THAT LOOKS LIKE A BUG, pinned as it is: a pack file named S00E01 (a
-// special) parses to season 0, which addEpisodes reads as "no season in the name"
-// and files under the requested season, where it collides with that season's E01
-// and competes by size.
-func TestSeasonPackSpecialsFallIntoTheRequestedSeason(t *testing.T) {
-	e := newCharEnv(t, FileStat{ID: 1, Path: "p/Show.S00E01.Special.mkv", Length: 5})
+// A pack file named S00E01 is a special: it is filed as season 0 (Season.00, the
+// folder Plex reads as Specials), not as the requested season's episode 1, where
+// it used to collide with the real one and compete by size.
+func TestSeasonPackSpecialsAreFiledAsSeasonZero(t *testing.T) {
+	e := newCharEnv(t,
+		FileStat{ID: 1, Path: "p/Show.S00E01.Special.mkv", Length: 5},
+		FileStat{ID: 2, Path: "p/Show.S03E01.mkv", Length: 1},
+	)
 	resp, err := e.add(AddRequest{Type: "tv", Title: "Show", Hash: charPackHash, Season: 3})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(resp.Files) != 1 || resp.Files[0].Season != 3 || resp.Files[0].Episode != 1 ||
-		resp.Files[0].FusePath != "tv/Show/Season.03/Show_S03E01_11111111.mkv" {
-		t.Fatalf("files = %+v", resp.Files)
+	var got []string
+	for _, f := range resp.Files {
+		got = append(got, fmt.Sprintf("%d/%d/%d/%s", f.Season, f.Episode, f.FileIndex, f.FusePath))
+	}
+	want := []string{
+		"0/1/1/tv/Show/Season.00/Show_S00E01_11111111.mkv",
+		"3/1/2/tv/Show/Season.03/Show_S03E01_11111111.mkv",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("files = %v, want %v", got, want)
+	}
+	if _, ok := e.reg.rows["show_s00e01"]; !ok {
+		t.Errorf("registry rows = %v, want one under show_s00e01", e.reg.rows)
+	}
+}
+
+// The single-episode pick had the same hole: a special's file named the requested
+// episode number and was taken for it.
+func TestSingleEpisodeDoesNotTakeASpecialForTheEpisode(t *testing.T) {
+	e := newCharEnv(t,
+		FileStat{ID: 1, Path: "p/Show.S00E03.Special.mkv", Length: 900},
+		FileStat{ID: 2, Path: "p/Show.S02E03.mkv", Length: 100},
+	)
+	resp, err := e.add(AddRequest{Type: "tv", Title: "Show", Hash: charPackHash, Season: 2, Episode: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := resp.Files[0].FileIndex; got != 2 {
+		t.Fatalf("file index = %d, want 2 (the S02E03 file)", got)
+	}
+}
+
+// A sample is dropped by its name and size alone, even with no larger file naming
+// the same episode: it used to be filed as the episode when it was the only one.
+func TestSamplesAreDroppedWithoutALargerSibling(t *testing.T) {
+	big := int64(60 << 20)
+	small := int64(20 << 20)
+	t.Run("pack: a lone sample names no episode", func(t *testing.T) {
+		e := newCharEnv(t, FileStat{ID: 1, Path: "p/Show.S01E01.sample.mkv", Length: small})
+		_, err := e.add(AddRequest{Type: "tv", Title: "Show", Hash: charPackHash, Season: 1})
+		if statusOf(t, err) != http.StatusUnprocessableEntity {
+			t.Fatalf("err = %v, want 422", err)
+		}
+		if got := mkvs(t, e.tv); len(got) != 0 {
+			t.Fatalf("tv dir = %v, want nothing written", got)
+		}
+	})
+	t.Run("pack: a sample folder, another episode is kept", func(t *testing.T) {
+		e := newCharEnv(t,
+			FileStat{ID: 1, Path: "p/Sample/Show.S01E01.mkv", Length: small},
+			FileStat{ID: 2, Path: "p/Show.S01E02.mkv", Length: big})
+		resp, err := e.add(AddRequest{Type: "tv", Title: "Show", Hash: charPackHash, Season: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Files) != 1 || resp.Files[0].Episode != 2 {
+			t.Fatalf("files = %+v, want episode 2 only", resp.Files)
+		}
+	})
+	t.Run("pack: a sample at or above the size is kept", func(t *testing.T) {
+		e := newCharEnv(t, FileStat{ID: 1, Path: "p/Show.S01E01.sample.mkv", Length: minVideoSize})
+		resp, err := e.add(AddRequest{Type: "tv", Title: "Show", Hash: charPackHash, Season: 1})
+		if err != nil || len(resp.Files) != 1 {
+			t.Fatalf("resp = %+v, err = %v", resp, err)
+		}
+	})
+	t.Run("single episode: the lone sample is not the fallback", func(t *testing.T) {
+		e := newCharEnv(t, FileStat{ID: 1, Path: "p/sample.mkv", Length: small})
+		_, err := e.add(AddRequest{Type: "tv", Title: "Show", Hash: charPackHash, Season: 1, Episode: 1})
+		if statusOf(t, err) != http.StatusUnprocessableEntity {
+			t.Fatalf("err = %v, want 422", err)
+		}
+	})
+	t.Run("single episode: an explicit file index still wins", func(t *testing.T) {
+		e := newCharEnv(t, FileStat{ID: 1, Path: "p/sample.mkv", Length: small})
+		if _, err := e.add(AddRequest{Type: "tv", Title: "Show", Hash: charPackHash, Season: 1, Episode: 1, FileIndex: 1}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("movie: a lone sample is refused and logged", func(t *testing.T) {
+		e := newCharEnv(t, FileStat{ID: 1, Path: "Movie/Sample/movie-sample.mkv", Length: small})
+		var buf bytes.Buffer
+		e.m.cfg.Logger = log.New(&buf, "", 0)
+		_, err := e.add(AddRequest{Type: "movie", Title: "Movie", Hash: charPackHash})
+		if statusOf(t, err) != http.StatusUnprocessableEntity {
+			t.Fatalf("err = %v, want 422", err)
+		}
+		if !strings.Contains(buf.String(), "ignored sample") {
+			t.Errorf("log = %q, want a line about the ignored sample", buf.String())
+		}
+	})
+	t.Run("a word that merely contains sample is not a sample", func(t *testing.T) {
+		if isSample(FileStat{Path: "p/Show.Sampler.S01E01.mkv", Length: small}) {
+			t.Error("Sampler was taken for a sample")
+		}
+		if !isSample(FileStat{Path: "p/SAMPLE-show.mkv", Length: small}) {
+			t.Error("SAMPLE-show was not taken for a sample")
+		}
+	})
+}
+
+// A show registered before the key folded accents holds its rows under the old
+// key (the accented letters dropped). A re-add must find and replace that row,
+// not write a second one beside it; a show with no old row gets the new key.
+func TestAccentedShowKeepsItsLegacyRegistryRow(t *testing.T) {
+	e := newCharEnv(t, FileStat{ID: 1, Path: "Show.S01E02.mkv", Length: 1 << 20})
+	legacy := legacyEpisodeKey("Élite", 1, 2)
+	oldPath := filepath.Join(e.tv, "Élite", "Season.01", EpisodeFilename("Élite", 1, 2, "deadbeef"))
+	if err := WriteStub(oldPath, "http://engine/stream?link="+charOtherHash, 1, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	e.reg.rows[legacy] = metadb.EpisodeEntry{EpisodeKey: legacy, Hash: charOtherHash, FilePath: oldPath, ShowIMDB: "tt0111111"}
+
+	if _, err := e.add(AddRequest{Type: "tv", Title: "Élite", Hash: charThirdHash, Season: 1, Episode: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.reg.rows) != 1 {
+		t.Fatalf("rows = %v, want the one legacy row replaced", e.reg.rows)
+	}
+	row, ok := e.reg.rows[legacy]
+	if !ok || row.Hash != charThirdHash || row.ShowIMDB != "tt0111111" {
+		t.Fatalf("legacy row = %+v (ok=%v), want replaced in place with the show id kept", row, ok)
+	}
+	if exists(oldPath) {
+		t.Errorf("replaced stub %s still there", oldPath)
+	}
+
+	// Another accented show with no old row is keyed the new way.
+	if _, err := e.add(AddRequest{Type: "tv", Title: "Étoile", Hash: charThirdHash, Season: 1, Episode: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := e.reg.rows["etoile_s01e02"]; !ok {
+		t.Errorf("rows = %v, want etoile_s01e02", e.reg.rows)
 	}
 }
 
