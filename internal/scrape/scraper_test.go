@@ -29,7 +29,7 @@ func newTest(t *testing.T, targets []Target, mod func(*Config)) (*Scraper, *logB
 	t.Helper()
 	lb := &logBuf{}
 	cfg := Config{
-		Source:      func() []Target { return targets },
+		Source:      func(only *[20]byte) []Target { return filterTargets(targets, only) },
 		Pace:        time.Millisecond,
 		Timeout:     500 * time.Millisecond,
 		BackoffBase: time.Millisecond,
@@ -188,7 +188,7 @@ func TestStoppedPassLeavesEntriesAlone(t *testing.T) {
 	waitDone(t, s)
 	hang := newFakeHTTP(t, nil)
 	hang.answer = func(w http.ResponseWriter, r *http.Request, _ [][20]byte) { time.Sleep(time.Second) }
-	s.cfg.Source = func() []Target { return []Target{{Hash: a, Trackers: []string{hang.announce()}}} }
+	s.cfg.Source = func(*[20]byte) []Target { return []Target{{Hash: a, Trackers: []string{hang.announce()}}} }
 	_, _ = s.StartPass("manual", nil)
 	time.Sleep(50 * time.Millisecond)
 	s.Stop()

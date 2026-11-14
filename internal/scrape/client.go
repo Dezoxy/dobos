@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -57,11 +58,15 @@ func capInterval(sec int64) time.Duration {
 	return time.Duration(sec) * time.Second
 }
 
-func newHTTPClient(timeout time.Duration) *http.Client {
+func newHTTPClient(timeout time.Duration, proxy *url.URL) *http.Client {
+	var pf func(*http.Request) (*url.URL, error)
+	if proxy != nil {
+		pf = func(*http.Request) (*url.URL, error) { return proxy, nil }
+	}
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			Proxy:             nil,
+			Proxy:             pf,
 			DisableKeepAlives: true,
 		},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -71,7 +76,7 @@ func newHTTPClient(timeout time.Duration) *http.Client {
 // HTTPScrape asks one scrape URL about every hash in a single request (BEP 48)
 // and returns the answers it got: a hash the tracker omitted is absent from the
 // map. The second result is the tracker's requested minimum interval.
-func HTTPScrape(ctx context.Context, c *http.Client, scrapeURL string, hashes [][20]byte, maxBody int64) (map[[20]byte]Counts, time.Duration, *Error) {
+func HTTPScrape(ctx context.Context, c *http.Client, scrapeURL string, hashes [][20]byte, maxBody int64, userAgent string) (map[[20]byte]Counts, time.Duration, *Error) {
 	var q strings.Builder
 	sep := "?"
 	if strings.Contains(scrapeURL, "?") {
@@ -93,7 +98,7 @@ func HTTPScrape(ctx context.Context, c *http.Client, scrapeURL string, hashes []
 	if err != nil {
 		return nil, 0, fail("bad tracker URL")
 	}
-	req.Header.Set("User-Agent", "flodni")
+	req.Header.Set("User-Agent", userAgent)
 	resp, err := c.Do(req)
 	if err != nil {
 		return nil, 0, classify(err)
@@ -114,7 +119,7 @@ func HTTPScrape(ctx context.Context, c *http.Client, scrapeURL string, hashes []
 
 func intOf(m map[string]any, key string) (int, bool) {
 	n, ok := m[key].(int64)
-	if !ok || n < 0 || n > maxCount {
+	if !ok || n < 0 || n >= maxCount {
 		return 0, false
 	}
 	return int(n), true
@@ -138,7 +143,7 @@ func parseHTTPAnswer(body []byte, hashes [][20]byte) (map[[20]byte]Counts, time.
 		}
 	}
 	if reason, ok := top["failure reason"].([]byte); ok {
-		return nil, 0, &Error{Msg: "tracker: " + string(reason), RetryAfter: retry}
+		return nil, retry, &Error{Msg: "tracker: " + string(reason), RetryAfter: retry}
 	}
 	files, ok := top["files"].(map[string]any)
 	if !ok {
@@ -262,9 +267,12 @@ func UDPScrape(ctx context.Context, addr string, hashes [][20]byte, timeout time
 	for i := 0; i < (len(resp)-8)/12; i++ {
 		o := 8 + 12*i
 		out[hashes[i]] = Counts{
-			Seeders:  int(binary.BigEndian.Uint32(resp[o : o+4])),
-			Leechers: int(binary.BigEndian.Uint32(resp[o+8 : o+12])),
+			Seeders:  capCount(binary.BigEndian.Uint32(resp[o : o+4])),
+			Leechers: capCount(binary.BigEndian.Uint32(resp[o+8 : o+12])),
 		}
 	}
 	return out, nil
 }
+
+// capCount keeps a UDP count below maxCount so it cannot wrap an int on a 32-bit build.
+func capCount(v uint32) int { return int(min(v, maxCount-1)) }

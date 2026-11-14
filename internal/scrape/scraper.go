@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,9 +24,14 @@ type Target struct {
 type Entry struct {
 	Seeders, Leechers *int
 	At                time.Time
-	Err               string // host and failure class, never a URL
+	Err               string // host and failure class, or "unknown_to_tracker"; never a URL
 	RunID             int
+	Source            string // "http" or "udp": the tracker answer that supplied the numbers
 }
+
+// UnknownToTracker is the entry error when every tracker that answered left the
+// torrent out and none failed: the torrent is not known there, which is not a 0.
+const UnknownToTracker = "unknown_to_tracker"
 
 // Pass describes one pass. Torrents counts the torrents in it; OK, Errors and
 // Skipped count torrents finished with numbers, with an error, and without a
@@ -49,12 +56,32 @@ var (
 	ErrUnknownHash = errors.New("unknown torrent")
 	// ErrStopped: the scraper was stopped.
 	ErrStopped = errors.New("scraper stopped")
+	// ErrNotReady: the stored records cannot be read yet (start-up).
+	ErrNotReady = errors.New("stored torrents not ready")
 )
 
 // Config tunes a Scraper. Zero values take the defaults noted.
 type Config struct {
-	// Source lists the stored torrents; it is read at the start of each pass.
-	Source func() []Target
+	// Source lists the stored torrents at the start of a pass: every one for nil, only
+	// that hash otherwise. It is not called while a pass runs or the scraper stops.
+	Source func(only *[20]byte) []Target
+	// Ready, when set, says whether Source may be called yet; before that StartPass
+	// answers ErrNotReady.
+	Ready func() bool
+	// Proxy, when set, carries every HTTP scrape request, as the engine does for its
+	// tracker requests. UDP cannot go through it, so UDP trackers are skipped
+	// ("udp skipped: proxy") rather than scraped from the real address.
+	Proxy *url.URL
+	// NoUDP skips UDP trackers even without Proxy (the engine's proxy mode may leave
+	// its HTTP requests direct while a proxy is still configured).
+	NoUDP bool
+	// UserAgent is sent with HTTP scrapes (default "flodni"; the daemon passes the
+	// engine's).
+	UserAgent string
+	// MaxInPassWait is the longest a host waits for its pacing or backoff inside a
+	// pass (default 2 min); a longer block ends its remaining torrents of the pass
+	// with "host backing off" so one slow host never holds the pass open.
+	MaxInPassWait time.Duration
 	// Interval between scheduled passes; 0 turns the schedule off (a manual pass
 	// still works).
 	Interval time.Duration
@@ -98,9 +125,11 @@ type Scraper struct {
 	cur      *Pass // the latest pass, running or done
 	lastDone *Pass
 	prevDone *Pass
-	lastFull *Pass // last finished pass over all torrents, not cancelled
+	lastFull *Pass                  // last finished pass over all torrents, not cancelled
+	tried    map[[20]byte]time.Time // when a request last carried the torrent
 	hosts    map[string]*hostState
 	stopped  bool
+	starting int // run id reserved while the targets load, else 0
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -136,6 +165,12 @@ func New(cfg Config) *Scraper {
 	if cfg.MaxHostFailures <= 0 {
 		cfg.MaxHostFailures = 3
 	}
+	if cfg.MaxInPassWait <= 0 {
+		cfg.MaxInPassWait = 2 * time.Minute
+	}
+	if cfg.UserAgent == "" {
+		cfg.UserAgent = "flodni"
+	}
 	if cfg.MaxBody <= 0 {
 		cfg.MaxBody = DefaultMaxBody
 	}
@@ -152,10 +187,11 @@ func New(cfg Config) *Scraper {
 	return &Scraper{
 		cfg:     cfg,
 		results: map[[20]byte]Entry{},
+		tried:   map[[20]byte]time.Time{},
 		hosts:   map[string]*hostState{},
 		ctx:     ctx,
 		cancel:  cancel,
-		client:  newHTTPClient(cfg.Timeout),
+		client:  newHTTPClient(cfg.Timeout, cfg.Proxy),
 	}
 }
 
@@ -177,10 +213,11 @@ func (s *Scraper) Start() {
 				return
 			case <-t.C:
 			}
+			wait = time.Duration((0.9 + 0.2*s.cfg.Rand()) * float64(s.cfg.Interval))
 			if _, err := s.StartPass("schedule", nil); err != nil && !errors.Is(err, ErrStopped) {
 				s.cfg.Logf("[Scrape] scheduled pass skipped: %v", err)
+				wait = min(wait, time.Minute) // try again soon, not a whole interval later
 			}
-			wait = time.Duration((0.9 + 0.2*s.cfg.Rand()) * float64(s.cfg.Interval))
 		}
 	}()
 }
@@ -195,11 +232,19 @@ func (s *Scraper) Stop() {
 	s.wg.Wait()
 }
 
+const msgBackingOff = "host backing off"
+
+type answer struct {
+	Counts
+	source string
+}
+
 type tstate struct {
 	hash    [20]byte
 	pending int
-	oks     []Counts
-	err     string
+	answers []answer
+	unknown int    // trackers that answered and left the torrent out
+	err     string // first tracker that failed or was skipped: it was not heard from
 }
 
 type item struct {
@@ -207,15 +252,38 @@ type item struct {
 	ep      Endpoint
 	hash    [20]byte
 	secrets []string
+	age     time.Time // the torrent's last entry; zero if it has none
 }
 
 // StartPass starts a pass and returns at once. hash nil scrapes every stored
 // torrent; otherwise only that one. While a pass runs it returns ErrRunning and
-// the running pass.
+// the running pass. Nothing is loaded before those checks pass.
 func (s *Scraper) StartPass(trigger string, hash *[20]byte) (Pass, error) {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return Pass{}, ErrStopped
+	}
+	if s.starting != 0 {
+		p := Pass{RunID: s.starting, Trigger: trigger, State: "running"}
+		s.mu.Unlock()
+		return p, ErrRunning
+	}
+	if s.cur != nil && s.cur.State == "running" {
+		p := *s.cur
+		s.mu.Unlock()
+		return p, ErrRunning
+	}
+	if s.cfg.Ready != nil && !s.cfg.Ready() {
+		s.mu.Unlock()
+		return Pass{}, ErrNotReady
+	}
+	s.starting = s.runSeq + 1
+	s.mu.Unlock()
+
 	var targets []Target
 	if s.cfg.Source != nil {
-		targets = s.cfg.Source()
+		targets = s.cfg.Source(hash)
 	}
 	scope := "all"
 	if hash != nil {
@@ -226,21 +294,18 @@ func (s *Scraper) StartPass(trigger string, hash *[20]byte) (Pass, error) {
 				one = append(one, t)
 			}
 		}
-		if len(one) == 0 {
-			return Pass{}, ErrUnknownHash
-		}
 		targets = one
 	}
 
 	s.mu.Lock()
+	s.starting = 0
+	if scope == "one" && len(targets) == 0 {
+		s.mu.Unlock()
+		return Pass{}, ErrUnknownHash
+	}
 	if s.stopped {
 		s.mu.Unlock()
 		return Pass{}, ErrStopped
-	}
-	if s.cur != nil && s.cur.State == "running" {
-		p := *s.cur
-		s.mu.Unlock()
-		return p, ErrRunning
 	}
 	s.runSeq++
 	pass := &Pass{RunID: s.runSeq, Trigger: trigger, Scope: scope, State: "running",
@@ -250,14 +315,22 @@ func (s *Scraper) StartPass(trigger string, hash *[20]byte) (Pass, error) {
 	work := map[string][]*item{}
 	var order []string
 	inSnapshot := make(map[[20]byte]bool, len(targets))
+	proxySkips := 0
 	for _, t := range targets {
 		inSnapshot[t.Hash] = true
 		ts := &tstate{hash: t.Hash}
 		seen := map[[2]string]bool{}
+		age := s.tried[t.Hash]
 		for _, a := range t.Trackers {
 			ep, err := Derive(a)
 			if err != nil {
 				s.skipTotal.Add(1)
+				if ts.err == "" {
+					ts.err = "no scrape URL"
+					if errors.Is(err, ErrUnsupported) {
+						ts.err = "unsupported tracker"
+					}
+				}
 				continue
 			}
 			k := [2]string{ep.Host, ep.Key}
@@ -265,20 +338,38 @@ func (s *Scraper) StartPass(trigger string, hash *[20]byte) (Pass, error) {
 				continue
 			}
 			seen[k] = true
+			if ep.Kind == "udp" && (s.cfg.Proxy != nil || s.cfg.NoUDP) {
+				s.skipTotal.Add(1)
+				proxySkips++
+				if ts.err == "" {
+					ts.err = ep.Host + ": udp skipped: proxy"
+				}
+				continue
+			}
 			ts.pending++
 			if _, ok := work[ep.Host]; !ok {
 				order = append(order, ep.Host)
 			}
-			work[ep.Host] = append(work[ep.Host], &item{ts: ts, ep: ep, hash: t.Hash, secrets: secretsOf(a)})
+			work[ep.Host] = append(work[ep.Host], &item{ts: ts, ep: ep, hash: t.Hash, secrets: secretsOf(a), age: age})
 		}
 		if ts.pending == 0 {
 			pass.Skipped++
 		}
 	}
+	// The oldest entries go first, never-scraped ones before all: a host that only
+	// lets a few requests through a pass serves a different part of its torrents each time.
+	for _, items := range work {
+		sort.SliceStable(items, func(i, j int) bool { return items[i].age.Before(items[j].age) })
+	}
 	if scope == "all" {
 		for h := range s.results {
 			if !inSnapshot[h] {
 				delete(s.results, h) // the torrent is gone
+			}
+		}
+		for h := range s.tried {
+			if !inSnapshot[h] {
+				delete(s.tried, h)
 			}
 		}
 	}
@@ -294,6 +385,9 @@ func (s *Scraper) StartPass(trigger string, hash *[20]byte) (Pass, error) {
 	s.mu.Unlock()
 
 	s.cfg.Logf("[Scrape] pass %d (%s) started: %d torrents on %d hosts", info.RunID, trigger, info.Torrents, len(order))
+	if proxySkips > 0 {
+		s.cfg.Logf("[Scrape] udp skipped: proxy configured (%d tracker entries)", proxySkips)
+	}
 	go s.runPass(pass, work, order, hostStates, trigger == "schedule")
 	return info, nil
 }
@@ -370,7 +464,13 @@ func (s *Scraper) runHost(pass *Pass, host string, items []*item, hs *hostState,
 			s.mu.Lock()
 			wait := hs.blockedUntil.Sub(s.cfg.Now())
 			s.mu.Unlock()
-			if !sleepCtx(s.ctx, min(wait, max(s.cfg.Pace, s.cfg.BackoffMax))) {
+			if wait > s.cfg.MaxInPassWait {
+				// Never wait out a long block inside a pass: it would hold every
+				// manual request and the schedule hostage to the slowest host.
+				s.finish(pass, chunk, nil, host, msgBackingOff)
+				continue
+			}
+			if !sleepCtx(s.ctx, wait) {
 				return
 			}
 			answers, retry, e := s.request(chunk)
@@ -395,7 +495,7 @@ func (s *Scraper) runHost(pass *Pass, host string, items []*item, hs *hostState,
 				continue
 			}
 			consecutive = 0
-			s.finish(pass, chunk, answers, host, "not in the tracker's answer")
+			s.finish(pass, chunk, answers, host, "")
 		}
 	}
 }
@@ -419,21 +519,37 @@ func (s *Scraper) request(chunk []*item) (map[[20]byte]Counts, time.Duration, *E
 	}
 	ctx, cancel := context.WithTimeout(s.ctx, s.cfg.Timeout)
 	defer cancel()
-	return HTTPScrape(ctx, s.client, chunk[0].ep.Key, hashes, s.cfg.MaxBody)
+	a, retry, e := HTTPScrape(ctx, s.client, chunk[0].ep.Key, hashes, s.cfg.MaxBody, s.cfg.UserAgent)
+	if e != nil {
+		retry = max(retry, e.RetryAfter) // a failure reason can carry the tracker's own interval
+	}
+	return a, retry, e
 }
 
 // finish records one request's outcome for each item and, when a torrent has
 // heard from all its trackers, writes its entry. answers nil means the whole
-// request failed with msg; otherwise an item missing from answers failed with msg.
+// request failed with msg. Otherwise an item missing from answers is a hash the
+// tracker did not know: not a count, not a failure.
+//
+// A max over trackers with an unknown operand is only known when the known part
+// is above 0: a 0 is a 0 only when no tracker of the torrent failed or was
+// skipped, since a tracker that does not know the hash can only say 0 or nothing.
 func (s *Scraper) finish(pass *Pass, chunk []*item, answers map[[20]byte]Counts, host, msg string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, it := range chunk {
 		ts := it.ts
 		ts.pending--
+		src := it.ep.Kind
+		if msg != msgBackingOff {
+			s.tried[it.hash] = s.cfg.Now()
+		}
 		if c, ok := answers[it.hash]; ok {
 			s.okTotal.Add(1)
-			ts.oks = append(ts.oks, c)
+			ts.answers = append(ts.answers, answer{Counts: c, source: src})
+		} else if answers != nil {
+			s.errTotal.Add(1)
+			ts.unknown++
 		} else {
 			s.errTotal.Add(1)
 			if ts.err == "" {
@@ -444,17 +560,24 @@ func (s *Scraper) finish(pass *Pass, chunk []*item, answers map[[20]byte]Counts,
 			continue
 		}
 		e := Entry{At: s.cfg.Now(), RunID: pass.RunID}
-		if len(ts.oks) > 0 {
-			best := ts.oks[0]
-			for _, c := range ts.oks[1:] {
-				if c.Seeders > best.Seeders {
-					best = c
-				}
+		var best *answer
+		for i := range ts.answers {
+			a := &ts.answers[i]
+			// most seeders wins; on a tie an http answer, which was present in the
+			// tracker's files, beats a udp one (a udp 0 may mean unknown)
+			if best == nil || a.Seeders > best.Seeders || (a.Seeders == best.Seeders && a.source == "http" && best.source != "http") {
+				best = a
 			}
-			e.Seeders, e.Leechers = &best.Seeders, &best.Leechers
+		}
+		switch {
+		case best != nil && (best.Seeders > 0 || ts.err == ""):
+			e.Seeders, e.Leechers, e.Source = &best.Seeders, &best.Leechers, best.source
 			pass.OK++
-		} else {
+		case ts.err != "":
 			e.Err = ts.err
+			pass.Errors++
+		default:
+			e.Err = UnknownToTracker
 			pass.Errors++
 		}
 		s.results[ts.hash] = e

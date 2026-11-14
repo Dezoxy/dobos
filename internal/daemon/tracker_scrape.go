@@ -28,7 +28,11 @@ type scrapeHealth struct {
 	Leechers  *int    `json:"leechers"`
 	ScrapedAt *string `json:"scraped_at"`
 	Error     *string `json:"error"`
-	RunID     int     `json:"run_id"`
+	// Source is the protocol of the answer that supplied the numbers, "http" or "udp"; a
+	// UDP 0 may mean "unknown" (BEP 15 answers a fixed triple), an HTTP one was present
+	// in the tracker's files. Null when there are no numbers.
+	Source *string `json:"source"`
+	RunID  int     `json:"run_id"`
 }
 
 // scrapePassHealth is the top-level "scrape_pass": the last finished pass over every torrent.
@@ -58,6 +62,7 @@ func scrapeFor(hash string) *scrapeHealth {
 	at := rfc3339(e.At)
 	out.ScrapedAt = &at
 	out.Error = strOrNil(e.Err)
+	out.Source = strOrNil(e.Source)
 	return out
 }
 
@@ -86,10 +91,16 @@ func scrapeHashes() []string {
 	return out
 }
 
-// storedScrapeTargets turns the stored records into scrape targets. Which trackers a
-// torrent may be asked is decided in torr (a private torrent: its own only).
-func storedScrapeTargets() []trackscrape.Target {
-	stored := torr.StoredScrapeTargets()
+// storedScrapeTargets turns the stored records into scrape targets: all of them, or
+// the one hash alone (only that record is read). Which trackers a torrent may be asked is
+// decided in torr (a private torrent: its own only).
+func storedScrapeTargets(only *[20]byte) []trackscrape.Target {
+	var stored []torr.ScrapeTarget
+	if only != nil {
+		stored = torr.StoredScrapeTarget(hex.EncodeToString(only[:]))
+	} else {
+		stored = torr.StoredScrapeTargets()
+	}
 	out := make([]trackscrape.Target, 0, len(stored))
 	for _, st := range stored {
 		raw, err := hex.DecodeString(st.Hash)
@@ -106,13 +117,18 @@ func storedScrapeTargets() []trackscrape.Target {
 // startTrackerScraper builds the scraper from the settings and starts its schedule
 // (tracker_scrape_hours 0 leaves only the on-demand route). Log lines carry hosts and
 // failure classes, never an announce or scrape URL.
-func startTrackerScraper(cfg *config.Config, source func() []trackscrape.Target, stop <-chan struct{}, logger *log.Logger) *trackscrape.Scraper {
+func startTrackerScraper(cfg *config.Config, source func(*[20]byte) []trackscrape.Target, ready func() bool,
+	net torr.ScrapeNet, stop <-chan struct{}, logger *log.Logger) *trackscrape.Scraper {
 	s := trackscrape.New(trackscrape.Config{
-		Source:   source,
-		Interval: time.Duration(cfg.TrackerScrapeHours) * time.Hour,
-		Batch:    cfg.TrackerScrapeBatch,
-		Pace:     time.Duration(cfg.TrackerScrapePaceMs) * time.Millisecond,
-		Logf:     logger.Printf,
+		Source:    source,
+		Ready:     ready,
+		Proxy:     net.Proxy,
+		NoUDP:     !net.UDP,
+		UserAgent: net.UserAgent,
+		Interval:  time.Duration(cfg.TrackerScrapeHours) * time.Hour,
+		Batch:     cfg.TrackerScrapeBatch,
+		Pace:      time.Duration(cfg.TrackerScrapePaceMs) * time.Millisecond,
+		Logf:      logger.Printf,
 	})
 	trackerScraper.Store(s)
 	s.Start()
@@ -169,6 +185,8 @@ func handleScrapeTrigger(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "a scrape pass is running", "run_id": p.RunID})
 	case errors.Is(err, trackscrape.ErrUnknownHash):
 		http.Error(w, "no stored torrent with that hash", http.StatusNotFound)
+	case errors.Is(err, trackscrape.ErrNotReady):
+		http.Error(w, "stored torrents are not ready yet", http.StatusServiceUnavailable)
 	default:
 		http.Error(w, "tracker scrape is stopping", http.StatusServiceUnavailable)
 	}

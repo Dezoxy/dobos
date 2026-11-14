@@ -422,7 +422,12 @@ func Run() {
 
 	startWebhookStatus(webhookStatus, backgroundStopChan)
 	startSwarmSnapshot(engineSwarmSource, backgroundStopChan, logger)
-	startTrackerScraper(gc(), storedScrapeTargets, backgroundStopChan, logger)
+	if net, err := torr.ScrapeNetwork(); err != nil {
+		// Fail closed: with a proxy that cannot be used, a scrape would leave from the real address.
+		logger.Printf("[Scrape] tracker scrape not started: %v", err)
+	} else {
+		startTrackerScraper(gc(), storedScrapeTargets, torr.ScrapeReady, net, backgroundStopChan, logger)
+	}
 
 	finishGlobalInodeMapInit(logger)
 

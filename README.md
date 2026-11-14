@@ -436,9 +436,14 @@ against a real tracker.
 
 - **Which trackers.** The announce list of the torrent's stored record, as it
   is. A private torrent (BEP 27), and one whose metadata is not known yet and
-  so might be, is asked at its own trackers only: the public lists Flodni adds
-  on its own account are dropped for it, and there is no DHT, PEX or public
-  fallback in this path. HTTP trackers are scraped at the BEP 48 URL (the last
+  so might be, is asked at its own trackers only: every tier of its record
+  that holds a host of the public lists Flodni adds on its own account
+  (matched by lower-case host, so a rotated-out entry, another path, scheme or
+  case still matches) is dropped whole, and there is no DHT, PEX or public
+  fallback in this path. Residual gap: a record saved before the retracker
+  gate keeps no record of where a tier came from, so a legacy tier in which no
+  entry's host is in any current list cannot be told apart from the torrent's
+  own. HTTP trackers are scraped at the BEP 48 URL (the last
   path segment `announce` becomes `scrape`; a tracker without one is skipped
   and counted), UDP trackers per BEP 15. Other schemes are skipped.
 - **Passes.** A pass scrapes every stored torrent once. Hashes of one tracker
@@ -449,7 +454,16 @@ against a real tracker.
   each failed request (30 s, up to 6 hours or the interval), at least the
   tracker's own `min_request_interval` or failure reason interval, and after
   three failures in a row the host's remaining torrents of that pass get an
-  error. A slow or failing host never delays another host.
+  error. A slow or failing host never delays another host. A block longer than
+  2 minutes (a long backoff, or a tracker's long minimum interval) is never
+  waited out inside a pass: the host's remaining torrents end that pass with
+  `host backing off`, and the next pass serves the torrents tried longest ago
+  first. A pass therefore ends in minutes, not hours.
+  **Network.** HTTP scrapes use the engine's tracker proxy and user agent when
+  one is configured; with a proxy configured UDP trackers are not scraped
+  (UDP cannot go through it; logged as `udp skipped: proxy`), and an invalid
+  proxy setting stops the scrape from starting. Before the torrent store is
+  open (the first seconds after start) a pass is refused, `POST` answers 503.
   Answers over 512 KiB, nesting beyond 6 levels and redirects are refused.
 - **Schedule.** `tracker_scrape_hours` (default 24, 0 to 8760) is the interval
   between scheduled passes, each start varying by up to 10 %, and each host
@@ -474,9 +488,10 @@ against a real tracker.
 
 | Field | Meaning |
 |---|---|
-| `seeders`, `leechers` | The answer with the most seeders among the torrent's trackers; **null, never 0, unless a tracker answered**. A tracker that really answers 0 gives 0. |
+| `seeders`, `leechers` | The answer with the most seeders among the torrent's trackers; **null, never 0, unless a tracker answered**. A 0 is only reported when every tracker of the torrent answered: if one failed, timed out or was skipped (no scrape URL, UDP behind a proxy), a 0 becomes null with that error, while a count above 0 stands. For HTTP only a hash present in the tracker's `files` is a count (0 included); an omitted hash is "not known to this tracker" and falls through to the torrent's other trackers. UDP answers a fixed triple per hash, so its 0 stays 0, and on a 0 tie an HTTP answer wins over a UDP one. |
+| `source` | `http` or `udp`: the answer the numbers came from (a UDP 0 may mean unknown, so a consumer can weight it lower); null when there are no numbers. |
 | `scraped_at` | RFC 3339 UTC time the entry was written. |
-| `error` | `null` when a tracker answered; otherwise the host (`scheme://host:port`) and a failure class (`timeout`, `connection failed`, `http status N`, `tracker: <its reason>`, `malformed response`, `response too large`, `not in the tracker's answer`, ...). Never a URL. |
+| `error` | `null` when the numbers stand; `unknown_to_tracker` when every tracker that answered left the torrent out and none failed; otherwise the host (`scheme://host:port`) and a failure class (`timeout`, `connection failed`, `http status N`, `tracker: <its reason>`, `malformed response`, `response too large`, `host backing off`, `udp skipped: proxy`, ...), or `no scrape URL` / `unsupported tracker`. Never a URL. |
 | `run_id` | The pass that wrote the entry. |
 
   The response also has a top-level `scrape_pass` with the `run_id` and
@@ -491,9 +506,9 @@ against a real tracker.
 - **Secrets.** Announce URLs carry a passkey. No log line, health field,
   status field or metric holds an announce or scrape URL, a path or a query;
   they name the host only, and text a tracker sends back has every token of
-  the announce URL replaced by `***` and is cut to 80 characters.
+  the announce URL (case-insensitively, longest first, and the first and last 8 characters of a long one) replaced by `***` and is cut to 80 characters.
 - **Metrics.** `flodni_tracker_scrapes_total{result}` (`ok`, `error`,
-  `skipped`, counted per torrent and tracker), `flodni_torrents_by_seeders{bucket}`
+  `skipped`, counted per torrent and tracker; a hash a tracker omitted counts as `error`), `flodni_torrents_by_seeders{bucket}`
   (`0`, `1-2`, `3+`, torrents with numbers only),
   `flodni_tracker_scrape_pass_running` (0 or 1) and
   `flodni_tracker_scrape_last_pass_finished_timestamp_seconds` (absent before

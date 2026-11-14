@@ -2,6 +2,7 @@ package scrape
 
 import (
 	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -46,10 +47,36 @@ func secretsOf(announce string) []string {
 	return out
 }
 
-// clean keeps printable ASCII, caps the length and replaces every secret.
+// variants adds, for a long token, its first and last 8 characters: a tracker that
+// echoes a shortened passkey must not get it through.
+func variants(secrets []string) []string {
+	out := append([]string(nil), secrets...)
+	for _, t := range secrets {
+		if len(t) >= 12 {
+			out = append(out, t[:8], t[len(t)-8:])
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
+}
+
+// clean replaces every secret, case-insensitively and longest first, keeps
+// printable ASCII and caps the length.
 func clean(msg string, secrets []string) string {
-	for _, s := range secrets {
-		msg = strings.ReplaceAll(msg, s, "***")
+	for _, sec := range variants(secrets) {
+		lower, ls := strings.ToLower(msg), strings.ToLower(sec)
+		var b strings.Builder
+		for {
+			i := strings.Index(lower, ls)
+			if i < 0 {
+				break
+			}
+			b.WriteString(msg[:i])
+			b.WriteString("***")
+			msg, lower = msg[i+len(sec):], lower[i+len(sec):]
+		}
+		b.WriteString(msg)
+		msg = b.String()
 	}
 	b := make([]byte, 0, len(msg))
 	for i := 0; i < len(msg) && len(b) < maxMsg; i++ {

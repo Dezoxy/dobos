@@ -201,6 +201,17 @@ func TestScrapeTargetsKeepPrivateTorrentsOnTheirOwnTrackers(t *testing.T) {
 		{"private, older record holding public lists", record(testInfoBytes(t, &yes), 0, legacy), []string{own}},
 		{"metadata not known, older record", record(nil, 0, legacy), []string{own}},
 		{"public, mode 1", record(testInfoBytes(t, &no), 1, ownTier), []string{own, public[0], public[1]}},
+		// a tier of an older, rotated list: one entry no longer in any list, one still
+		// there; the whole tier goes
+		{"private, tier with a rotated-out entry", record(testInfoBytes(t, &yes), 0,
+			[][]string{{own}, {"udp://rotated-out.example:6969/announce", public[0]}}), []string{own}},
+		// the same host spelled another way: scheme, case, path, port
+		{"private, host variants", record(testInfoBytes(t, &yes), 0, [][]string{
+			{own},
+			{"HTTP://Public.EXAMPLE:8080/other/path"},
+			{"udp://FILE.example:81/announce"},
+		}), []string{own}},
+		{"metadata not known, host variant", record(nil, 0, [][]string{{own}, {"https://Public.Example/announce"}}), []string{own}},
 	}
 	for _, c := range cases {
 		got := scrapeTargetsOf([]*sets.TorrentDB{c.db}, func() []string { return public })

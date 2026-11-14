@@ -12,10 +12,12 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"flodni/internal/config"
+	"flodni/internal/gostorm/torr"
 	"flodni/internal/metadb"
 	trackscrape "flodni/internal/scrape"
 )
@@ -79,11 +81,21 @@ type syncBuf struct {
 func (s *syncBuf) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.b.Write(p) }
 func (s *syncBuf) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
 
+var notReady atomic.Bool
+
 func useScraper(t *testing.T, cfg config.Config, targets []trackscrape.Target) (*trackscrape.Scraper, *syncBuf) {
 	t.Helper()
 	logs := &syncBuf{}
 	stop := make(chan struct{})
-	s := startTrackerScraper(&cfg, func() []trackscrape.Target { return targets }, stop, log.New(logs, "", 0))
+	s := startTrackerScraper(&cfg, func(only *[20]byte) []trackscrape.Target {
+		var out []trackscrape.Target
+		for _, t := range targets {
+			if only == nil || t.Hash == *only {
+				out = append(out, t)
+			}
+		}
+		return out
+	}, func() bool { return !notReady.Load() }, torr.ScrapeNet{UserAgent: "test-ua", UDP: true}, stop, log.New(logs, "", 0))
 	t.Cleanup(func() { close(stop); s.Stop(); trackerScraper.Store(nil) })
 	return s, logs
 }
@@ -214,8 +226,8 @@ func TestScrapeTriggerStatusOverlapAndHealth(t *testing.T) {
 	if tb["seeders"] != nil || tb["leechers"] != nil || tb["error"] == nil || tb["run_id"] != float64(1) {
 		t.Fatalf("b scrape = %v", tb)
 	}
-	if !strings.Contains(tb["error"].(string), tr.srv.URL) {
-		t.Fatalf("the error should name the host: %v", tb["error"])
+	if tb["error"] != "unknown_to_tracker" || tb["source"] != nil || ta["source"] != "http" {
+		t.Fatalf("an omitted hash is unknown, not a failure and not 0: %v / %v", tb, ta)
 	}
 
 	// the next pass has run id 2 and the previous finished one is shown
@@ -251,6 +263,20 @@ func TestScrapeTriggerStatusOverlapAndHealth(t *testing.T) {
 		if !strings.Contains(rec3.Body.String(), want) {
 			t.Errorf("metrics lack %q", want)
 		}
+	}
+}
+
+// Before the torrent store is open, a pass is refused with 503 instead of reading a nil store.
+func TestScrapeRefusedUntilStoreReady(t *testing.T) {
+	notReady.Store(true)
+	t.Cleanup(func() { notReady.Store(false) })
+	useScraper(t, fastCfg(), []trackscrape.Target{{Hash: hashOf(1)}})
+	if rec := post("/api/torrents/scrape"); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("not ready = %d", rec.Code)
+	}
+	notReady.Store(false)
+	if rec := post("/api/torrents/scrape"); rec.Code != http.StatusAccepted {
+		t.Fatalf("ready = %d", rec.Code)
 	}
 }
 
