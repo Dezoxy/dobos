@@ -345,11 +345,13 @@ line below is the one log format that is).
 - Times are UTC and are taken when the session closes, up to two minutes
   after its last read.
 - An entry goes when the last stub of its torrent is removed through the
-  library API. A session still open on that torrent writes the entry back
-  when it closes, and a stub deleted another way leaves it in place. Such
+  library API, replaced by an add, or deleted through the mount. A session
+  still open on that torrent is closed first, by the usual close rules (a
+  session under 25 s gets no dead-swarm verdict), so it cannot write the
+  entry back. A stub deleted directly on disk leaves the entry in place. Such
   entries stay until a startup prunes them. The prune runs only after a
-  complete scan: both `movies` and `tv` exist, at least one stub was found
-  and no read failed. It is skipped otherwise, and the log says so. A stub
+  complete scan: both `movies` and `tv` exist and each held at least one
+  stub, and no read failed. It is skipped otherwise, and the log says so. A stub
   that parses but declares a size outside the valid range is logged with
   its path and counted separately (the start-up summary line); it does not
   block the prune and its torrent's rows stay. An unreadable directory
