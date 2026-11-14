@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"flodni/internal/library"
 	"flodni/internal/metadb"
 	"flodni/internal/warmup"
 )
@@ -326,4 +327,58 @@ func countConfirmedPlay(path string, k warmup.FileKey, ok bool) {
 		}
 	}
 	fileStates.MarkPlayed(k)
+}
+
+// libraryFileFacts is library.Config.FileState: the per-file facts GET /api/library/file
+// reports, read from the process-wide index and the live sessions.
+func libraryFileFacts(hash string, fileIdx int) library.FileFacts {
+	return fileStates.facts(warmup.FileKey{Hash: hash, FileIdx: fileIdx})
+}
+
+// facts reads one file's record. Memory only; a file the index has never heard of
+// reports nothing recorded.
+func (x *fileStateIndex) facts(k warmup.FileKey) library.FileFacts {
+	k = normKey(k)
+	var f library.FileFacts
+	x.mu.Lock()
+	if e := x.m[k]; e != nil {
+		f.Readability, f.Cache = e.warm.readability, e.warm.cache
+		f.Queued, f.FailedAttempts = e.warm.queuedAt > 0, e.warm.failedAttempts
+		f.Evicted = e.evicted
+		if !e.lastPlayed.IsZero() {
+			f.PlayedAt = e.lastPlayed
+			f.Protected = x.protect == 0 || x.now().Sub(e.lastPlayed) < x.protect
+		}
+	}
+	x.mu.Unlock()
+	f.Confirmed = confirmedSessionOn(k)
+	return f
+}
+
+// confirmedSessionOn reports whether a media-server session is open on the file: a
+// webhook confirmed it, no stop came, and a handle on its path is still open. States
+// restored at start stay confirmed with no handle, so the handle is what says it is open.
+func confirmedSessionOn(k warmup.FileKey) bool {
+	found := false
+	playbackRegistry.Range(func(p, v any) bool {
+		ps, ok := v.(*PlaybackState)
+		if !ok || !ps.GetStatus() {
+			return true
+		}
+		ps.mu.RLock()
+		stopped := ps.IsStopped
+		ps.mu.RUnlock()
+		path := p.(string)
+		t, ok := tailFillTargets.Load(path)
+		if stopped || !ok {
+			return true
+		}
+		tt := t.(tailFillTarget)
+		if strings.ToLower(tt.hash) == k.Hash && tt.fileID == k.FileIdx && anyLiveHandleFor(path) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }

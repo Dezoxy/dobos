@@ -677,6 +677,7 @@ func Run() {
 			GoStorm:        library.NewGoStormClient(gc().GoStormBaseURL, gc().APIToken),
 			Registry:       registry,
 			StoredFiles:    func(hash string) []library.TorrentFile { return storedFileList(hash) },
+			FileState:      libraryFileFacts,
 			InvalidatePath: invalidateSyncRemovedPath,
 			// Read-only view of the holes the reaper left, for a client that can decide
 			// what to do about them.
@@ -733,6 +734,7 @@ func Run() {
 		mux.HandleFunc("/api/library/list", libHandler.List)
 		mux.HandleFunc("/api/library/inspect", libHandler.Inspect)
 		mux.HandleFunc("/api/library/audit", libHandler.Audit)
+		mux.HandleFunc("/api/library/file", libHandler.File)
 	}
 
 	// Control server: metrics, dashboard API and the library API.

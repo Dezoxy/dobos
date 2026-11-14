@@ -66,7 +66,10 @@ type Config struct {
 	// ids), read without waking the torrent; nil when there is none. GET
 	// /api/library/audit needs it.
 	StoredFiles func(hash string) []TorrentFile
-	Logger      *log.Logger
+	// FileState, when set, reports the daemon's per-file facts (warm record, played and
+	// eviction marks, an open session) for GET /api/library/file; nil reads as none.
+	FileState func(hash string, fileIndex int) FileFacts
+	Logger    *log.Logger
 	// MediaServer, when set, is asked to rescan the section a stub was added to or
 	// removed from. MovieSection and TVSection are its library ids.
 	MediaServer  MediaServer
