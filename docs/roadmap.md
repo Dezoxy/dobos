@@ -40,7 +40,8 @@ a switch or calls out to third parties.
    which only the engines' log files use.
 8. **Remove music and audiobooks.** [FINISHED] `internal/musicimport`,
    `cmd/musicimport`, `internal/audio` and the audio parts of
-   `internal/library`, `internal/metadb`, `startup.go` and `main.go`, then
+   `internal/library`, `internal/metadb`, `internal/daemon/startup.go` and
+   `internal/daemon/main.go`, then
    `internal/prowlarr`, `Config.Prowlarr` and `music_discovery`, which only the
    music import still uses.
 
@@ -85,8 +86,8 @@ Releases and deployment are scheduled separately.
    the static panel page; webhooks may pass the token as a query parameter.
    Unset keeps today's open API.
 2. **Unit tests on the read path.** [FINISHED] Cover the read decision tree in
-   `handle.go` and the pump's decision helpers, the prerequisite for the `App`
-   struct.
+   `internal/daemon/handle.go` and the pump's decision helpers, the
+   prerequisite for the `App` struct.
 3. **Stubs land where the mount serves them.** [FINISHED] The library writes
    stubs under the configured `physical_source_path` while FUSE serves the path
    given on the command line; make them one value, or refuse to start when they
@@ -697,3 +698,5 @@ are designed, not built.
   the webhook, then a stop webhook releases the torrent and it closes. The
   engine's `IsPriority` mark no longer holds the idle timeout; it still
   drives aggressive download mode. Step 8 is finished.
+- 2026-11-14, repository layout: the daemon moved from the root to
+  internal/daemon, with cmd/flodni as the entry point; no behaviour change.
