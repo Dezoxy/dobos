@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -380,5 +381,67 @@ func TestWalkLibraryNeedsStubsInBothDirectories(t *testing.T) {
 				t.Fatalf("walked=%v whole=%v, want %v %v", walked, whole, tc.wantWalked, tc.wantWhole)
 			}
 		})
+	}
+}
+
+// writeStub writes a line-format stub declaring the given size.
+func writeStub(t *testing.T, path, hash string, size int64) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "http://engine/stream?link=" + hash + "&index=1&play\n" + strconv.FormatInt(size, 10) + "\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const invalidHash = "cccccccccccccccccccccccccccccccccccccccc"
+
+func TestOutOfRangeStubIsCountedAndThePrunesStillRun(t *testing.T) {
+	b, db := pruneEnv(t)
+	if err := db.RecordMetadataFailure(invalidHash, failReasonTimeout, failSourceMount, time.Now().Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	b.foundHashes = map[string]bool{}
+	movies := filepath.Join(b.sourcePath, "movies")
+	writeStub(t, filepath.Join(movies, "Good_2000_1080p_cafe.mkv"), inLibHash, 1<<30)
+	writeStub(t, filepath.Join(movies, "Tiny_2001_1080p_cafe.mkv"), invalidHash, 1024)
+	var logs strings.Builder
+	b.logger = log.New(&logs, "", 0)
+
+	b.processDirectory(movies, false)
+
+	if b.errors != 0 || b.invalidStubs != 1 || b.filesProcessed != 1 {
+		t.Fatalf("errors=%d invalid=%d processed=%d, want 0, 1, 1", b.errors, b.invalidStubs, b.filesProcessed)
+	}
+	if !strings.Contains(logs.String(), "Tiny_2001_1080p_cafe.mkv") {
+		t.Fatalf("the invalid stub's path is not logged: %q", logs.String())
+	}
+	b.pruneReadability(true)
+	// The orphan goes; the valid stub's row and the invalid stub's row (it is still in
+	// the library) stay.
+	if got := rowCount(t, db); got != 2 {
+		t.Fatalf("rows = %d, want 2", got)
+	}
+}
+
+func TestUnparsableStubStillBlocksThePrunes(t *testing.T) {
+	b, db := pruneEnv(t)
+	b.foundHashes = map[string]bool{inLibHash: true}
+	movies := filepath.Join(b.sourcePath, "movies")
+	writeStub(t, filepath.Join(movies, "Good_2000_1080p_cafe.mkv"), inLibHash, 1<<30)
+	if err := os.WriteFile(filepath.Join(movies, "Bad_2002_1080p_cafe.mkv"), []byte("nonsense"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b.processDirectory(movies, false)
+
+	if b.errors != 1 || b.invalidStubs != 0 {
+		t.Fatalf("errors=%d invalid=%d, want 1, 0", b.errors, b.invalidStubs)
+	}
+	b.pruneReadability(true)
+	if got := rowCount(t, db); got != 2 {
+		t.Fatalf("rows = %d, want 2: an unparsable stub must block the prune", got)
 	}
 }

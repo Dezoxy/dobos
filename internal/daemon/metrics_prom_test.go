@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -82,6 +83,8 @@ func TestHandlePrometheus(t *testing.T) {
 		"flodni_wake_refused_total",
 		"flodni_warm_fill_bytes_total", "flodni_warm_cache_failures_total", "flodni_warm_queue_files", "flodni_warm_paused",
 		"flodni_stub_index_mismatch_total",
+		"flodni_engine_short_reads_total", "flodni_engine_short_read_repairs_total", "flodni_sessions_open",
+		"go_goroutines", "go_memstats_heap_inuse_bytes", "go_memstats_sys_bytes", "go_gc_cycles_total",
 	} {
 		if !strings.Contains(body, "# TYPE "+fam+" ") {
 			t.Errorf("family %s missing", fam)
@@ -127,6 +130,11 @@ func TestHandlePrometheus(t *testing.T) {
 		`flodni_warning{name="no_play_webhook"}`,
 		`flodni_warm_fills_total{trigger="mount",outcome="warmed"}`,
 		`flodni_warm_fills_total{trigger="mount",outcome="cached"}`,
+		`flodni_engine_short_reads_total{path="stream"}`,
+		`flodni_engine_short_reads_total{path="fetch"}`,
+		`flodni_engine_short_read_repairs_total{result="repaired"}`,
+		`flodni_engine_short_read_repairs_total{result="unfilled"}`,
+		`flodni_sessions_open`,
 	} {
 		if !strings.Contains(body, want+" ") {
 			t.Errorf("series %s missing", want)
@@ -222,5 +230,36 @@ func TestWarmupFilesGaugeNeedsTheCache(t *testing.T) {
 		if !strings.Contains(body, want+"\n") {
 			t.Errorf("missing %q", want)
 		}
+	}
+}
+
+// TestRuntimeAndProcessFamilyTypes pins the type line of each new family, the open
+// sessions gauge against the same registry /api/sessions reads, and the descriptor
+// gauge where /proc exists.
+func TestRuntimeAndProcessFamilyTypes(t *testing.T) {
+	body := scrape(t).Body.String()
+	for fam, typ := range map[string]string{
+		"flodni_engine_short_reads_total":        "counter",
+		"flodni_engine_short_read_repairs_total": "counter",
+		"flodni_sessions_open":                   "gauge",
+		"go_goroutines":                          "gauge",
+		"go_memstats_heap_inuse_bytes":           "gauge",
+		"go_memstats_sys_bytes":                  "gauge",
+		"go_gc_cycles_total":                     "counter",
+	} {
+		if !strings.Contains(body, "# TYPE "+fam+" "+typ+"\n") {
+			t.Errorf("%s is not declared as a %s", fam, typ)
+		}
+	}
+	want := openSessionCount()
+	if got := len(openSessionRecords()); got != want {
+		t.Fatalf("open sessions: gauge counts %d, /api/sessions lists %d", want, got)
+	}
+	if _, err := os.Stat("/proc/self/fd"); err == nil {
+		if !strings.Contains(body, "# TYPE process_open_fds gauge\n") {
+			t.Error("process_open_fds missing where /proc exists")
+		}
+	} else if strings.Contains(body, "process_open_fds") {
+		t.Error("process_open_fds exported without /proc")
 	}
 }
