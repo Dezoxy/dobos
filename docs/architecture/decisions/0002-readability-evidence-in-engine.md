@@ -218,6 +218,6 @@ is updated when it does.
 
 - Roadmap: [Readability evidence](../../roadmap.md#readability-evidence),
   [Readiness and protection](../../roadmap.md#readiness-and-protection)
-- Ideas: [ideas](../../ideas.md) entries "Warm the next episode during
-  playback", "Warm again after eviction", "A swarm signal from the engine"
-  and "Per-file replacement check for packs"
+- Roadmap, Ideas round: [steps 15, 16, 18 and 23](../../roadmap.md#ideas-round-after-v010) (per-file
+  replacement check for packs, a swarm signal from the engine, warm again after
+  eviction, warm the next episode during playback)
