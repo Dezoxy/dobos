@@ -219,6 +219,13 @@ func collectPlaybackProm(w *promtext.Writer) {
 	w.Counter("flodni_playback_starts_total",
 		"Playbacks the media server webhook confirmed (not playing to playing).",
 		promSample(playbackStarts.Load()))
+	marks := make([]promtext.Sample, 0, len(playSources))
+	for i, src := range playSources {
+		marks = append(marks, promSample(playMarks[i].Load(), lbl("source", src)))
+	}
+	w.Counter("flodni_played_marks_total",
+		"Plays recorded on a file (the played mark that protects it from eviction), by source: webhook (the media server resolved a playback to one file) or manual (POST /api/library/confirm). Both present from 0.",
+		marks...)
 	w.Counter("flodni_torrent_idle_closes_total",
 		"Torrents the engine closed because no reader had them for the idle timeout. confirmed is true when a file of the torrent had a webhook-confirmed playback (the label is refreshed once a second).",
 		promSample(keepaliveCounters.idleCloses[1].Load(), lbl("confirmed", "true")),

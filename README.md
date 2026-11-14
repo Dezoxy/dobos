@@ -1041,6 +1041,121 @@ record or state, and it runs only when asked, never at start.
 stub with `POST /api/library/remove` for its hash, then `POST /api/library/add`
 again, which writes the stub from the engine's current list.
 
+## File lifecycle API
+
+Four additions to the library routes on the control port, decided in
+[ADR 3](docs/architecture/decisions/0003-file-lifecycle-api.md). They ride on
+the existing `api_token` bearer gate; `remove`, `list`, `inspect` and `audit`
+are unchanged.
+
+**A request with none of the new fields behaves as it did.** An add without
+`replace` or `dry_run` returns the same body as v0.1.0: `hash`, `title`,
+`type`, `files`, `already_present`, nothing else (a golden test pins it).
+
+### Replace policy
+
+`POST /api/library/add` takes `replace`:
+
+| `replace` | When the registry already holds a different release of the episode |
+|---|---|
+| omitted, `always` | Replace it, after the readability read below. This is what an add did before. |
+| `never` | Keep it; answer `kept`. |
+| `if-better` | Replace only when the request's `quality_score` is greater than the stored one. A score of 0 is never better, so a caller that sends none cannot replace by accident. |
+
+Flodni compares that one number and nothing else; which release is better
+stays with the caller. A movie never replaces: a second release is a second
+stub, whatever `replace` says. An unknown value is a 400.
+
+The readability gate is not a policy: a replacing release that delivers no
+data is a 422 under `always` and `if-better`, and the old files stay.
+
+A single episode is decided under its episode lock before the engine is
+contacted: a refused add makes no upload, no add, no metadata wait and no read,
+so it never announces a private torrent. A season pack is decided per episode
+once the torrent's file list is known, so a refused pack has paid the metadata
+wait; it writes the allowed episodes and lists the refused ones.
+
+A request that names `replace` or `dry_run` also gets:
+
+| Field | Meaning |
+|---|---|
+| `decision` | `added`, `already_present`, `replaced` or `kept`. |
+| `replaced` | The stubs this add replaced (or, in a dry run, would): `path`, `hash`, `file_index`. Omitted when empty. |
+| `skipped` | Episodes the policy refused: `season`, `episode`, `reason`. Omitted when empty. |
+
+**`files` lists only what this request wrote** (for `already_present`, what was
+already there, as before): callers link every entry that has a `fuse_path`. A
+refused episode is in `skipped`, never in `files`; a `kept` answer is 200 with
+`"files": []`; a pack with every episode refused is the same. An empty `files`
+means nothing was filed by this request. Status is 201 only when something was
+written; `already_present`, `kept` and a dry run are 200.
+
+### Dry run
+
+`dry_run: true` answers the decision from the stubs on disk and the registry
+and does nothing else: no engine call at all (no `.torrent` upload, no add, no
+metadata wait, no read), no stub or registry row written, no warm on add, no
+media-server scan. The answer carries `"dry_run": true` and
+`"readability": "unchecked"`, because it never asks the swarm, so a plan can
+still fail the real add's readability gate. No `files` entry has a `fuse_path`;
+each names the path the stub would get, with the request's `file_index` and a
+size of 0. It works for a single episode or a movie; a season pack is a 400,
+because its episodes are known only from the torrent's file list.
+
+### State of a file
+
+`GET /api/library/file?hash=&file_index=` reads one file. It is a projection of
+records that exist (the stub, the registry row, the daemon's file state); there
+is no new store.
+
+```json
+{"hash": "...", "file_index": 3, "state": "played",
+ "stub": {"path": "...", "fuse_path": "...", "size": 1234, "type": "tv",
+          "season": 1, "episode": 2},
+ "registry": {"episode_key": "...", "quality_score": 42, "source": "api"},
+ "warm": {"readability": "warmed", "cache": "cached", "queued": false,
+          "failed_attempts": 0},
+ "played_at": "2026-11-14T08:00:00Z", "protected": true,
+ "evicted": false, "confirmed": false}
+```
+
+The facts are independent (a file is warm and played at once); `state` is one
+word for the first that applies: `confirmed` (a session is open on the file and
+a webhook confirmed it), `evicted` (the windows were evicted), `played` (a play
+inside the protection window), `warm` (readability `warmed` or `present` and
+cache `cached`), `warming` (queued, no outcome yet), `added`. `registry` is
+`null` for a movie. A file no stub links to is a 404: replaced and removed
+files are not kept, their rows go with their torrent. The state reads three
+stores written at different times, so a file can be `added` a moment before it
+is `warm`.
+
+### Confirming a play
+
+`POST /api/library/confirm` with `{"hash": "...", "file_index": 3}` records a
+play of the file by hand: it clears the file's eviction mark and writes the same
+played mark a play webhook writes, so the file is protected from the first
+rounds of quota eviction for `played_protection_days`. It answers with the
+file's state. A repeat is a 200 and renews the played time. An unknown file is a 404.
+
+It records the play and nothing else: it confirms no session and counts no
+playback start, so the reader budget's hold on an unconfirmed session is not
+lifted (only a webhook does that). `flodni_played_marks_total{source}` counts it
+as `manual`, the webhook's marks as `webhook`.
+
+**It fails closed.** With `api_token` unset the control port is open to anyone
+who can reach it, and a play mark changes what eviction protects, so the route
+answers 403 and records nothing. With a token, anyone holding it can protect
+any file. (`remove` and the other routes keep working without a token.)
+
+The gate is the token the control server was started with, the same value the
+bearer middleware enforces, including the `FLODNI_API_TOKEN` override: never the
+live config. This matters in the open mode: with no token at start,
+`POST /api/config` is unauthenticated like every route and can write an
+`api_token`, but nothing enforces it until the daemon restarts, and confirm
+stays 403 until then too. `POST /api/config` itself is unchanged by this API;
+that it works without a token on an open port is a property of that mode, so
+set `api_token` before exposing the port.
+
 ## Warm on add
 
 **Experimental, off by default.** With `warm_on_add` set (and `warmup_dir`
@@ -1429,6 +1544,7 @@ scraper on the same host or Docker network.
 | `flodni_warm_catchup_scope` | gauge | `scope` | The `warm_catchup_scope` the last catch-up pass ran with: 1 for `all` or `retries`, 0 for the other; both 0 before the first pass. |
 | `flodni_warmup_files` | gauge | `window` | Media files with a warm window on disk now: `head` counts heads at or above the 1 MiB ready floor, `tail` counts tails fully covered. Only with the cache enabled. |
 | `flodni_playback_starts_total` | counter | none | Playbacks the media server webhook confirmed (not playing to playing). |
+| `flodni_played_marks_total` | counter | `source` | Plays recorded on a file, the mark that protects it from eviction: `webhook` (a play resolved to one file) or `manual` (`POST /api/library/confirm`). Both present from 0. |
 | `flodni_torrent_idle_closes_total` | counter | `confirmed` | Torrents the engine closed because no reader had them for the idle timeout. `confirmed` is `true` when a file of the torrent had a webhook-confirmed playback; the label is refreshed once a second. Both values present from 0. With the keep-alive on, a torrent it holds is not counted; see Keep-alive. |
 | `flodni_torrent_reopens_total` | counter | `confirmed` | Closed torrents a read on an open handle woke again; the wake at open is not counted. `confirmed` as above. |
 | `flodni_wake_refused_total` | counter | none | Wakes the engine refused because it keeps no record of the torrent: one per handle at a read, one per open. Not a failed read and not a dead swarm. 0 from start. See "A stub the engine does not store". |
