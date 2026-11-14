@@ -1,7 +1,7 @@
 package torrent
 
 import (
-	"github.com/RoaringBitmap/roaring"
+	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/anacrolix/missinggo/v2/bitmap"
 
 	"github.com/anacrolix/torrent/metainfo"
