@@ -839,7 +839,14 @@
             btn.disabled = true;
             btn.textContent = 'Restarting…';
             try {
-                await api('/api/restart', { method: 'POST' });
+                const res = await api('/api/restart', { method: 'POST' });
+                if (res.status === 403) {
+                    // No api_token enforced: the daemon refuses to restart itself.
+                    btn.disabled = false;
+                    btn.textContent = 'Restart';
+                    alert('Restart from the panel needs an api_token. Restart the service yourself (systemd, docker restart), or set api_token and restart once.');
+                    return;
+                }
             } catch (_) { /* expected: connection drops on restart */ }
             // Poll until back up
             const poll = setInterval(async () => {

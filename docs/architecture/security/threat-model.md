@@ -50,11 +50,11 @@ IDs are stable; each row names the boundary it belongs to.
 | ID | Boundary | STRIDE | Threat | Mitigation today | Residual |
 |---|---|---|---|---|---|
 | T-01 | B1, B2 | Spoofing | A client without the token calls a control route | Bearer token, constant-time compare, length check first (`apiauth.go`); 401 logged with method, path and address, never the credential | None when the token is set; nothing at all when it is not (T-02) |
-| T-02 | B1, B2, B4 | Spoofing, Elevation | No token configured, so every route is open, including config write, restart, library add and remove | The default is documented in `SECURITY.md`; `.example` config carries a loopback `gostorm_url` | Gap: the daemon starts without warning of an open control port beyond one log line when auth is on |
+| T-02 | B1, B2, B4 | Spoofing, Elevation | No token configured, so every route is open, including config write, restart, library add and remove | The default is documented in `SECURITY.md`; `.example` config carries a loopback `gostorm_url`. With no token enforced, `POST /api/config` refuses to set or change `api_token` and `POST /api/restart` is refused, both 403 (`control_api.go`), so a client cannot choose the next start's token or bounce the service | Gap: every other route stays open, including other config keys and library add and remove; the daemon starts without warning of an open control port beyond one log line when auth is on |
 | T-03 | B1, B2 | Information disclosure | The token or its traffic is read on the wire | The token is never logged or returned: `Config.Redacted` blanks it for `GET /api/config` | Gap: no TLS on the control port (T-04) |
 | T-04 | B1 | Information disclosure, Tampering | Passive or active attacker on the path sees the token and every payload | None in flodni; `SECURITY.md` says to front it with a TLS proxy | Gap: no TLS on B1. GoStorm can serve TLS when its own settings enable it; the control port cannot |
 | T-05 | B4 | Information disclosure | `?token=` on a webhook URL lands in proxy and access logs and in the media server's own configuration | Only the two webhook paths accept a query token, matched on the exact path (`controlWebhook` in `apiauth.go`); no other route does | Gap: the token in a URL is logged by any hop that logs URLs; use a dedicated proxy that strips it, or accept it |
-| T-06 | B4 | Spoofing | Anyone who can reach the port posts a forged play event | Needs the token when set; the payload is matched against registered files only (`internal/daemon/webhook.go`), so an unknown title does nothing | Gap: with `api_token` empty the webhook is unauthenticated; a forged event can hold a registered torrent open |
+| T-06 | B4 | Spoofing | Anyone who can reach the port posts a forged play event | Needs the token when set; the payload is matched against registered files only (`internal/daemon/webhook.go`), so an unknown title does nothing | Gap: with `api_token` empty the webhook is unauthenticated (the open-port refusals in T-02 do not cover it; there is no separate webhook secret); a forged event can hold a registered torrent open |
 | T-07 | B4 | Denial of service | An oversized or malformed webhook exhausts memory | Form posts are capped at 10 MiB with `MaxBytesReader`; JSON posts at 10 MiB with `LimitReader` (`webhook.go`) | A 10 MiB body is still held in memory per request |
 | T-08 | B1 | Denial of service | Slow or oversized requests tie up the server | `ReadHeaderTimeout` 10 s, `ReadTimeout` 60 s, `IdleTimeout` 120 s, `WriteTimeout` 600 s (`main.go`); library bodies capped at 1 MiB (`internal/library/handler.go`); evict body at 1 KiB (`warmup_evict.go`) | No rate limiting or lockout; the token can be guessed at full network speed |
 | T-09 | B2 | Denial of service | Slow headers or idle connections on the engine port | `ReadHeaderTimeout` 10 s, `IdleTimeout` 120 s (`internal/gostorm/web/server.go`) | No read or write timeout, deliberately: streams are long-lived |
@@ -71,8 +71,9 @@ Ordered by what to fix first. None is scheduled here; see
 
 1. No TLS on the control port (T-04). The token and every payload travel in
    clear text; mitigate with a TLS proxy on any untrusted network.
-2. The token is opt-in (T-02, T-06). An empty `api_token` leaves config
-   write, restart and library routes open, and the webhook unauthenticated.
+2. The token is opt-in (T-02, T-06). An empty `api_token` leaves the other
+   config keys, the library routes and the webhook open; setting the token
+   and restart need the environment or the file.
 3. `?token=` on a webhook URL is logged by proxies (T-05). Plex cannot send
    headers, so the query form exists on those two paths only.
 4. No rate limiting or lockout (T-08).

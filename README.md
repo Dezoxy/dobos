@@ -102,6 +102,15 @@ for example `http://host:9080/plex/webhook?token=<token>`; no other route
 does. `/control` loads without it and asks for the token on its first call,
 then keeps it in the browser's local storage. `GET /api/config` never
 returns the token, and saving from the panel leaves it unchanged.
+With no token enforced (the port is open), two control routes are refused with
+403 and a JSON `error`, because any client that reaches the port could
+otherwise take the service over: `POST /api/config` when the body would set or
+change `api_token` (a body without it, or echoing the current empty value, saves
+as before, and nothing is written on a refusal), and `POST /api/restart`
+altogether. Set the token through `FLODNI_API_TOKEN` or by editing
+`config.json` and restart the service yourself; from then on an authenticated
+caller can change the token and restart through the API. The Control Panel's
+Restart button shows that hint instead of restarting while the port is open.
 A panel save keeps the permission bits of an existing `config.json` (a new
 file is created 0600), and secrets are better passed as the
 `FLODNI_API_TOKEN` and `FLODNI_PLEX_TOKEN` environment variables than stored
@@ -1242,12 +1251,10 @@ any file. (`remove` and the other routes keep working without a token.)
 
 The gate is the token the control server was started with, the same value the
 bearer middleware enforces, including the `FLODNI_API_TOKEN` override: never the
-live config. This matters in the open mode: with no token at start,
-`POST /api/config` is unauthenticated like every route and can write an
-`api_token`, but nothing enforces it until the daemon restarts, and confirm
-stays 403 until then too. `POST /api/config` itself is unchanged by this API;
-that it works without a token on an open port is a property of that mode, so
-set `api_token` before exposing the port.
+live config. With no token at start, `POST /api/config` refuses to set or
+change `api_token` (403), so confirm stays 403 until the service is started
+with a token. Other settings still save on an open port, so set `api_token`
+before exposing it.
 
 ## Warm on add
 
