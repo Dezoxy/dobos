@@ -1003,20 +1003,20 @@ closed torrent and reports the engine's state for it before the pass).
     written, with no wake). It is not warmed when its `cache` is `evicted`,
     or it carries an eviction mark or time, including a file evicted before
     schema 14: eviction is left to its next play, except the re-warm below.
-    A file that failed 4 times is given up on; only a read through the mount that the swarm serves, or an
-    add again, makes it eligible. Once one file of a title has given up through
-    failed swarm reads (`lost` and `write_failed` do not count, nor `not_stored`),
-    the title's other files are given up too, so a dead pack costs one wake a
-    day for four days, not for four days per file; any swarm delivery for a
-    file of the title after that give-up makes them eligible again. Warm on add
-    of a new file is not affected: an add still tries once. A file attempted
-    under 20 hours ago waits, and so does its whole title when any file of
-    it failed under 20 hours ago (a no-peers failure skips the rest of a pack
-    without a record). A title the engine refused to wake (`not_stored`, for
-    example a stub the engine never stored) waits for a play. Everything
-    else is a candidate: no record,
-    `dropped_quota`, `dropped_no_evidence`, `lost`, `write_failed`, and a
-    record that says `cached` while the disk does not.
+    A file that failed 4 times is given up on; only a read through the mount
+    that the swarm serves, or an add again, makes it eligible. Once one file
+    of a title has given up through failed swarm reads (`lost` and
+    `write_failed` do not count, nor `not_stored`), the title's other files
+    are given up too, so a dead pack costs one wake a day for four days, not
+    for four days per file; any swarm delivery for a file of the title after
+    that give-up makes them eligible again. Warm on add of a new file is not
+    affected: an add still tries once. A file attempted under 20 hours ago
+    waits, and so does its whole title when any file of it failed under 20
+    hours ago (a no-peers failure skips the rest of a pack without a record).
+    A title the engine refused to wake (`not_stored`, for example a stub the
+    engine never stored) waits for a play. Everything else is a candidate: no
+    record, `dropped_quota`, `dropped_no_evidence`, `lost`, `write_failed`,
+    and a record that says `cached` while the disk does not.
   - **Re-warm after eviction.** An evicted file is fed again when a
     webhook-confirmed play of it is recorded within the last
     `played_protection_days` (the same setting that protects it from
