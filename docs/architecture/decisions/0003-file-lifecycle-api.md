@@ -176,7 +176,7 @@ proposal.
 | Case | Result |
 |---|---|
 | Add of a release already filed | 200 `already_present`, as today |
-| Add refused by `replace` | 409, body names the existing files; nothing written, no engine contact |
+| Add refused by `replace` | 200 with `"decision": "kept"`; `files` is empty; nothing written, no engine contact |
 | Replacement delivers no data | 422, as today; existing files kept |
 | Confirm of an unknown `(hash, index)` | 404 |
 | Confirm repeated | 200, state unchanged except the played time |
@@ -188,14 +188,31 @@ proposal.
 ### Auth
 
 No new mechanism. Routes inherit `apiauth.Middleware`; no query-token
-exemption. When `api_token` is empty the control port is open today, and
-`confirm` would be open with it: the same property `remove` already has.
+exemption. When `api_token` is empty the control port is open today, and the
+existing routes stay as they are (`remove` keeps working without a token).
+The new `confirm` fails closed: with `api_token` unset it answers 403 and
+records nothing, because a manual play mark changes eviction protection.
 
 ### Compatibility
 
-A request with none of the new fields behaves exactly as today. New response
-fields are additive. `list`, `inspect`, `remove` and the unlink path do not
-change. Callers that read `already_present` keep working.
+A request with none of the new fields behaves exactly as today, and a test
+pins it: an `add` without `replace`, `quality_score` or `dry_run` returns the
+same response shape as v0.1.0. New response fields are additive. `list`,
+`inspect`, `remove` and the unlink path do not change. Callers that read
+`already_present` keep working.
+
+**The `files` contract.** Callers link every entry of an add's `files` that
+carries a `fuse_path`, so `files` lists only files this request wrote:
+
+- A refused episode of a partly allowed pack goes in a separate `skipped`
+  list (with its reason), never in `files`. A pack with every episode refused
+  answers with `files` empty.
+- A `decision: "kept"` answer never lists the existing file in `files`;
+  `files` is empty.
+- A `dry_run` answer carries no `fuse_path` in any entry, since nothing was
+  written.
+
+An empty `files` therefore always means "nothing filed by this request".
 
 ### Not in scope
 
@@ -247,7 +264,11 @@ with its tests. All are designed, not built.
    torrent clears `file_state`. Extends `replace_test.go` and `onadded_test.go`.
 2. **Replace policy.** `replace` field, decided under the episode lock before
    the engine call for single episodes, per episode after metadata for packs;
-   409 and `replaced` and `decision` in the response. Tests: a table of
+   `decision` (`kept` answers 200 with an empty `files`), `replaced` and
+   `skipped` in the response; `files` lists only files this request wrote.
+   Tests: the `files` contract (no refused, kept or dry-run file ever carries
+   a `fuse_path`); a request without the new fields returns the v0.1.0 shape;
+   a table of
    policy against (no prior, prior with a lower score, equal, higher, score 0)
    asserting stubs, registry and engine calls; the readability gate still
    refuses under `always` and `if-better`; rollback unchanged; a race test
@@ -276,31 +297,27 @@ with its tests. All are designed, not built.
    refuses an add with `never` and previews one with `dry_run`. Run on the
    maintainer's Docker host, not in CI.
 
-## Open questions for the owner
+## Answers to the open questions
 
-1. Default for an omitted `replace`: `always` (today's TV behaviour, readable
-   release wins)? And should `replace` apply to movies at all (today a second
-   release is a second stub), and if so what makes two movie releases "the
-   same movie": title and year, or the IMDB id in the stub?
-2. Is `if-better` allowed to compare only the caller's `quality_score` (0 is
-   never better), with Flodni knowing nothing else about quality?
-3. A pack that holds episodes the policy allows and episodes it refuses:
-   write the allowed ones and report the rest as skipped, or refuse the whole
-   pack?
-4. Should `dry_run` contact the swarm (add the torrent, wait for metadata,
-   read the head, then drop it), which for a private release means a tracker
-   announce, or be offline (registry decision only, readability reported as
-   `unchecked`)?
-5. Should a replacement inherit the played mark and protection of the file it
-   replaces (same episode), or start unplayed as today?
-6. Should manual `confirm` also confirm an open reader session (lifting the
-   reader-budget hold), or only record the play?
-7. Is a 404 enough for a replaced or removed file, or do you want a short
-   history (a new table and a schema bump)?
-8. Is 409 the right answer for a refused replace, or would you rather get 200
-   with `decision: "kept"`?
-9. With `api_token` unset the control port is open. Should `confirm` and
-   `remove` refuse to run without a token?
+Proposed by the maintainer and agreed by the main API consumer on
+2026-11-14; the owner may still override any of them.
+
+1. An omitted `replace` means `always` (today's TV behaviour). Movies do not
+   replace: a second release stays a second stub.
+2. `if-better` compares only the caller's `quality_score` (0 is never
+   better); quality is the caller's policy.
+3. A partly allowed pack writes the allowed episodes and reports the refused
+   ones in `skipped`, never in `files` (see Compatibility).
+4. `dry_run` is offline: a registry decision only, readability reported as
+   `unchecked`; nothing is announced, and no `fuse_path` is returned.
+5. A replacement starts unplayed, as today.
+6. A manual `confirm` only records the play; it does not lift a reader-budget
+   hold.
+7. A replaced or removed file answers 404; no history table.
+8. A refused replace answers 200 with `decision: "kept"` and an empty
+   `files`.
+9. Only the new `confirm` needs a token, and it fails closed (403) when
+   `api_token` is unset; `remove` is unchanged.
 
 ## Related
 
