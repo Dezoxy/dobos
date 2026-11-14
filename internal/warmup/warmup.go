@@ -94,7 +94,7 @@ var DiskWarmup *DiskWarmupCache
 
 // OnWarmupStateChange, if set, is called synchronously from the single writeWorker goroutine
 // when a head warmup starts (active=true, right after the file is created and its first chunk
-// written) or completes (active=false) - wired up once at startup (main.go) to signal the
+// written) or completes (active=false) - wired up once at startup (internal/daemon/main.go) to signal the
 // anacrolix-torrent fork's Torrent.SetWarmupActive. It runs after the write's locks are
 // released, so it may call back into the cache.
 // Deliberately synchronous, not polled: WriteChunk() only enqueues onto writeCh and returns

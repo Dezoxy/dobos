@@ -40,6 +40,9 @@ control port behind a TLS proxy on any untrusted network. The token is
 compared in constant time and never logged, but there is no rate limiting or
 lockout.
 
+The full analysis (assets, trust boundaries, threats and the gaps above) is
+in the [threat model](docs/architecture/security/threat-model.md).
+
 ## Secrets
 
 The repository holds no secrets; `config.json` is ignored by git and

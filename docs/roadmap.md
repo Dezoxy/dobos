@@ -396,6 +396,203 @@ others are designed, not built.
    `flodni_playback_webhook_match_rule_total{rule}`. Unit-tested against
    symlinks in a temporary folder; not run against a media server.
 
+## Ideas round (after v0.1.0)
+
+The owner moved every entry of [ideas.md](ideas.md) here on 2026-11-14.
+Waves 1 to 3 are built in that order; steps 22 to 25 are gated and wait for
+the measurement they name. Nothing in this section is built yet: every step is
+designed, not built (hard rule 5).
+
+**Wave 1 (being built now)**
+
+1. **Config file permissions.** `POST /api/config` writes `config.json` with
+   mode 0644, though the file holds `api_token` and `plex.token`. Keep the
+   existing file's mode on a rewrite and use 0600 when the file is created.
+   The README recommends `FLODNI_API_TOKEN` and `FLODNI_PLEX_TOKEN` for
+   secrets. Designed, not built.
+2. **Prune guards.** The periodic inode prune in `internal/daemon/cleanup.go`
+   prunes ghost inodes after its own walk, without the "the walk was whole"
+   guard the start-up prune has; the walk adds the root path itself, so an
+   empty or unmounted library still leaves a non-empty set. Give it the same
+   check. At start-up, a stub that parses but has a size outside the valid
+   range is counted and logged separately and no longer blocks the prunes,
+   while a real walk error (I/O, permission) still does. Designed, not built.
+3. **Keep verdicts across a shutdown.** Sessions still open at shutdown never
+   reach a verdict; only the release path and the cleanup loop close them, so
+   a stop within two minutes of a session loses its evidence and its
+   `[Session]` log line is never written. Close them in the shutdown path.
+   Designed, not built.
+4. **Warmup accounting drift sources, and quota by allocated blocks.** The
+   head write and removal race is closed, and `GetAvailableRange` no longer
+   stores a stale-low size over a writer's newer one. `totalSize` can still
+   drift: the eviction walk stores an absolute total outside `tailMu`;
+   `dropResidue` unlinks and subtracts without `tailMu`; a CORRUPT CACHE
+   removal never subtracts; and the head create's `handles.Store` should be a
+   `Swap` that closes the old descriptor, or it leaks one.
+   `flodni_warmup_cache_bytes` exports this total as approximate. Separately,
+   the quota counts apparent file sizes, so sparse files make it count more
+   than the disk holds; count allocated blocks. Designed, not built.
+5. **More Prometheus series** on `/metrics/prometheus`. Now: short reads
+   (`native.ShortReadCounts`, `ShortReadRepairCounts`, already per-process
+   atomic counters with no engine lock, so two families and their README
+   rows); Go runtime and process gauges (goroutines, memory, descriptors) and
+   a gauge of open sessions, in the hand-written encoder in
+   `internal/promtext` (a private `client_golang` registry would add a
+   dependency); and `promtool check metrics` in the end-to-end test, which
+   needs a new image pin in the `Makefile`. Later parts of this step, each for
+   its own reason: engine and peer series (hedge, eject, churn, the gradient
+   loop), because the JSON `/metrics` sums them over active torrents under
+   engine locks and the sums fall when a torrent expires, which a counter must
+   not do, so they need per-process counters in the engine first; read-ahead
+   evictions, which need a counter inside `Put` under the shard lock; the
+   head-fill duration histogram (`warmupDurationBuckets`), which has no sum
+   and cannot be a Prometheus histogram without a new counter; and
+   sub-millisecond precision, since the histograms keep whole milliseconds and
+   cache hits add nothing to `_sum` (it means storing microseconds). Designed,
+   not built.
+6. **Two flaky tests under full-suite load.** `internal/warmup`
+   `TestHookFiresOnceFromWriteChunkAndWriteTail` (a race) and
+   `internal/daemon`
+   `TestClosedTorrentStoredLengthDisagreeingMakesTheHeadSuspect` (a timeout
+   waiting for the head write). Find the cause of each and fix the test or
+   the code. Designed, not built.
+7. **Docs and CI.** A threat model for the control API and its opt-in token.
+   CodeQL, with a manual cgo build step because the FUSE build may defeat the
+   automatic one. Stale comments: `Open` in `internal/daemon/fuse_nodes.go`
+   says it needs head and tail ready, but its warm path uses `headReady` only
+   and `tailReady` feeds the `[TTFF]` log line; comments in other packages
+   name `main.go` or `webhook_status.go` where the code has moved. The
+   settings page hints about a Media Server card, sessions and posters that no
+   code provides. Designed, not built.
+8. **Close the stale-stub hole.** An open of a stub whose index is stale, on a
+   torrent the engine has closed and whose record has no file list (saved
+   before the metadata), still takes the warm head under that index when it
+   is no longer than the stub's file; a sibling's head of a plausible length
+   passes. The audit that closes it walks every stub's `link=` and `index=`
+   against the file list in the engine's record and reports each stub whose
+   index names a file of another length than the stub's size, for a library
+   remove and add to repair; records with no list need one wake to be read.
+   Designed, not built.
+9. **Dead packs: a pack-level give-up.** After the head file of a pack gives
+   up (4 failed attempts), the next file becomes the head and gets its own
+   four attempts, so a dead pack costs one wake a day for days per file.
+   Bounded, and it announces only to the stored trackers; a pack-level give-up
+   ends it. Designed, not built.
+10. **Warm on add in the end-to-end test.** The `warm-on-add` variant files
+    one title. A canary public tracker for the wake of a closed private
+    torrent, and a removal while a title is queued or paused, need a second
+    title held open; the seeder has no such mode. Add one. Designed, not
+    built.
+
+**Wave 2 (after wave 1)**
+
+11. **Count a metainfo that never arrives.** A torrent whose metainfo times
+    out fails the open with EIO before any session exists, and `Wake` never
+    condemns it, so the readability record shows nothing for it. Give it a
+    failure reason of its own; weigh the retries of a player counting several
+    times for one occasion. Designed, not built.
+12. **Count reads after a session closes.** A session closes after 60 s idle
+    (30 s once it is older than 30 minutes), or when a probe releases while a
+    player without a pump slot has read nothing. Reads on a handle that is
+    still open then find no session and are counted nowhere, so a paused
+    playback is cut short in `/api/sessions` and the `[Session]` line. Open a
+    session on the first read after a close; weigh a new session per pause
+    against one long one. Designed, not built.
+13. **Stop replaced torrents leaving an entry behind.** A session still open
+    on a replaced torrent writes its readability entry back after the library
+    cleared it. Close the session where the stub is invalidated
+    (`invalidateSyncRemovedPath`), before the library clears the row, to fix
+    replacement; clear the row in the FUSE unlink path to cover deleted
+    stubs. If `movies` and `tv` can be separate mounts, the start-up prune
+    also needs a per-directory non-empty guard. Designed, not built.
+14. **Library naming and filing quirks.** Pinned as they are by the
+    characterization tests (`internal/library/*_char_test.go`), so each change
+    is a deliberate one. Designed, not built:
+    - A pack file named `S00E01` (a special) is filed under the requested
+      season as that season's episode 1 and competes with the real one.
+    - Samples are dropped only when a larger file names the same episode; a
+      lone sample is filed as the episode.
+    - A year in the title is read as the release year when no date is given
+      (`Blade_Runner_2049_2049_...`, `Dune_2021_2021_...`); a title with no
+      ASCII letters starts with `_`.
+    - `EpisodeKey` drops non-ASCII letters (an accented leading letter is
+      lost), so two shows can share a key.
+15. **Per-file replacement check for packs.** The check before a replacement
+    reads one file of the release; a pack whose other episodes do not read
+    passes. Weigh the extra reads against the risk. Designed, not built.
+16. **A swarm signal from the engine.** For awake torrents: peers connected,
+    time of the last piece received, observed rate; what the swarm does, as
+    opposed to what a tracker reports. It covers only torrents that are awake.
+    Designed, not built.
+17. **Less container privilege.** The image runs with `SYS_ADMIN` and AppArmor
+    unconfined for the FUSE mount; a narrower profile may be enough. Designed,
+    not built.
+18. **Warm again after eviction.** The catch-up leaves evicted files to their
+    next play; warming them again needs a quota that fits the library, or a
+    rule for which files deserve it. Designed, not built.
+19. **A proper file-lifecycle API.** Add, replace with a policy, confirm and
+    remove, as explicit operations instead of side effects. Designed, not
+    built.
+
+**Wave 3 (cross-cutting, last)**
+
+20. **Structured logging with `slog`.** 222 log call sites use `log.Printf`.
+    Moving them to `slog` with fields helps log search, but each line needs its
+    own key choices; it pays when logs ship to a central store. Designed, not
+    built.
+21. **An `App` struct instead of package-level state.** The FUSE handle, the
+    pump, the webhook and the cleanup manager share seven package-level maps
+    (`activeHandles`, `activePumps`, `playbackRegistry`, `pumpTimers`,
+    `priorityTimers`, `inFlightFetches`, `inFlightPrefetches`). The move was
+    gated on unit tests of the read path; those now cover the decision
+    helpers, the cache hit, short-read repair, `Release`, and the fetch,
+    prefetch and pump branches through a fake engine behind the `engineBridge`
+    interface, so the prerequisites are met. Designed, not built.
+
+**Gated on measurement (not built until the data says so)**
+
+22. **Evict the least recently read file.** Eviction takes files never played
+    first, then the oldest written. Whether read recency would keep more
+    starts warm is measured first: `flodni_warmup_cold_reopen_total` with
+    `previously_played="true"` over `flodni_playback_starts_total`. Build it
+    if that share reaches 5% of plays over a few weeks at a full quota. The
+    `previously_played="false"` series is a different problem: warm data
+    evicted before its first play points at the quota or the eviction order,
+    not at recency. Designed, not built.
+23. **Warm the next episode during playback.** While episode N plays, fill
+    episode N+1's windows so a binge starts at once. A second reader on the
+    playing torrent splits the engine's read-ahead, so this needs warm on add
+    in place and a measurement that the playing stream does not slow down.
+    Designed, not built.
+24. **Reader budget follow-ups.** Measure the read-ahead overshoot first: a
+    miss inside a window is never refused, and its read-ahead can extend past
+    the window edge into the middle the budget is meant to protect; then
+    decide whether to clamp it. Attribute pump and prefetch fills to the
+    reader that caused them, after Reliability step 6. Designed, not built.
+25. **The two engine-side stall gaps.** Both stalls after a tail probe are
+    fixed in the cache (see the Done lines below); two gaps stay open.
+    An order-only change wakes no idle peer: in the engine a priority or
+    request-order change that leaves the pending set as it was triggers no
+    request update. The stale cache priorities exposed it; an engine-side wake
+    removed the 34 s stall too (0 of 11 runs) but was not shipped, since fixes
+    belong in Flodni's own code. Another producer of an order-only change
+    could expose it again. An earlier note that waking peers did not help came
+    from an attempt that was never committed; unverified. A dropped only peer
+    waits for the next announce: the engine floors a tracker's announce
+    interval at one minute (`internal/anacrolix-torrent/tracker_scraper.go`)
+    and does not keep a dropped peer to redial, so a private torrent with one
+    seeder and one tracker that loses its peer waits up to a minute. Not
+    covered: a cache over capacity with nothing evictable (everything sits in
+    a reader window or a file guard) can still reach "have all". To measure,
+    reapply the instrumentation: `git apply docs/ideas/stall-dump.patch`
+    ([patch](ideas/stall-dump.patch)) on `main` adds a dump at the first fetch
+    timeout; set `FLODNI_STALL_DUMP=<n>` for the dump and
+    `FLODNI_STALL_POKE=1` for the wake experiment (`tests/e2e` passes them
+    through as `E2E_STALL_DUMP` and `E2E_STALL_POKE`). Designed, not built.
+
+The vendored engine stays as it is apart from fixes, and advisories for
+`anacrolix/torrent` are watched.
+
 ## Done
 
 - 2026-11-11, trim step 1: telemetry, the update check, the MCP server and
