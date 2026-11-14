@@ -1726,8 +1726,17 @@ run_budget_refusal() {
   name=$(basename "$path")
   size=$(docker exec "$flodni" stat -c %s "$path")
   local mib=1048576 head=$((4 * 1048576)) margin=$((16 * 1048576))
+  # The refusal cuts on bytes counted, not on the offset dd has reached. The kernel sends
+  # the read-ahead of one scan as parallel requests (the mount's MaxReadAhead is 4 MiB), and
+  # a later request can be gated, served and counted before an earlier one is gated: the
+  # earlier one is then refused with the margin already reached, and dd, which reads in order,
+  # stops short of head + margin by what was served out of order beyond its position. That
+  # is at most the read-ahead window plus dd's own 1 MiB block. One run in CI stopped
+  # 128 KiB short of head + margin for this reason. So the exact check is on the counter
+  # (the margin was counted before the first refusal); the dd bytes only get the slack.
   local want_min=$((head + margin)) want_max=$((100 * 1048576))
-  echo "step add: $((SECONDS - t0))s since start, file $size bytes, a scan is refused after at least $want_min" >&2
+  local want_dd_min=$((want_min - 4 * mib - mib))
+  echo "step add: $((SECONDS - t0))s since start, file $size bytes, a scan is refused once $margin bytes past the head are counted (dd gets at least $want_dd_min)" >&2
 
   local play_payload stop_payload payload ev resp body actual n
   play_payload='{"event":"media.play","Metadata":{"title":"E2E Fixture","year":2026,"librarySectionType":"movie","Media":[{"Part":[{"file":"/data/movies/'"$name"'"}]}]}}'
@@ -1786,7 +1795,8 @@ run_budget_refusal() {
   fail0=$(prom_num "$(prom_body)" 'flodni_fuse_short_read_results_total{result="failed"}')
 
   # 2 and 3. A scan: dd of the whole file.
-  local rx0 rx1 rx2
+  local rx0 rx1 rx2 u0 u1
+  u0=$(prom_num "$(prom_body)" flodni_unconfirmed_read_bytes_total)
   scan_dd "$path"
   rx0=$(net_rx)
   echo "SCAN ($v): dd rc=$sd_rc bytes=$sd_bytes ($((sd_bytes / mib)) MiB of $((size / mib))) in ${sd_secs}s: $(grep -i 'error' <<<"$sd_out" | head -n 1)" >&2
@@ -1795,8 +1805,14 @@ run_budget_refusal() {
     dump_diagnostics
     return 1
   fi
-  if [ -z "$sd_bytes" ] || [ "$sd_bytes" -lt "$want_min" ] || [ "$sd_bytes" -gt "$want_max" ]; then
-    echo "FAIL ($v): the scan read ${sd_bytes:-no} bytes, want between $want_min (windows plus margin) and $want_max" >&2
+  if [ -z "$sd_bytes" ] || [ "$sd_bytes" -lt "$want_dd_min" ] || [ "$sd_bytes" -gt "$want_max" ]; then
+    echo "FAIL ($v): the scan read ${sd_bytes:-no} bytes, want between $want_dd_min (windows plus margin, less the read-ahead in flight) and $want_max" >&2
+    dump_diagnostics
+    return 1
+  fi
+  u1=$(prom_num "$(prom_body)" flodni_unconfirmed_read_bytes_total)
+  if [ $((u1 - u0)) -lt "$margin" ]; then
+    echo "FAIL ($v): the scan was refused after $((u1 - u0)) counted bytes, want at least the margin $margin" >&2
     dump_diagnostics
     return 1
   fi
@@ -1819,8 +1835,8 @@ run_budget_refusal() {
     return 1
   fi
   echo "ok ($v): 2 scan refused with EIO after $sd_bytes bytes, one refused line held_ms=$held offset=$off: $refused" >&2
-  echo "ITEM3 ($v): dd got $sd_bytes bytes; windows plus margin $want_min; first refused read at offset $off; dd got $((sd_bytes - off)) bytes past it (negative: it stopped short)" >&2
-  echo "ok ($v): 3 cached bytes up to the cut: dd got $sd_bytes >= $want_min (windows plus margin)" >&2
+  echo "ITEM3 ($v): dd got $sd_bytes bytes; windows plus margin $want_min; first refused read at offset $off; dd got $((sd_bytes - off)) bytes past it (negative: it stopped short); counted during the scan $((u1 - u0))" >&2
+  echo "ok ($v): 3 refused only after the margin: counted $((u1 - u0)) >= $margin, dd got $sd_bytes >= $want_dd_min (windows plus margin less the read-ahead in flight)" >&2
   body=$(prom_body)
   echo "PROM ($v): $(grep -E '^flodni_unconfirmed_read_(refused_reads_total|holds_total|confirmed_after_refusal_total)[{ ]' <<<"$body" | tr '\n' ' ')" >&2
   if [ "$(prom_num "$body" flodni_unconfirmed_read_refused_reads_total)" -lt 1 ] ||
