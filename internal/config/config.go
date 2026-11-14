@@ -162,7 +162,9 @@ type Config struct {
 	} `json:"plex"`
 
 	// --- Media Server ---
-	MediaServerType string `json:"media_server_type"` // "plex" | "jellyfin"
+	// MediaServerType is kept only so an old config.json still parses. Plex is the only
+	// media server; any value but "" or "plex" (Jellyfin was removed) logs a warning.
+	MediaServerType string `json:"media_server_type"`
 
 	// PumpOnOpen starts the read-ahead pump as soon as a file is opened (upstream's
 	// behaviour). Off, a file opened by a scanner (Plex, Sonarr/Radarr's ffprobe,
@@ -381,6 +383,10 @@ func firstEnv(keys ...string) string {
 }
 
 func (c *Config) finalize() {
+	if c.MediaServerType != "" && c.MediaServerType != "plex" {
+		log.Printf("[Config] WARNING: media_server_type %q: Jellyfin is no longer supported and Flodni uses Plex", c.MediaServerType)
+	}
+
 	// At 0 the pump semaphore is unbuffered and its non-blocking send never succeeds.
 	if c.MasterConcurrencyLimit < 1 {
 		c.MasterConcurrencyLimit = 1

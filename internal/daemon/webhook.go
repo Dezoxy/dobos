@@ -24,8 +24,6 @@ var reImdbID = regexp.MustCompile(`"imdb://(tt\d+)"`)
 // the ceiling has to clear a poster, not just the JSON.
 const webhookMaxBody = 10 * 1024 * 1024
 
-var reEmptyNumber = regexp.MustCompile(`"(\w+)":\s*,`)
-
 // handlePlexWebhook gestisce i messaggi in arrivo dal server Plex
 func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 	logger.Printf("[PLEX] Webhook connection from %s", r.RemoteAddr)
@@ -95,28 +93,8 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		} `json:"Metadata"`
 	}
 
-	// Sanitize empty numeric fields produced by Jellyfin templates (e.g. "year":, → "year":0,)
-	sanitized := reEmptyNumber.ReplaceAllString(payloadStr, `"$1":0`)
-	if err := json.Unmarshal([]byte(sanitized), &payload); err != nil {
+	if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
 		return
-	}
-
-	// Normalize Jellyfin event names to Plex-style
-	switch payload.Event {
-	case "PlaybackStart":
-		payload.Event = "media.play"
-	case "PlaybackStop":
-		payload.Event = "media.stop"
-	case "PlaybackProgress":
-		payload.Event = "media.resume"
-	}
-
-	// Normalize Jellyfin ItemType values to Plex-style ("Movie"→"movie", "Episode"→"show").
-	switch payload.Metadata.LibrarySectionType {
-	case "Movie":
-		payload.Metadata.LibrarySectionType = "movie"
-	case "Episode":
-		payload.Metadata.LibrarySectionType = "show"
 	}
 
 	switch payload.Metadata.LibrarySectionType {

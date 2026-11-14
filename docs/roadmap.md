@@ -698,5 +698,7 @@ are designed, not built.
   the webhook, then a stop webhook releases the torrent and it closes. The
   engine's `IsPriority` mark no longer holds the idle timeout; it still
   drives aggressive download mode. Step 8 is finished.
+- 2026-11-14, Jellyfin support removed: Plex is the only media server; a config
+  naming jellyfin logs a WARNING and runs as Plex.
 - 2026-11-14, repository layout: the daemon moved from the root to
   internal/daemon, with cmd/flodni as the entry point; no behaviour change.
