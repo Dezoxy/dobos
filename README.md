@@ -1719,12 +1719,18 @@ scraper on the same host or Docker network.
 | `flodni_readahead_cache_active_bytes` | gauge | none | The part that is not stale. |
 | `flodni_readahead_cache_entries` | gauge | none | Entries in the cache. |
 | `flodni_readahead_cache_budget_bytes` | gauge | none | The cache's size budget. |
+| `flodni_readahead_evictions_total` | counter | none | Chunks the cache dropped on a `Put` to stay under its budget. Chunks the stale sweep removes are not counted. 0 from start. |
+| `flodni_warmup_head_fill_duration_seconds` | histogram | none | Time from the first chunk to the last of a head fill, per file whose head completed. Buckets 2, 5, 10, 15, 30, 60 and 120 s. |
 | `flodni_fuse_short_reads_total` | counter | none | Reads served with fewer bytes than requested away from EOF. |
 | `flodni_fuse_short_read_results_total` | counter | `result` | Outcome of the refill: `repaired` or `failed`. |
 | `flodni_fetch_dedup_total` | counter | none | Concurrent fetches of one chunk that shared a single fetch. |
 | `flodni_engine_short_reads_total` | counter | `path` | Engine reads that ended short and were reported as success: `stream` (the sequential reader) or `fetch` (the stateless block fetch behind the FUSE fallback). 0 from start. |
 | `flodni_engine_short_read_repairs_total` | counter | `result` | Outcome of the stream reader's refill loop, per read that needed it: `repaired` after a reconnect, `unfilled` when a gap stayed. |
 | `flodni_engine_peer_redials_total` | counter | none | Peers the opt-in redial (`redial_dropped_peer`) added back to a private torrent after its only connected peer dropped. 0 with the switch off. See Engine stall gaps. |
+| `flodni_engine_hedge_triggers_total` | counter | none | Tail-hedge duplicate requests the engine fired. A process counter: unlike `hedge_trigger_count` in `/metrics`, it does not fall when a torrent expires. |
+| `flodni_engine_peer_ejects_total` | counter | `transport` | Outlier peers the engine dropped for a rate far under the swarm median, `tcp` or `utp`. Process counter. |
+| `flodni_engine_peer_churn_drops_total` | counter | `transport` | Peers dropped by the warmup-probe churn, `tcp` or `utp`. Process counter. |
+| `flodni_engine_gradient2_backoff_samples_total` | counter | none | Gradient2 limiter samples whose latency gradient was below 1, the loop reacting to rising latency. Stays 0 while the limiter is off, which is the default. Process counter. |
 | `flodni_sessions_open` | gauge | none | Sessions open now, the length of the `open` list of `/api/sessions`. |
 | `go_goroutines` | gauge | none | Goroutines that currently exist. |
 | `go_memstats_heap_inuse_bytes` | gauge | none | Bytes in in-use heap spans. |
@@ -1747,8 +1753,18 @@ to be stable; buckets and help text are not.
   from: a `racache_hit` may hold bytes the swarm delivered a moment ago.
 - The dead-swarm series stay 0 when the state database is off; nothing is
   recorded then.
-- Durations are truncated to whole milliseconds: reads under 1 ms land in
-  `le="0.001"` and add nothing to `_sum`.
+- Durations are kept in microseconds and exported in seconds: a read under
+  1 ms lands in `le="0.001"` and adds its fraction to `_sum`, and a read of
+  1.5 ms is in `le="0.005"`. The JSON `/metrics/ttff` keeps whole
+  milliseconds (`max` truncated, `avg` and the percentiles in ms).
+- The engine counters (hedge, eject, churn, Gradient2) are atomics the
+  engine bumps where each event happens, one set per process, so a scrape
+  takes no engine lock. The JSON `/metrics` fields of the same name are
+  still sums over active torrents and fall when one expires.
+- `flodni_warmup_head_fill_duration_seconds` has the same buckets as the
+  `warmup_duration_buckets_...` field of `/metrics`; the JSON buckets are
+  open on the right (`<2s`), a histogram's `le` is closed, so they differ only
+  for a fill of exactly a bound.
 - `flodni_read_bytes_total` counts every served read, including reads after
   a session closed and reads with no session, so it differs from the
   `[Session]` lines.
@@ -1768,9 +1784,6 @@ to be stable; buckets and help text are not.
   there. Records of torrents that left the library are not subtracted (a
   startup prune removes them), and `never_read` stops at 0 rather than
   going negative.
-- Engine and peer counters (hedge, eject, churn), read-ahead evictions and the
-  head-fill duration as a Prometheus histogram are not exported yet (roadmap,
-  Ideas round, step 5).
 
 ## Viewing the model
 

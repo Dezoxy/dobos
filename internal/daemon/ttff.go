@@ -36,7 +36,8 @@ func (s ttffSource) String() string {
 }
 
 // Fixed logarithmic bucket upper bounds, milliseconds. Bucket i covers
-// (buckets[i-1], buckets[i]]; the final implicit bucket is [10000,∞).
+// (buckets[i-1], buckets[i]]; the final implicit bucket is (10000,∞). A sample is placed by
+// its duration in microseconds, so 1.5 ms is in the 5 ms bucket, not the 1 ms one.
 var ttffBucketsMS = [...]int64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 3000, 10000}
 
 // TTFFHistogram is a fixed-bucket latency histogram with zero allocations.
@@ -44,22 +45,23 @@ var ttffBucketsMS = [...]int64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 3000, 1000
 type TTFFHistogram struct {
 	buckets [len(ttffBucketsMS) + 1]atomic.Int64
 	total   atomic.Int64
-	sumMS   atomic.Int64
+	sumUS   atomic.Int64 // microseconds; the sum a Prometheus histogram needs
 	maxMS   atomic.Int64
 }
 
 func (h *TTFFHistogram) Add(d time.Duration) {
-	ms := d.Milliseconds()
-	if ms < 0 {
-		ms = 0
+	us := d.Microseconds()
+	if us < 0 {
+		us = 0
 	}
+	ms := us / 1000 // whole milliseconds, for Max
 	idx := 0
-	for idx < len(ttffBucketsMS) && ms > ttffBucketsMS[idx] {
+	for idx < len(ttffBucketsMS) && us > ttffBucketsMS[idx]*1000 {
 		idx++
 	}
 	h.buckets[idx].Add(1)
 	h.total.Add(1)
-	h.sumMS.Add(ms)
+	h.sumUS.Add(us)
 	for {
 		cur := h.maxMS.Load()
 		if ms <= cur || h.maxMS.CompareAndSwap(cur, ms) {
@@ -71,14 +73,14 @@ func (h *TTFFHistogram) Add(d time.Duration) {
 func (h *TTFFHistogram) Count() int64 { return h.total.Load() }
 
 // snapshot copies the per-bucket counts (not cumulative; the last one is everything
-// above the final bound) and the sum in ms. Add updates bucket, total and sum as three
+// above the final bound) and the sum in microseconds. Add updates bucket, total and sum as three
 // separate atomics, so a scrape taking the count from total could disagree with the
 // buckets it just read; callers take the count from these buckets instead.
-func (h *TTFFHistogram) snapshot() (counts [len(ttffBucketsMS) + 1]int64, sumMS int64) {
+func (h *TTFFHistogram) snapshot() (counts [len(ttffBucketsMS) + 1]int64, sumUS int64) {
 	for i := range h.buckets {
 		counts[i] = h.buckets[i].Load()
 	}
-	return counts, h.sumMS.Load()
+	return counts, h.sumUS.Load()
 }
 
 func (h *TTFFHistogram) Avg() float64 {
@@ -86,7 +88,7 @@ func (h *TTFFHistogram) Avg() float64 {
 	if total == 0 {
 		return 0
 	}
-	return float64(h.sumMS.Load()) / float64(total)
+	return float64(h.sumUS.Load()) / 1000 / float64(total)
 }
 
 func (h *TTFFHistogram) Max() float64 { return float64(h.maxMS.Load()) }

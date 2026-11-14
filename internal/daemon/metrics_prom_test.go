@@ -44,6 +44,58 @@ func TestPromHistogramConversion(t *testing.T) {
 	}
 }
 
+func TestSubMillisecondReadsAddToSum(t *testing.T) {
+	var h TTFFHistogram
+	h.Add(400 * time.Microsecond)
+	h.Add(1500 * time.Microsecond) // above 1 ms: the 5 ms bucket, not the 1 ms one
+	h.Add(-time.Second)            // clamped to 0
+	var w promtext.Writer
+	w.Histogram("t_seconds", "t", promHistogram(&h))
+	if err := promtext.Lint(w.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	out := string(w.Bytes())
+	for _, want := range []string{
+		`t_seconds_bucket{le="0.001"} 2`,
+		`t_seconds_bucket{le="0.005"} 3`,
+		`t_seconds_sum 0.0019`,
+		`t_seconds_count 3`,
+	} {
+		if !strings.Contains(out, want+"\n") {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	// The JSON view keeps milliseconds: the max is whole ms, the average is in ms.
+	if h.Max() != 1 {
+		t.Errorf("Max = %v ms, want 1", h.Max())
+	}
+	if got := h.Avg(); got < 0.63 || got > 0.64 {
+		t.Errorf("Avg = %v ms, want 1.9/3", got)
+	}
+}
+
+func TestPromBucketBoundsUnchanged(t *testing.T) {
+	var w promtext.Writer
+	var h TTFFHistogram
+	w.Histogram("t_seconds", "t", promHistogram(&h))
+	out := string(w.Bytes())
+	for _, le := range []string{"0.001", "0.005", "0.01", "0.025", "0.05", "0.1", "0.25", "0.5", "1", "3", "10", "+Inf"} {
+		if !strings.Contains(out, `t_seconds_bucket{le="`+le+`"} 0`) {
+			t.Errorf("bucket le=%s missing:\n%s", le, out)
+		}
+	}
+	if n := strings.Count(out, "_bucket{"); n != 12 {
+		t.Errorf("%d buckets, want 12", n)
+	}
+	var wh promtext.Writer
+	wh.Histogram("h_seconds", "h", promtext.Histogram{Bounds: warmup.WarmupDurationBoundsSeconds, Counts: make([]int64, 8)})
+	for _, le := range []string{"2", "5", "10", "15", "30", "60", "120", "+Inf"} {
+		if !strings.Contains(string(wh.Bytes()), `h_seconds_bucket{le="`+le+`"} 0`) {
+			t.Errorf("warmup bucket le=%s missing", le)
+		}
+	}
+}
+
 func scrape(t *testing.T) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
@@ -85,6 +137,8 @@ func TestHandlePrometheus(t *testing.T) {
 		"flodni_warm_fill_bytes_total", "flodni_warm_cache_failures_total", "flodni_warm_queue_files", "flodni_warm_paused",
 		"flodni_stub_index_mismatch_total",
 		"flodni_engine_short_reads_total", "flodni_engine_short_read_repairs_total", "flodni_engine_peer_redials_total", "flodni_sessions_open",
+		"flodni_engine_hedge_triggers_total", "flodni_engine_peer_ejects_total", "flodni_engine_peer_churn_drops_total",
+		"flodni_engine_gradient2_backoff_samples_total", "flodni_readahead_evictions_total", "flodni_warmup_head_fill_duration_seconds",
 		"go_goroutines", "go_memstats_heap_inuse_bytes", "go_memstats_sys_bytes", "go_gc_cycles_total",
 	} {
 		if !strings.Contains(body, "# TYPE "+fam+" ") {
@@ -140,6 +194,16 @@ func TestHandlePrometheus(t *testing.T) {
 		`flodni_engine_short_read_repairs_total{result="repaired"}`,
 		`flodni_engine_short_read_repairs_total{result="unfilled"}`,
 		`flodni_sessions_open`,
+		`flodni_engine_hedge_triggers_total`,
+		`flodni_engine_peer_ejects_total{transport="tcp"}`,
+		`flodni_engine_peer_ejects_total{transport="utp"}`,
+		`flodni_engine_peer_churn_drops_total{transport="tcp"}`,
+		`flodni_engine_peer_churn_drops_total{transport="utp"}`,
+		`flodni_engine_gradient2_backoff_samples_total`,
+		`flodni_readahead_evictions_total`,
+		`flodni_warmup_head_fill_duration_seconds_sum`,
+		`flodni_warmup_head_fill_duration_seconds_count`,
+		`flodni_warmup_head_fill_duration_seconds_bucket{le="120"}`,
 	} {
 		if !strings.Contains(body, want+" ") {
 			t.Errorf("series %s missing", want)

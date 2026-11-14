@@ -110,6 +110,9 @@ func (g *gradient2) onSample(rtt float64, inflight int) int {
 	}
 
 	gradient := math.Max(0.5, math.Min(1.0, gradient2RTTTolerance*longRTT/g.shortRTT))
+	if gradient < 1 {
+		processCounters.gradient2Backoffs.Add(1)
+	}
 	newLimit := g.estimatedLimit*gradient + gradient2QueueSize
 	newLimit = g.estimatedLimit*(1-gradient2Smoothing) + newLimit*gradient2Smoothing
 	newLimit = math.Max(float64(g.minLimit), math.Min(float64(g.maxLimit), newLimit))
