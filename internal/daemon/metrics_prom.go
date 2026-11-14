@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"sort"
 
+	"github.com/anacrolix/torrent"
+
 	"flodni/internal/gostorm/native"
 	"flodni/internal/gostorm/torr"
 	"flodni/internal/promtext"
@@ -34,8 +36,8 @@ func handlePrometheus(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(pw.Bytes())
 }
 
-// ttffBoundsSeconds are the histogram bounds in seconds. The histograms keep whole
-// milliseconds, so a read under 1 ms lands in le="0.001" with 0 added to _sum.
+// ttffBoundsSeconds are the histogram bounds in seconds. The histograms keep
+// microseconds, so a read under 1 ms lands in le="0.001" and adds its fraction to _sum.
 var ttffBoundsSeconds = func() []float64 {
 	out := make([]float64, len(ttffBucketsMS))
 	for i, ms := range ttffBucketsMS {
@@ -45,12 +47,12 @@ var ttffBoundsSeconds = func() []float64 {
 }()
 
 func promHistogram(h *TTFFHistogram, labels ...promtext.Label) promtext.Histogram {
-	counts, sumMS := h.snapshot()
+	counts, sumUS := h.snapshot()
 	return promtext.Histogram{
 		Labels: labels,
 		Bounds: ttffBoundsSeconds,
 		Counts: counts[:],
-		Sum:    float64(sumMS) / 1000,
+		Sum:    float64(sumUS) / 1e6,
 	}
 }
 
@@ -69,13 +71,13 @@ func collectProm(w *promtext.Writer) {
 		promSample(startTime.Unix()))
 
 	w.Histogram("flodni_session_first_byte_seconds",
-		"Open to the first byte served, per session classed as real playback. Whole milliseconds.",
+		"Open to the first byte served, per session classed as real playback..",
 		promHistogram(&ttffStats.openToHeader))
 	w.Histogram("flodni_session_first_deep_read_seconds",
-		"Open to the first read at 8 MiB or later or in the tail, per session classed as real playback. Whole milliseconds.",
+		"Open to the first read at 8 MiB or later or in the tail, per session classed as real playback..",
 		promHistogram(&ttffStats.openToDeepRead))
 	w.Histogram("flodni_seek_read_duration_seconds",
-		"Duration of the read that followed a seek. Whole milliseconds.",
+		"Duration of the read that followed a seek..",
 		promHistogram(&ttffStats.seekLatency))
 
 	sources := []struct {
@@ -94,7 +96,7 @@ func collectProm(w *promtext.Writer) {
 		bytesBySource = append(bytesBySource, promSample(ttffStats.readBytes[s.src].Load(), lbl("source", s.src.String())))
 	}
 	w.Histogram("flodni_read_duration_seconds",
-		"Duration of each served read by the path that answered it, not by where the bytes came from. Whole milliseconds.",
+		"Duration of each served read by the path that answered it, not by where the bytes came from..",
 		hists...)
 	w.Counter("flodni_read_bytes_total",
 		"Bytes handed to the kernel by the path that answered. Counts reads outside any session too, so it differs from the [Session] lines.",
@@ -166,6 +168,10 @@ func collectWarmupProm(w *promtext.Writer) {
 			promSample(heads, lbl("window", "head")),
 			promSample(tails, lbl("window", "tail")))
 	}
+	whCounts, whSum := warmup.WarmupDurationSnapshot()
+	w.Histogram("flodni_warmup_head_fill_duration_seconds",
+		"Time from the first chunk to the last of a head fill, per file whose head completed.",
+		promtext.Histogram{Bounds: warmup.WarmupDurationBoundsSeconds, Counts: whCounts[:], Sum: whSum})
 	w.Counter("flodni_warmup_evictions_total", "Files removed by quota eviction, by window.",
 		promSample(st.EvictedHeads, lbl("window", "head")),
 		promSample(st.EvictedTails, lbl("window", "tail")))
@@ -301,6 +307,9 @@ func collectReadAheadProm(w *promtext.Writer) {
 	w.Gauge("flodni_readahead_cache_bytes", "Bytes held in the read-ahead cache.", promSample(total))
 	w.Gauge("flodni_readahead_cache_active_bytes", "Bytes in the read-ahead cache that are not stale.", promSample(active))
 	w.Gauge("flodni_readahead_cache_entries", "Entries in the read-ahead cache.", promSample(int64(entries)))
+	w.Counter("flodni_readahead_evictions_total",
+		"Chunks the read-ahead cache dropped on a Put to stay under its budget. The stale sweep is not counted.",
+		promSample(raCache.Evictions()))
 	if b := gc(); b != nil {
 		w.Gauge("flodni_readahead_cache_budget_bytes", "Size budget of the read-ahead cache.", promSample(b.ReadAheadBudget))
 	}
@@ -328,6 +337,21 @@ func collectEngineReadsProm(w *promtext.Writer) {
 	w.Counter("flodni_engine_peer_redials_total",
 		"Peers the opt-in redial (redial_dropped_peer) added back to a private torrent after its only connected peer dropped. 0 with the switch off.",
 		promSample(torr.RedialCount()))
+	pc := torrent.ProcessCounters()
+	w.Counter("flodni_engine_hedge_triggers_total",
+		"Tail-hedge duplicate requests the engine fired. Counted per process, so unlike hedge_trigger_count in /metrics it does not fall when a torrent expires.",
+		promSample(pc.HedgeTriggers))
+	w.Counter("flodni_engine_peer_ejects_total",
+		"Outlier peers the engine proactively dropped for a low rate against the swarm median, by transport. Per process, not per active torrent.",
+		promSample(pc.PeerEjectsTCP, lbl("transport", "tcp")),
+		promSample(pc.PeerEjectsUTP, lbl("transport", "utp")))
+	w.Counter("flodni_engine_peer_churn_drops_total",
+		"Peers dropped by the warmup-probe churn, by transport. Per process, not per active torrent.",
+		promSample(pc.PeerChurnsTCP, lbl("transport", "tcp")),
+		promSample(pc.PeerChurnsUTP, lbl("transport", "utp")))
+	w.Counter("flodni_engine_gradient2_backoff_samples_total",
+		"Gradient2 limiter samples that found the peer's latency gradient below 1 and shrank its growth. Stays 0 with the limiter off (the default).",
+		promSample(pc.Gradient2Backoffs))
 	repaired, unfilled := native.ShortReadRepairCounts()
 	w.Counter("flodni_engine_short_read_repairs_total",
 		"Outcome of the stream reader's refill loop, per read that needed it: repaired after a reconnect, or unfilled and left a gap.",

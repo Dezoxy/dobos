@@ -438,7 +438,7 @@ shutdown never
    `flodni_warmup_cache_bytes` exports this total as approximate. Separately,
    the quota counts apparent file sizes, so sparse files make it count more
    than the disk holds; count allocated blocks. Built (#174).
-5. **More Prometheus series** [PARTLY FINISHED] on `/metrics/prometheus`. Now:
+5. **More Prometheus series** [FINISHED] on `/metrics/prometheus`. Now:
 short reads
    (`native.ShortReadCounts`, `ShortReadRepairCounts`, already per-process
    atomic counters with no engine lock, so two families and their README
@@ -455,9 +455,12 @@ short reads
    head-fill duration histogram (`warmupDurationBuckets`), which has no sum
    and cannot be a Prometheus histogram without a new counter; and
    sub-millisecond precision, since the histograms keep whole milliseconds and
-   cache hits add nothing to `_sum` (it means storing microseconds). The parts
-   above marked Now are built (#166); the later parts stay designed, not
-   built.
+   cache hits add nothing to `_sum` (it means storing microseconds). All built:
+   the Now parts in #166, the later parts afterwards. Engine and peer series
+   are per-process atomics in the engine (`process-counters.go`, bumped where
+   each event happens) exported as counters; read-ahead evictions count inside
+   `Put`; the head-fill histogram has its sum; the histograms keep
+   microseconds and export seconds with the same bucket bounds.
 6. **Two flaky tests under full-suite load.** [FINISHED] `internal/warmup`
    `TestHookFiresOnceFromWriteChunkAndWriteTail` (a race) and
    `internal/daemon`
