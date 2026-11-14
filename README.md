@@ -333,8 +333,13 @@ line below is the one log format that is).
   library API. A session still open on that torrent writes the entry back
   when it closes, and a stub deleted another way leaves it in place. Such
   entries stay until a startup prunes them. The prune runs only after a
-  complete scan: both `movies` and `tv` exist and every stub was read. It
-  is skipped otherwise, and the log says so.
+  complete scan: both `movies` and `tv` exist, at least one stub was found
+  and no read failed. It is skipped otherwise, and the log says so. A stub
+  that parses but declares a size outside the valid range is logged with
+  its path and counted separately (the start-up summary line); it does not
+  block the prune and its torrent's rows stay. An unreadable directory
+  or file, or a stub that does not parse, still blocks it. The periodic
+  inode prune applies the same test to its own walk.
 - Join from `GET /api/library/list`: an entry whose hash that list does
   not carry belongs to a torrent that left the library. Ignore it.
 - New reason and source values may appear; ignore the ones you do not
@@ -1104,6 +1109,14 @@ scraper on the same host or Docker network.
 | `flodni_fuse_short_reads_total` | counter | none | Reads served with fewer bytes than requested away from EOF. |
 | `flodni_fuse_short_read_results_total` | counter | `result` | Outcome of the refill: `repaired` or `failed`. |
 | `flodni_fetch_dedup_total` | counter | none | Concurrent fetches of one chunk that shared a single fetch. |
+| `flodni_engine_short_reads_total` | counter | `path` | Engine reads that ended short and were reported as success: `stream` (the sequential reader) or `fetch` (the stateless block fetch behind the FUSE fallback). 0 from start. |
+| `flodni_engine_short_read_repairs_total` | counter | `result` | Outcome of the stream reader's refill loop, per read that needed it: `repaired` after a reconnect, `unfilled` when a gap stayed. |
+| `flodni_sessions_open` | gauge | none | Sessions open now, the length of the `open` list of `/api/sessions`. |
+| `go_goroutines` | gauge | none | Goroutines that currently exist. |
+| `go_memstats_heap_inuse_bytes` | gauge | none | Bytes in in-use heap spans. |
+| `go_memstats_sys_bytes` | gauge | none | Bytes the Go runtime obtained from the system. |
+| `go_gc_cycles_total` | counter | none | Completed garbage collection cycles. |
+| `process_open_fds` | gauge | none | Open file descriptors, counted from `/proc/self/fd`. Not exported where there is no `/proc`. |
 
 `source` is `warmup_head`, `warmup_tail`, `racache_hit` or `fetch_block`.
 Every label value is exported at 0 from the start. Durations are in seconds

@@ -48,6 +48,8 @@ set -euo pipefail
 
 FLODNI_IMAGE=${1:-flodni:ci}
 SEEDER_IMAGE=${2:-flodni-e2e-seeder:ci}
+# renovate: datasource=docker depName=prom/prometheus
+PROMTOOL_IMAGE=${PROMTOOL_IMAGE:-prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06}
 SOURCE_PATH=/mnt/flodni-real
 MOUNT_PATH=/mnt/flodni-virtual
 WAIT_SECONDS=180
@@ -181,6 +183,16 @@ check_prometheus() {
   echo "PROM ($variant): $(grep -E '^flodni_(read_duration_seconds_count|read_bytes_total)\{' <<<"$body" | tr '\n' ' ')" >&2
   # Measurement only: warm files and the readability split, as the scrape sees them.
   echo "PROM ($variant): $(grep -E '^flodni_(warmup_files|warmup_cache_bytes|readability_torrents)[{ ]' <<<"$body" | tr '\n' ' ')" >&2
+  if [ "$variant" = default ]; then
+    # promtool's lint of the exposition: names, types, help text, counter suffixes.
+    local lint
+    if ! lint=$(printf '%s\n' "$body" | docker run --rm -i --entrypoint promtool "$PROMTOOL_IMAGE" check metrics 2>&1); then
+      echo "FAIL ($variant): promtool check metrics: $lint" >&2
+      dump_diagnostics
+      return 1
+    fi
+    echo "ok ($variant): promtool check metrics accepts /metrics/prometheus" >&2
+  fi
   if [ "$variant" = index-cache ]; then
     status=$(prom_raw noauth | head -n 1 | tr -d '\r')
     if [[ "$status" != *" 401 "* ]]; then
