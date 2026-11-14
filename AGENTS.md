@@ -82,7 +82,8 @@ A change that violates one is wrong even if it works.
   and the binary are `flodni`; the `FLODNI_*` environment variables win over
   the older `TIRAMISU_*` names, and persisted file names (`tiramisu.db`,
   `tiramisu.log`) stay as they were.
-- **Layout:** `main.go` and the other root `.go` files are the daemon;
+- **Layout:** `internal/daemon` is the daemon and `cmd/flodni` the entry
+  point (the binary and the `-X` version stamp build from it); the rest of
   `internal/` holds the packages (`vfs`, `gostorm`, `library`, `warmup`,
   `config` and more); `docker/` the image; `docs/` the roadmap, the ideas
   and the architecture; `scripts/` and `tests/` the documentation tooling

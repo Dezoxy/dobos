@@ -41,7 +41,7 @@ Bugs and data-loss risks. None open.
 
 ## Should improve
 
-- **The periodic inode prune checks the walk too.** `cleanup.go` prunes ghost
+- **The periodic inode prune checks the walk too.** `internal/daemon/cleanup.go` prunes ghost
   inodes after its own walk without the "the walk was whole" guard the start-up
   prune now has; the walk adds the root path itself, so an empty or unmounted
   library still leaves a non-empty set. Low stakes, since inodes derive from
@@ -156,7 +156,7 @@ Bugs and data-loss risks. None open.
   the head create's `handles.Store` should be a `Swap` that closes the old
   descriptor, or it leaks one. `flodni_warmup_cache_bytes` exports this
   total as approximate.
-- **Stale comment in `fuse_nodes.go` (`Open`).** It says `Open` needs head
+- **Stale comment in `internal/daemon/fuse_nodes.go` (`Open`).** It says `Open` needs head
   and tail ready. Its warm path uses `headReady` only; `tailReady` feeds the
   `[TTFF]` log line. Fix the comment in its own change.
 - **More series on `/metrics/prometheus`.** Left out of the first version,

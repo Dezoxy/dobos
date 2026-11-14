@@ -12,7 +12,7 @@ ARG TARGETARCH
 ARG APP_VERSION=dev
 # CGO_ENABLED=1 is required for FUSE integration.
 # -pgo=auto ensures we use profile-guided optimization if default.pgo is present.
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH go build -pgo=auto -ldflags "-X main.AppVersion=${APP_VERSION}" -o /out/flodni .
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=$TARGETARCH go build -pgo=auto -ldflags "-X flodni/internal/daemon.AppVersion=${APP_VERSION}" -o /out/flodni ./cmd/flodni
 
 # End-to-end test seeder (tests/e2e). Built only on request (--target e2e-seeder);
 # the runtime stage below stays last so the default target is the shipped image.

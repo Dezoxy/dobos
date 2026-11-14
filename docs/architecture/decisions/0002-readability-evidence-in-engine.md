@@ -100,7 +100,7 @@ consistent with a table that already holds the same per-torrent key.
 cache hit is never evidence that a swarm is alive. Today two things clear
 the failure counter: a session in which a read was served through the
 engine while at least one peer was connected (`servedByNet`, set in
-`recordRead` and applied by `reportSwarmVerdict` in `ttff.go`), and a wake
+`recordRead` and applied by `reportSwarmVerdict` in `internal/daemon/ttff.go`), and a wake
 that had to wait for the metainfo and got it from the swarm (`Wake` in
 `internal/gostorm/native/native.go`). Every new writer of the readability
 record follows the same rule.
