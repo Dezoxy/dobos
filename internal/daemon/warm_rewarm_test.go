@@ -27,6 +27,8 @@ func TestCatchupStateRewarm(t *testing.T) {
 		{"rewarmable but warm on disk", catchupFile{evicted: true, rewarmable: true, complete: true}, false, stateWarm},
 		{"a sibling failed: waits", catchupFile{evicted: true, rewarmable: true, hashFailedRecently: true}, false, stateRetryWait},
 		{"refused by WakeStored", catchupFile{evicted: true, rewarmable: true, notStored: true}, false, stateNotStored},
+		{"pack gave up: the rewarm stays gave_up", catchupFile{evicted: true, rewarmable: true, packGaveUp: true}, false, stateGaveUp},
+		{"scope retries: pack gave up still gave_up", catchupFile{evicted: true, rewarmable: true, packGaveUp: true}, true, stateGaveUp},
 		{"given up", catchupFile{evicted: true, rewarmable: true, warm: fileWarm{readability: readFailed, failedAttempts: 4, lastAttemptAt: ago(100 * time.Hour)}}, false, stateGaveUp},
 		{"a file not evicted is no rewarm", catchupFile{rewarmable: true}, false, statePending},
 		{"scope retries: the rewarm is in scope", catchupFile{evicted: true, rewarmable: true}, true, stateRewarm},

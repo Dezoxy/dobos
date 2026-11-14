@@ -421,6 +421,7 @@ func Run() {
 	}
 
 	startWebhookStatus(webhookStatus, backgroundStopChan)
+	startSwarmSnapshot(engineSwarmSource, backgroundStopChan, logger)
 
 	finishGlobalInodeMapInit(logger)
 
@@ -579,7 +580,7 @@ func Run() {
 			}
 			// Update file
 			data, _ := json.MarshalIndent(newCfg, "", "  ")
-			if err := atomicfile.WriteFile(gc().ConfigPath, data, 0644); err != nil {
+			if err := atomicfile.WriteFileKeepMode(gc().ConfigPath, data, 0600); err != nil {
 				http.Error(w, err.Error(), 500)
 				return
 			}
@@ -675,6 +676,7 @@ func Run() {
 			GoStormURL:     gc().GoStormBaseURL,
 			GoStorm:        library.NewGoStormClient(gc().GoStormBaseURL, gc().APIToken),
 			Registry:       registry,
+			StoredFiles:    func(hash string) []library.TorrentFile { return storedFileList(hash) },
 			InvalidatePath: invalidateSyncRemovedPath,
 			// Read-only view of the holes the reaper left, for a client that can decide
 			// what to do about them.
@@ -730,6 +732,7 @@ func Run() {
 		mux.HandleFunc("/api/library/remove", libHandler.Remove)
 		mux.HandleFunc("/api/library/list", libHandler.List)
 		mux.HandleFunc("/api/library/inspect", libHandler.Inspect)
+		mux.HandleFunc("/api/library/audit", libHandler.Audit)
 	}
 
 	// Control server: metrics, dashboard API and the library API.
@@ -772,6 +775,7 @@ func Run() {
 		shutdownStarted.Store(true)
 
 		code := shutdown(shutdownSteps{
+			closeSessions: closeAllSessions,
 			saveState: func() {
 				if globalInodeMap == nil {
 					return
