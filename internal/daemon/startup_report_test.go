@@ -118,10 +118,67 @@ func TestStartupReportAfterASimulatedStartup(t *testing.T) {
 	if line := strings.TrimSpace(logs.String()); line != "[Startup] report "+rec.Body.String() {
 		t.Fatalf("log line %q\nbody %q", line, rec.Body.String())
 	}
+	if strings.Contains(strings.TrimSpace(rec.Body.String()), "\n") {
+		t.Fatalf("the report must be one line: %q", rec.Body.String())
+	}
 	// A late stage does not emit a second line.
 	r.markMounted("/mnt/virtual")
 	if n := strings.Count(logs.String(), "[Startup] report"); n != 1 {
 		t.Fatalf("%d report lines, want 1", n)
+	}
+}
+
+// One directory without stubs makes the readability and file-state prunes skip; the
+// report says so with the reason the guard logged, and the inode prune (which needs
+// only both directories to exist) still runs.
+func TestStartupReportNamesTheEmptyDirectory(t *testing.T) {
+	b, _ := pruneEnv(t)
+	t.Setenv(stateUnmountedEnv, "")
+	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), &vfsLogger{log.New(io.Discard, "", 0)})
+	prev := globalInodeMap
+	globalInodeMap = im
+	t.Cleanup(func() { globalInodeMap = prev })
+
+	b.foundHashes = map[string]bool{}
+	b.hasMetainfo = func(string) bool { return true }
+	if err := os.MkdirAll(filepath.Join(b.sourcePath, "movies"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeStub(t, filepath.Join(b.sourcePath, "tv", "Show", "S01E01_cafe.mkv"), inLibHash, 1<<30)
+	var logs lockedBuilder
+	b.logger = log.New(&logs, "", 0)
+	r := &startupReporter{logf: log.New(&logs, "", 0).Printf}
+	done := make(chan struct{})
+	b.onDone = func(s scanResult) { r.markScanned(s); close(done) }
+	b.Start()
+	<-done
+	r.markMounted("/mnt/virtual")
+
+	rec := getStartup(t, http.HandlerFunc(r.handler))
+	var rep startupReport
+	if err := json.Unmarshal(rec.Body.Bytes(), &rep); err != nil {
+		t.Fatal(err)
+	}
+	const reason = "movies holds no stubs (complete=false errors=0 stubs=1)"
+	for name, p := range map[string]pruneResult{"readability": rep.Prunes.Readability, "file_state": rep.Prunes.FileState} {
+		if p.Status != "skipped" || p.Reason != reason {
+			t.Errorf("%s = %+v, want skipped with %q", name, p, reason)
+		}
+	}
+	if rep.Prunes.Inodes.Status != "ran" {
+		t.Errorf("inodes = %+v, want ran", rep.Prunes.Inodes)
+	}
+	for _, line := range []string{
+		"Startup cache: movies holds no stubs",
+		"Readability prune skipped: " + reason,
+		"File state prune skipped: " + reason,
+	} {
+		if !strings.Contains(logs.String(), line+"\n") {
+			t.Errorf("log lacks %q:\n%s", line, logs.String())
+		}
+	}
+	if !strings.Contains(logs.String(), "[Startup] report "+rec.Body.String()+"\n") || strings.Count(logs.String(), "[Startup] report") != 1 {
+		t.Errorf("the report line must be the body, once:\n%s", logs.String())
 	}
 }
 
@@ -144,7 +201,7 @@ func (l *lockedBuilder) String() string {
 
 func TestStartupReportSkippedPrunesAndAlarms(t *testing.T) {
 	t.Setenv(stateUnmountedEnv, "1")
-	skip := pruneResult{Status: pruneSkipped, Reason: pruneReason(false, 0, 3), guarded: true}
+	skip := pruneResult{Status: pruneSkipped, Reason: pruneReason(false, 0, 3, ""), guarded: true}
 	rep := buildStartupReport(startupFacts{
 		configParseFailed: true,
 		pathsDiffer:       true,

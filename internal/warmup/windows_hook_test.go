@@ -99,11 +99,19 @@ func TestWindowsCompleteAfterRestart(t *testing.T) {
 
 // Head then tail: the hook fires once, at the tail write that completes the pair.
 func TestHookFiresOnceFromWriteChunkAndWriteTail(t *testing.T) {
-	d := indexCache(t, t.TempDir())
+	// The hook first: cleanups run in reverse, so the worker is stopped before the hook is
+	// restored (the worker reads OnWindowsCached in noteWrite).
 	rec := recordHook(t)
+	d := indexCache(t, t.TempDir())
 	const fileSize = 10 << 20
 	d.WriteChunk("h", 1, bytes.Repeat([]byte{1}, 1<<20), 0)
 	waitFor(t, "head write", func() bool { return d.GetAvailableRange("h", 1) >= 1<<20 })
+	// The head is on disk before the worker runs its noteWrite for it. Queue a second
+	// file's head and wait for it: the single worker has then finished the first write
+	// entirely, so it cannot fire the hook concurrently with the tail write below (a
+	// double fire, and a race on rec.calls and OnWindowsCached).
+	d.WriteChunk("drain", 1, bytes.Repeat([]byte{1}, 1<<20), 0)
+	waitFor(t, "worker drain", func() bool { return d.GetAvailableRange("drain", 1) >= 1<<20 })
 	if rec.count() != 0 {
 		t.Fatalf("hook fired with the tail missing: %d", rec.count())
 	}
@@ -115,8 +123,10 @@ func TestHookFiresOnceFromWriteChunkAndWriteTail(t *testing.T) {
 
 // Tail then head: the write worker fires it, after the head write.
 func TestHookFiresFromTheWriteWorkerWhenTheHeadCompletesLast(t *testing.T) {
-	d := indexCache(t, t.TempDir())
+	// The hook first: cleanups run in reverse, so the worker is stopped before the hook is
+	// restored (the worker reads OnWindowsCached in noteWrite).
 	rec := recordHook(t)
+	d := indexCache(t, t.TempDir())
 	const fileSize = 10 << 20
 	d.WriteTail("h", 1, bytes.Repeat([]byte{2}, 1<<20), fileSize-1<<20, fileSize)
 	if rec.count() != 0 {
@@ -128,8 +138,10 @@ func TestHookFiresFromTheWriteWorkerWhenTheHeadCompletesLast(t *testing.T) {
 
 // The hook runs with neither d.mu nor tailMu held, from each of the three write sites.
 func TestHookRunsWithNoCacheLockHeld(t *testing.T) {
-	d := indexCache(t, t.TempDir())
+	// The hook first: cleanups run in reverse, so the worker is stopped before the hook is
+	// restored (the worker reads OnWindowsCached in noteWrite).
 	rec := recordHook(t)
+	d := indexCache(t, t.TempDir())
 	rec.check = func() {
 		for name, mu := range map[string]*sync.Mutex{"d.mu": &d.mu, "tailMu": &d.tailMu} {
 			if !mu.TryLock() {
