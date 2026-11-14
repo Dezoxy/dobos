@@ -38,8 +38,10 @@ every `.md` file in that folder.
 | Area | Documents |
 |---|---|
 | Narrative (opens the tab and the PDF) | [01 overview](overview/01-flodni.md) |
+| Security | [Threat model: control API and token](security/threat-model.md) |
 
-Only `overview/` is imported into the model by `!docs`.
+Only `overview/` is imported into the model by `!docs`; the threat model
+reaches it as a symlink, `overview/02-threat-model.md`.
 
 ## Not documented here
 

@@ -11,7 +11,7 @@ import (
 // sees the old content or the new content, never a partial file.
 //
 // The temporary name is ".<name>.tmp-<random>". It does not end in ".mkv", so
-// the FUSE layer and the library walks (isStubPath in main.go) never take it
+// the FUSE layer and the library walks (isStubPath in internal/daemon/fuse_nodes.go) never take it
 // for a stub. The temporary file is removed on any error. The directory fsync
 // is best effort: the rename has happened by then.
 func WriteFile(path string, data []byte, perm os.FileMode) (err error) {
