@@ -285,7 +285,7 @@ func (s *TTFFSession) recordRead(src ttffSource, d time.Duration, n int, off int
 
 // ttffIsReal decides at close time whether a session was a real playback
 // (vs a Plex/Samba scan probe). Scanners read almost nothing — even a tail
-// Cues probe stays within one chunk (see tailProbeZoneSize docs in main.go);
+// Cues probe stays within one chunk (see tailProbeZoneSize docs in pump.go);
 // any 1MB+ of data, or a tail/deep read of more than 64KB, is playback.
 func ttffIsReal(tailOrDeep bool, bytesRead int64) bool {
 	if bytesRead >= ttffProbeMinRead {
@@ -542,6 +542,22 @@ func ttffReleaseClose(path string) {
 		if s := val.(*TTFFSession); s.bytesRead.Load() == 0 {
 			s.closeSession()
 		}
+	}
+}
+
+// closeAllSessions closes every open session through the normal close path, so each
+// gets its verdict, counters and [Session] line once (closeOnce) and the usual rules
+// apply: a session younger than sessionVerdictFloor is never condemned just because
+// we stopped. Runs synchronously inside the shutdown deadline, before state is saved.
+func closeAllSessions() {
+	n := 0
+	sessions.Range(func(_, val any) bool {
+		val.(*TTFFSession).closeSession()
+		n++
+		return true
+	})
+	if n > 0 {
+		logger.Printf("[Sessions] closed %d open session(s) at shutdown", n)
 	}
 }
 

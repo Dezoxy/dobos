@@ -18,7 +18,7 @@
 # Never trigger it automatically.
 #
 #   STRUCTURIZR_IMAGE  required: the pinned Structurizr image your viewer runs,
-#                      e.g. structurizr/structurizr:2026.09.19 (the PNG export
+#                      e.g. structurizr/structurizr:2026.10.26 (the PNG export
 #                      uses its -playwright tag)
 #   PANDOC_IMAGE       optional: default pandoc/extra:3.11.0.0-debian, the
 #                      version this was tested with (LaTeX, Eisvogel; ~2 GB)

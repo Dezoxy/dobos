@@ -40,8 +40,11 @@ control port behind a TLS proxy on any untrusted network. The token is
 compared in constant time and never logged, but there is no rate limiting or
 lockout.
 
+The full analysis (assets, trust boundaries, threats and the gaps above) is
+in the [threat model](docs/architecture/security/threat-model.md).
+
 ## Secrets
 
 The repository holds no secrets; `config.json` is ignored by git and
-`config.json.example` carries placeholders. CI runs gitleaks on the full
+`config.json.example` carries placeholders. `config.json` holds `api_token` and the Plex token in clear text: a save from the panel keeps the file's existing permission bits (a new file is created 0600), so keep it unreadable to other users, or pass the secrets as `FLODNI_API_TOKEN` and `FLODNI_PLEX_TOKEN` instead. CI runs gitleaks on the full
 history, and GitHub secret scanning with push protection is enabled.

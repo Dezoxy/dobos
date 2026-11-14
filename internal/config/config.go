@@ -135,7 +135,7 @@ type Config struct {
 	RefuseUnconfirmedReads bool `json:"refuse_unconfirmed_reads"`
 
 	// PlaybackWebhookWarnDays is the window of the "no play webhook" warning
-	// (webhook_status.go): it is raised when a reader session closed unconfirmed in the
+	// (internal/daemon/webhook_status.go): it is raised when a reader session closed unconfirmed in the
 	// last N days and no play webhook matched a file in that time. 0 turns the warning
 	// off; a negative or absurd value is replaced by the default (7). Read live.
 	PlaybackWebhookWarnDays int `json:"playback_webhook_warn_days"`
@@ -197,7 +197,7 @@ func (c *Config) Save() error {
 	}
 
 	// 2. Write to file
-	return atomicfile.WriteFile(c.ConfigPath, data, 0644)
+	return atomicfile.WriteFileKeepMode(c.ConfigPath, data, 0600)
 }
 
 // Redacted returns a copy that is safe to send to the control panel: the API
