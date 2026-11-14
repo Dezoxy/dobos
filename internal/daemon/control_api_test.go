@@ -31,23 +31,23 @@ func controlAPIServer(t *testing.T, startToken, fileToken string) (h http.Handle
 	t.Setenv("MKV_PROXY_CONFIG_PATH", cfgPath)
 	t.Setenv("FLODNI_API_TOKEN", "")
 
-	prevCfg, prevLog, prevTok, prevRestart := globalConfig.Load(), logger, controlToken, restartSelf
+	newTestApp(t).controlToken = startToken
+	prevCfg, prevLog, prevRestart := globalConfig.Load(), logger, restartSelf
 	cfg := config.LoadConfig()
 	globalConfig.Store(&cfg)
 	logger = flog.NewText(io.Discard)
-	controlToken = startToken
 	n := 0
 	restarts = &n
 	restartSelf = func() { n++ }
 	t.Cleanup(func() {
 		globalConfig.Store(prevCfg)
-		logger, controlToken, restartSelf = prevLog, prevTok, prevRestart
+		logger, restartSelf = prevLog, prevRestart
 	})
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/config", handleConfig)
 	mux.HandleFunc("/api/restart", handleRestart)
-	return apiauth.Middleware(controlToken, nil, mux), cfgPath, restarts
+	return apiauth.Middleware(app.controlToken, nil, mux), cfgPath, restarts
 }
 
 func doControl(h http.Handler, path, body, bearer string) (int, string) {

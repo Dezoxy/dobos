@@ -28,13 +28,13 @@ func handleConfig(w http.ResponseWriter, r *http.Request) {
 		// the next start enforces. Setting it needs the environment or the file, so a
 		// posted token is refused whatever its value (comparing it with a pending one
 		// would answer guesses about that one).
-		if controlToken == "" && newCfg.APIToken != "" {
+		if app.controlToken == "" && newCfg.APIToken != "" {
 			refuseOpenPort(w, r, http.StatusForbidden,
 				"api_token cannot be set or changed through the API while no token is enforced"+setTokenHint)
 			return
 		}
 		onDisk := config.LoadConfig()
-		if controlToken == "" {
+		if app.controlToken == "" {
 			// A file that does not parse would be replaced by defaults, dropping a token
 			// the owner is typing into it.
 			if config.ParseFailed.Load() {
@@ -109,7 +109,7 @@ func handleRestart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", 405)
 		return
 	}
-	if controlToken == "" {
+	if app.controlToken == "" {
 		refuseOpenPort(w, r, http.StatusForbidden, "restart is refused while no token is enforced"+setTokenHint)
 		return
 	}
