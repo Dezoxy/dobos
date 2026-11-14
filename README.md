@@ -345,11 +345,13 @@ line below is the one log format that is).
 - Times are UTC and are taken when the session closes, up to two minutes
   after its last read.
 - An entry goes when the last stub of its torrent is removed through the
-  library API. A session still open on that torrent writes the entry back
-  when it closes, and a stub deleted another way leaves it in place. Such
+  library API, replaced by an add, or deleted through the mount. A session
+  still open on that torrent is closed first, by the usual close rules (a
+  session under 25 s gets no dead-swarm verdict), so it cannot write the
+  entry back. A stub deleted directly on disk leaves the entry in place. Such
   entries stay until a startup prunes them. The prune runs only after a
-  complete scan: both `movies` and `tv` exist, at least one stub was found
-  and no read failed. It is skipped otherwise, and the log says so. A stub
+  complete scan: both `movies` and `tv` exist and each held at least one
+  stub, and no read failed. It is skipped otherwise, and the log says so. A stub
   that parses but declares a size outside the valid range is logged with
   its path and counted separately (the start-up summary line); it does not
   block the prune and its torrent's rows stay. An unreadable directory
@@ -827,6 +829,28 @@ left alone. The call reads each stub under both folders. A stub with no
 readable hash is skipped and logged once per call. The torrent is dropped once
 no stub links to it.
 
+## Replacing a release
+
+**Implemented.** When an add of a TV release would replace episode stubs that
+another release filed, the old stubs stay until the new release has shown it
+delivers. The check reads the first 64 KiB of a bounded sample of the new
+release's files: the file that replaces an existing stub, plus the first and
+the last episode by season and episode number, three files at most. A sample
+clip, an extra or a season-0 special is never chosen as first or last, and a
+special is not read as the replaced file unless the release holds nothing else:
+only the files the add would file are candidates. The reads run at the same time under one
+60 s timeout, so a dead release costs one wait, not three. The replacement
+goes ahead only if every sampled file reads. Otherwise the call answers 422,
+the old stubs and registry rows stay, the new torrent is dropped, and the log
+names the release. A release with one file is checked on that file; an add that
+replaces nothing is not checked. A private torrent is read through its own
+peer sources only.
+
+The trade-off: the check samples, it does not prove. A pack whose middle
+episodes are dead but whose sampled files read still replaces the old stubs,
+and those episodes then fail on first play. Reading every file would delay
+every replacement by the slowest episode of the pack.
+
 ## Auditing stubs against the engine's file list
 
 `GET /api/library/audit` (control port, behind `api_token` like the other
@@ -982,8 +1006,9 @@ closed torrent and reports the engine's state for it before the pass).
     was full (`file_state.queued_at`, schema 16: written when warm on add
     queues the file, cleared when an attempt records any outcome, and read
     after a restart). A file never attempted by warm on add (no record, or
-    only `cached`), an evicted file and a file warm on disk are never fed,
-    and the gauge counts the never-attempted ones as `out_of_scope`. The
+    only `cached`), a file warm on disk and an evicted file (except the
+    re-warm below, which both scopes run) are never fed, and the gauge
+    counts the never-attempted ones as `out_of_scope`. The
     rest of the rules below (20 hours, the cap, never evicting, the quota
     stop) apply in both scopes. An unknown value is logged and replaced by
     `"all"`. Evidence does not change with the scope: a retried read the
@@ -999,23 +1024,41 @@ closed torrent and reports the engine's state for it before the pass).
     after the daemon starts. The default 20 is sized for walking a backlog.
   - **Which files.** A file is skipped when both windows are complete on disk
     (the disk decides, not the record; a record without `cache: cached` is
-    written, with no wake). It is never warmed when its `cache` is `evicted`,
+    written, with no wake). It is not warmed when its `cache` is `evicted`,
     or it carries an eviction mark or time, including a file evicted before
-    schema 14: eviction is left to its next play. A file that failed 4 times
-    is given up on; only a read through the mount that the swarm serves, or an
-    add again, makes it eligible. Once one file of a title has given up through
-    failed swarm reads (`lost` and `write_failed` do not count, nor `not_stored`),
-    the title's other files are given up too, so a dead pack costs one wake a
-    day for four days, not for four days per file; any swarm delivery for a
-    file of the title after that give-up makes them eligible again. Warm on add
-    of a new file is not affected: an add still tries once. A file attempted
-    under 20 hours ago waits, and so does its whole title when any file of
-    it failed under 20 hours ago (a no-peers failure skips the rest of a pack
-    without a record). A title the engine refused to wake (`not_stored`, for
-    example a stub the engine never stored) waits for a play. Everything
-    else is a candidate: no record,
-    `dropped_quota`, `dropped_no_evidence`, `lost`, `write_failed`, and a
-    record that says `cached` while the disk does not.
+    schema 14: eviction is left to its next play, except the re-warm below.
+    A file that failed 4 times is given up on; only a read through the mount
+    that the swarm serves, or an add again, makes it eligible. Once one file
+    of a title has given up through failed swarm reads (`lost` and
+    `write_failed` do not count, nor `not_stored`), the title's other files
+    are given up too, so a dead pack costs one wake a day for four days, not
+    for four days per file; any swarm delivery for a file of the title after
+    that give-up makes them eligible again. Warm on add of a new file is not
+    affected: an add still tries once. A file attempted under 20 hours ago
+    waits, and so does its whole title when any file of it failed under 20
+    hours ago (a no-peers failure skips the rest of a pack without a record).
+    A title the engine refused to wake (`not_stored`, for example a stub the
+    engine never stored) waits for a play. Everything else is a candidate: no
+    record, `dropped_quota`, `dropped_no_evidence`, `lost`, `write_failed`,
+    and a record that says `cached` while the disk does not.
+  - **Re-warm after eviction.** An evicted file is fed again when a
+    webhook-confirmed play of it is recorded within the last
+    `played_protection_days` (the same setting that protects it from
+    eviction; `0` means a play counts forever) and no attempt on it has been
+    recorded since that play. It then goes through the same rules as any
+    candidate (the 20-hour wait, the cap, the engine refusing the hash, a
+    title given up as a whole, which a re-warm never overrides) and
+    the same pace, and, like all catch-up, only into free room: a full
+    cache leaves it, counted `no_room`, never evicting another file. A file
+    never played, or last played longer ago than the protection time, stays
+    evicted until its next play. A re-warm is an attempt, so a file warmed
+    again and evicted again, or one whose re-warm failed, is not fed again
+    until it is played again. Under scope `"retries"` the re-warm is fed too:
+    the file was kept once, so it is a retry, not the cold backlog. There is
+    no state of its own: such a file counts as `pending` in
+    `flodni_warm_catchup_files` (and as `left_no_room` when the pass left it
+    for room), and the `pass_start` line carries `"rewarm"`, how many of the
+    pending files are re-warms. Files left evicted stay `evicted`.
   - **Never evicts.** It checks for room before it wakes anything. At a full
     cache the pass ends: the file is counted `no_room`, nothing is recorded, and
     `flodni_warm_catchup_files{state="left_no_room"}` holds what the pass left.
