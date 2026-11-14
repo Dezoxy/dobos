@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -474,12 +475,23 @@ func (c *Config) finalize() {
 	// edited: the caller may share the decoded one.
 	if len(c.PlexPathMap) > 0 {
 		valid := make(map[string]string, len(c.PlexPathMap))
-		for prefix, target := range c.PlexPathMap {
+		keys := make([]string, 0, len(c.PlexPathMap))
+		for prefix := range c.PlexPathMap {
+			keys = append(keys, prefix)
+		}
+		sort.Strings(keys) // a duplicate after cleaning keeps the first, deterministically
+		for _, prefix := range keys {
+			target := c.PlexPathMap[prefix]
 			if !filepath.IsAbs(prefix) || !filepath.IsAbs(target) {
 				log.Printf("[Config] WARNING: plex_path_map entry %q -> %q needs an absolute prefix and an absolute target; ignoring it", prefix, target)
 				continue
 			}
-			valid[prefix] = target
+			clean := filepath.Clean(prefix)
+			if _, dup := valid[clean]; dup {
+				log.Printf("[Config] WARNING: plex_path_map has the prefix %q twice; keeping the first", clean)
+				continue
+			}
+			valid[clean] = filepath.Clean(target)
 		}
 		c.PlexPathMap = valid
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,7 +28,11 @@ func pathMapEnv(t *testing.T, pathMap map[string]string) *PlaybackState {
 	t.Helper()
 	prevCfg, oldStates := globalConfig.Load(), fileStates
 	fileStates = newFileStateIndex(nil, 90)
-	globalConfig.Store(&config.Config{PlexPathMap: pathMap})
+	cleaned := map[string]string{} // as config load stores it
+	for k, v := range pathMap {
+		cleaned[filepath.Clean(k)] = filepath.Clean(v)
+	}
+	globalConfig.Store(&config.Config{PlexPathMap: cleaned})
 	state := &PlaybackState{Path: pmStub, OpenedAt: time.Now()}
 	playbackRegistry.Store(pmStub, state)
 	playbackRegistry.Store(pmDecoyStub, &PlaybackState{Path: pmDecoyStub, OpenedAt: time.Now()})
@@ -235,5 +240,101 @@ func TestPathMapStopReleasesTheLinkTarget(t *testing.T) {
 	postWebhook(t, pmPayload("media.stop", pmLibFile, ""))
 	if state.GetStatus() {
 		t.Fatal("the stop did not reach the symlink's target")
+	}
+}
+
+func pmPayloadFiles(event string, files ...string) string {
+	parts := ""
+	for i, f := range files {
+		if i > 0 {
+			parts += ","
+		}
+		parts += `{"file":"` + f + `"}`
+	}
+	return `{"event":"` + event + `","Metadata":{"title":"Zzz","grandparentTitle":"Unrelated Programme","librarySectionType":"show","parentIndex":1,"index":2,"Media":[{"Part":[` + parts + `]}]}}`
+}
+
+func TestPathMapPrefixMatchesOnAFolderBoundary(t *testing.T) {
+	root := t.TempDir()
+	pathMapEnv(t, map[string]string{"/series": root + "/series"})
+	pmLink(t, root, "/seriesX/Show/ep.mkv", pmStub)
+	pmLink(t, root, "/series/seriesX/Show/ep.mkv", pmStub)
+	if got := playRule(t, pmPayloadFiles("media.play", "/seriesX/Show/ep.mkv")); got != ruleNone {
+		t.Fatalf("/seriesX matched /series: rule %d", got)
+	}
+}
+
+func TestPathMapDotDotCannotLeaveItsPrefix(t *testing.T) {
+	root := t.TempDir()
+	pathMapEnv(t, map[string]string{"/movies/": root + "/movies/"})
+	pmLink(t, root, "/etc/x", pmStub)
+	if got := playRule(t, pmPayloadFiles("media.play", "/movies/../../etc/x")); got != ruleNone {
+		t.Fatalf("a .. path matched: rule %d", got)
+	}
+}
+
+func TestPathMapDoesNotFollowAChain(t *testing.T) {
+	root := t.TempDir()
+	pathMapEnv(t, map[string]string{"/series/": root + "/series/"})
+	pmLink(t, root, "/hop/other.mkv", pmStub)
+	pmLink(t, root, pmLibFile, filepath.Join(root, "hop/other.mkv")) // link to a link
+	if got := playRule(t, pmPayload("media.play", pmLibFile, "")); got != ruleNone {
+		t.Fatalf("a chain matched: rule %d", got)
+	}
+}
+
+func TestPathMapTwoStubsMarkNothing(t *testing.T) {
+	root := t.TempDir()
+	pathMapEnv(t, map[string]string{"/series/": root + "/series/"})
+	pmLink(t, root, "/series/a.mkv", pmStub)
+	pmLink(t, root, "/series/b.mkv", pmDecoyStub)
+	postWebhook(t, pmPayloadFiles("media.play", "/series/a.mkv", "/series/b.mkv"))
+	if fileStates.EverPlayed(pmKey) || fileStates.EverPlayed(pmDecoyKey) {
+		t.Fatal("two candidate stubs marked a file")
+	}
+}
+
+func TestPathMapIsNotConsultedWhenTheBasenameMatched(t *testing.T) {
+	root := t.TempDir()
+	state := pathMapEnv(t, map[string]string{"/series/": root + "/series/"})
+	file := "/series/" + filepath.Base(pmStub)
+	pmLink(t, root, file, pmDecoyStub) // would resolve to the sibling
+	if got := playRule(t, pmPayloadFiles("media.play", file)); got != ruleBasename {
+		t.Fatalf("rule = %d, want basename", got)
+	}
+	if !state.GetStatus() || !fileStates.IsPlayed(pmKey) || fileStates.EverPlayed(pmDecoyKey) {
+		t.Fatal("the link decided over the file name")
+	}
+}
+
+func TestPathMapResolvesAtMostEightParts(t *testing.T) {
+	root := t.TempDir()
+	pathMapEnv(t, map[string]string{"/series/": root + "/series/"})
+	pmLink(t, root, "/series/last.mkv", pmStub)
+	files := make([]string, 0, 9)
+	for i := 0; i < 8; i++ {
+		files = append(files, "/series/missing.mkv")
+	}
+	files = append(files, "/series/last.mkv")
+	if got := playRule(t, pmPayloadFiles("media.play", files...)); got != ruleNone {
+		t.Fatalf("the ninth part was resolved: rule %d", got)
+	}
+}
+
+func TestWebhookRuleSeriesRenderAtZero(t *testing.T) {
+	var saved [numWebhookRules]int64
+	for i := range saved {
+		saved[i] = playbackWebhookRules[i].Swap(0)
+	}
+	t.Cleanup(func() {
+		for i := range saved {
+			playbackWebhookRules[i].Store(saved[i])
+		}
+	})
+	body := scrape(t).Body.String()
+	for _, name := range []string{"basename", "path_map", "imdb", "fuzzy", "none"} {
+		if want := `flodni_playback_webhook_match_rule_total{rule="` + name + `"} 0` + "\n"; !strings.Contains(body, want) {
+			t.Errorf("missing %q", want)
+		}
 	}
 }

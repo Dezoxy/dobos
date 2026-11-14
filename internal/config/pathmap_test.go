@@ -30,7 +30,7 @@ func TestPlexPathMapKeepsAbsoluteEntriesAndWarnsOncePerDroppedOne(t *testing.T) 
 		"/anime/": "media/anime/",
 		"": "/media/x/"
 	}}`).PlexPathMap
-	if len(got) != 2 || got["/movies/"] != "/media/movies/" || got["/series/"] != "/media/series/" {
+	if len(got) != 2 || got["/movies"] != "/media/movies" || got["/series"] != "/media/series" {
 		t.Fatalf("plex_path_map = %v, want the two absolute entries", got)
 	}
 	if n := strings.Count(buf.String(), "plex_path_map entry"); n != 3 {
@@ -49,5 +49,23 @@ func TestConfigExampleCarriesPlexPathMap(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), `"plex_path_map"`) || len(c.PlexPathMap) != 0 {
 		t.Fatal(`config.json.example must carry an empty "plex_path_map"`)
+	}
+}
+
+func TestPlexPathMapIsCleanedAndAClashKeepsTheFirstSortedKey(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	got := loadWith(t, `{"plex_path_map": {
+		"/series/": "/media/a/",
+		"/series": "/media/b",
+		"/movies/./": "/media/./movies/"
+	}}`).PlexPathMap
+	if len(got) != 2 || got["/series"] != "/media/b" || got["/movies"] != "/media/movies" {
+		t.Fatalf("plex_path_map = %v", got)
+	}
+	if n := strings.Count(buf.String(), "twice"); n != 1 {
+		t.Fatalf("%d duplicate warnings, want 1:\n%s", n, buf.String())
 	}
 }

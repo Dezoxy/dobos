@@ -165,7 +165,11 @@ fails, the features are just inactive.
   releases. Use it when
   `flodni_playback_webhooks_received_total{matched="false"}` moves for a
   library of symlinks; the library must be mounted read-only in this container
-  at the mapped path. Built, unit-tested against symlinks in a
+  at the mapped path. The lookup is meant for a local (not network) library
+  bind and runs inline in the webhook handler, at most 8 paths per webhook: a
+  hung mount delays that webhook. Prefixes and targets are cleaned at load;
+  a prefix given twice keeps the first in sorted order, with a warning. Built,
+  unit-tested against symlinks in a
   temporary folder; not run against a media server.
 - **Which rule matched.**
   `flodni_playback_webhook_match_rule_total{rule}` counts the same webhooks

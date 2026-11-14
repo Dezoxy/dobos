@@ -188,7 +188,7 @@ type exactMatchKeys struct {
 	mappedBasenames func() []string
 }
 
-// findExactMatch selects the pass-1 match among the registry entries.
+// findExactMatchRule selects the pass-1 match among the registry entries.
 //
 // The hash suffix is deliberately NOT a key: every episode of a season pack shares
 // the same hash8 in its filename (HashPrefix = hash[:8]), so a suffix-only match can
@@ -196,13 +196,9 @@ type exactMatchKeys struct {
 // is actually playing. The filename (physical identity) wins over the IMDB ID
 // (metadata identity), which also protects against an IMDB id polluted by a
 // previous mis-matched media.play.
-func findExactMatch(keys exactMatchKeys, entries []exactMatchEntry) (string, *PlaybackState) {
-	path, state, _ := findExactMatchRule(keys, entries)
-	return path, state
-}
-
-// findExactMatchRule is findExactMatch that also says which rule matched: ruleBasename,
-// rulePathMap or ruleIMDB (ruleNone when nothing did).
+//
+// It also says which rule matched: ruleBasename, rulePathMap or ruleIMDB (ruleNone
+// when nothing did). The path map sits between the file name and the IMDB id.
 func findExactMatchRule(keys exactMatchKeys, entries []exactMatchEntry) (string, *PlaybackState, int) {
 	byBase := func(names []string) (string, *PlaybackState) {
 		for _, e := range entries {
@@ -246,12 +242,12 @@ func findExactMatchRule(keys exactMatchKeys, entries []exactMatchEntry) (string,
 // Lstat and one Readlink per path, local calls on a read-only bind, no retries.
 func pathMapStubNames(files []string, pathMap map[string]string) []string {
 	var names []string
+	logged := false
 	for _, f := range files {
 		f = filepath.Clean(f)
 		best, mapped := "", ""
-		for prefix, target := range pathMap {
-			p := strings.TrimSuffix(prefix, "/")
-			if len(p) < len(best) || (f != p && !strings.HasPrefix(f, p+"/")) {
+		for p, target := range pathMap { // prefixes are cleaned at load: no trailing slash
+			if len(p) < len(best) || (p != "/" && f != p && !strings.HasPrefix(f, p+"/")) {
 				continue
 			}
 			best, mapped = p, filepath.Join(target, strings.TrimPrefix(f, p))
@@ -260,11 +256,17 @@ func pathMapStubNames(files []string, pathMap map[string]string) []string {
 			continue
 		}
 		fi, err := os.Lstat(mapped)
-		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
-			continue
+		var dest string
+		if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			dest, err = os.Readlink(mapped)
+		} else if err == nil {
+			continue // a regular file: not a library symlink
 		}
-		dest, err := os.Readlink(mapped)
 		if err != nil {
+			if !logged { // once per webhook: a wrong container path shows up here
+				logged = true
+				logger.Printf("[PLEX] plex_path_map lookup of %q failed: %v", mapped, err)
+			}
 			continue
 		}
 		if !filepath.IsAbs(dest) {
@@ -287,6 +289,12 @@ func lazyPathMapStubNames(files []string) func() []string {
 	}
 	if len(pathMap) == 0 || len(files) == 0 {
 		return nil
+	}
+	// The webhook is unauthenticated when no api_token is set: bound the syscalls one
+	// post can cause.
+	const pathMapMaxFiles = 8
+	if len(files) > pathMapMaxFiles {
+		files = files[:pathMapMaxFiles]
 	}
 	var once sync.Once
 	var names []string
