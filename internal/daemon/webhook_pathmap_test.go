@@ -25,6 +25,7 @@ var (
 // pathMapEnv registers the target stub and a decoy sibling the way Open leaves them, and
 // sets the config the webhook reads. It returns the stub state.
 func pathMapEnv(t *testing.T, pathMap map[string]string) *PlaybackState {
+	newTestApp(t)
 	t.Helper()
 	prevCfg, oldStates := globalConfig.Load(), fileStates
 	fileStates = newFileStateIndex(nil, 90)
@@ -34,15 +35,15 @@ func pathMapEnv(t *testing.T, pathMap map[string]string) *PlaybackState {
 	}
 	globalConfig.Store(&config.Config{PlexPathMap: cleaned})
 	state := &PlaybackState{Path: pmStub, OpenedAt: time.Now()}
-	playbackRegistry.Store(pmStub, state)
-	playbackRegistry.Store(pmDecoyStub, &PlaybackState{Path: pmDecoyStub, OpenedAt: time.Now()})
+	app.playbackRegistry.Store(pmStub, state)
+	app.playbackRegistry.Store(pmDecoyStub, &PlaybackState{Path: pmDecoyStub, OpenedAt: time.Now()})
 	tailFillTargets.Store(pmStub, tailFillTarget{hash: pmKey.Hash, fileID: pmKey.FileIdx, size: 1 << 30})
 	tailFillTargets.Store(pmDecoyStub, tailFillTarget{hash: pmDecoyKey.Hash, fileID: pmDecoyKey.FileIdx, size: 1 << 30})
 	t.Cleanup(func() {
 		globalConfig.Store(prevCfg)
 		fileStates = oldStates
 		for _, p := range []string{pmStub, pmDecoyStub} {
-			playbackRegistry.Delete(p)
+			app.playbackRegistry.Delete(p)
 			tailFillTargets.Delete(p)
 		}
 	})
@@ -94,6 +95,7 @@ func playRule(t *testing.T, payload string) int {
 }
 
 func TestPathMapMatchesTheSymlinkTarget(t *testing.T) {
+	newTestApp(t)
 	root := t.TempDir()
 	state := pathMapEnv(t, map[string]string{"/series/": root + "/series/"})
 	pmLink(t, root, pmLibFile, pmStub)
@@ -104,7 +106,7 @@ func TestPathMapMatchesTheSymlinkTarget(t *testing.T) {
 	if !state.GetStatus() {
 		t.Fatal("the symlink's target was not confirmed")
 	}
-	if v, _ := playbackRegistry.Load(pmDecoyStub); v.(*PlaybackState).GetStatus() {
+	if v, _ := app.playbackRegistry.Load(pmDecoyStub); v.(*PlaybackState).GetStatus() {
 		t.Fatal("the sibling episode was confirmed")
 	}
 }
@@ -124,6 +126,7 @@ func TestPathMapFollowsARelativeLink(t *testing.T) {
 }
 
 func TestPathMapLongestPrefixWins(t *testing.T) {
+	newTestApp(t)
 	root := t.TempDir()
 	good, bad := filepath.Join(root, "good"), filepath.Join(root, "bad")
 	pathMapEnv(t, map[string]string{"/series/": bad + "/", "/series/Show Name (2020)/": good + "/"})
@@ -133,8 +136,8 @@ func TestPathMapLongestPrefixWins(t *testing.T) {
 	pmLink(t, bad, "Show Name (2020)/Season 01/Show Name - S01E02 - Title WEBDL-720p.mkv", pmDecoyStub)
 
 	postWebhook(t, pmPayload("media.play", pmLibFile, ""))
-	v, _ := playbackRegistry.Load(pmStub)
-	d, _ := playbackRegistry.Load(pmDecoyStub)
+	v, _ := app.playbackRegistry.Load(pmStub)
+	d, _ := app.playbackRegistry.Load(pmDecoyStub)
 	if !v.(*PlaybackState).GetStatus() || d.(*PlaybackState).GetStatus() {
 		t.Fatal("the shorter prefix decided")
 	}

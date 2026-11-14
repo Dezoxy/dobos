@@ -37,6 +37,7 @@ func refuseSnapshot() refuseCounts {
 }
 
 func TestBudgetBlocksFetchPredicate(t *testing.T) {
+	newTestApp(t)
 	const mid = 200 << 20 // past both windows
 	head := warmup.FileSize
 	type setup func(t *testing.T, s *TTFFSession)
@@ -91,6 +92,7 @@ func TestBudgetBlocksFetchPredicate(t *testing.T) {
 }
 
 func TestFreshMarginAfterConfirmThenStop(t *testing.T) {
+	newTestApp(t)
 	s, _ := refuseEnv(t, 10<<20)
 	const mid = 200 << 20
 	s.countUnconfirmed(srcFetchBlock, 12<<20, mid)
@@ -102,7 +104,7 @@ func TestFreshMarginAfterConfirmThenStop(t *testing.T) {
 	if budgetBlocksFetch(s.path, mid, 4096, s.size) {
 		t.Fatal("blocked while confirmed")
 	}
-	playbackRegistry.Delete(s.path) // media.stop
+	app.playbackRegistry.Delete(s.path) // media.stop
 	if s.overUnconfirmedMargin() || budgetBlocksFetch(s.path, mid, 4096, s.size) {
 		t.Fatal("the pre-confirmation tally still counts after a stop")
 	}
@@ -117,6 +119,7 @@ func TestFreshMarginAfterConfirmThenStop(t *testing.T) {
 }
 
 func TestFloorIsSetEvenWhenTheSessionNeverCrossed(t *testing.T) {
+	newTestApp(t)
 	s, _ := refuseEnv(t, 10<<20)
 	s.countUnconfirmed(srcFetchBlock, 4<<20, 200<<20)
 	confirmPlayback(s.path)
@@ -138,6 +141,7 @@ func TestGateIsANoOpWhenNothingBlocks(t *testing.T) {
 }
 
 func TestGateHoldLiftsOnConfirmation(t *testing.T) {
+	newTestApp(t)
 	s, h := refuseEnv(t, 0)
 	unconfirmedReadHold = 5 * time.Second
 	c0 := refuseSnapshot()
@@ -246,6 +250,7 @@ func TestNewHandleGetsItsOwnHold(t *testing.T) {
 }
 
 func TestHoldRearmsAfterAConfirmation(t *testing.T) {
+	newTestApp(t)
 	s, h := refuseEnv(t, 0)
 	if errno := h.budgetGate(context.Background(), 200<<20, 4096); errno != errnoBudgetRefused {
 		t.Fatalf("errno = %v", errno)
@@ -254,7 +259,7 @@ func TestHoldRearmsAfterAConfirmation(t *testing.T) {
 	if errno := h.budgetGate(context.Background(), 200<<20, 4096); errno != 0 {
 		t.Fatalf("confirmed read errno = %v", errno)
 	}
-	playbackRegistry.Delete(s.path) // stop, with no floor: blocked again at margin 0
+	app.playbackRegistry.Delete(s.path) // stop, with no floor: blocked again at margin 0
 	start := time.Now()
 	if errno := h.budgetGate(context.Background(), 200<<20, 4096); errno != errnoBudgetRefused {
 		t.Fatalf("errno = %v", errno)
@@ -288,6 +293,7 @@ func TestSessionClosedMidHoldDoesNotLift(t *testing.T) {
 }
 
 func TestConfirmationAfterARefusalCountsOncePerSession(t *testing.T) {
+	newTestApp(t)
 	s, h := refuseEnv(t, 0)
 	buf := captureSessionLog(t)
 	s.countUnconfirmed(srcFetchBlock, 1<<20, 200<<20) // margin 0: crosses at the first byte
@@ -317,6 +323,7 @@ func TestConfirmationAfterARefusalCountsOncePerSession(t *testing.T) {
 }
 
 func TestConfirmationWithoutARefusalDoesNotCount(t *testing.T) {
+	newTestApp(t)
 	s, _ := refuseEnv(t, 10<<20)
 	c0 := refuseSnapshot()
 	confirmPlayback(s.path)

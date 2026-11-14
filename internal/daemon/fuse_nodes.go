@@ -451,22 +451,22 @@ func forceCloseVirtualFile(fullPath string) {
 			time.Sleep(200 * time.Millisecond)
 		}
 	}
-	if val, ok := activePumps.Load(fullPath); ok {
+	if val, ok := app.activePumps.Load(fullPath); ok {
 		ps := val.(*NativePumpState)
 		if ps.cancel != nil {
 			ps.cancel()
 		}
-		activePumps.Delete(fullPath)
+		app.activePumps.Delete(fullPath)
 		logger.Printf("UNLINK: force-terminated active pump for %s", filepath.Base(fullPath))
 	}
 	// Close all handles referencing this file
-	activeHandles.Range(func(key, value interface{}) bool {
+	app.activeHandles.Range(func(key, value interface{}) bool {
 		h := key.(*MkvHandle)
 		if h.path == fullPath {
 			if h.nativeReader != nil {
 				_ = h.nativeReader.Close() // force-closing a read handle; nothing to recover
 			}
-			activeHandles.Delete(h)
+			app.activeHandles.Delete(h)
 			logger.Printf("UNLINK: force-closed handle for %s", filepath.Base(fullPath))
 		}
 		return true
@@ -588,10 +588,10 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 	raCache.SwitchContext(n.vMeta.Path)
 
 	// Cancel any pending release timers (Debounce)
-	if oldTimer, ok := pumpTimers.LoadAndDelete(n.vMeta.Path); ok {
+	if oldTimer, ok := app.pumpTimers.LoadAndDelete(n.vMeta.Path); ok {
 		oldTimer.(*time.Timer).Stop()
 	}
-	if oldTimer, ok := priorityTimers.LoadAndDelete(n.vMeta.Path); ok {
+	if oldTimer, ok := app.priorityTimers.LoadAndDelete(n.vMeta.Path); ok {
 		oldTimer.(*time.Timer).Stop()
 	}
 
@@ -682,8 +682,8 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 		noteReaderCaller(n.vMeta.Path, caller.Pid, caller.Uid)
 	}
 
-	if val, exists := playbackRegistry.Load(n.vMeta.Path); !exists {
-		playbackRegistry.Store(n.vMeta.Path, &PlaybackState{
+	if val, exists := app.playbackRegistry.Load(n.vMeta.Path); !exists {
+		app.playbackRegistry.Store(n.vMeta.Path, &PlaybackState{
 			Path:     n.vMeta.Path,
 			Hash:     hashStr,
 			ImdbID:   n.vMeta.ImdbID,
@@ -791,7 +791,7 @@ func openFlags(otherHandleLive bool) uint32 {
 // true and the flag becomes unconditional.
 func storeOpenHandle(h *MkvHandle) uint32 {
 	flags := openFlags(anyLiveHandleFor(h.path))
-	activeHandles.Store(h, true)
+	app.activeHandles.Store(h, true)
 	return flags
 }
 

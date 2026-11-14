@@ -441,16 +441,17 @@ func newTestHandle(path string) *MkvHandle {
 func registerHandle(t *testing.T, hs ...*MkvHandle) {
 	t.Helper()
 	for _, h := range hs {
-		activeHandles.Store(h, true)
+		app.activeHandles.Store(h, true)
 	}
 	t.Cleanup(func() {
 		for _, h := range hs {
-			activeHandles.Delete(h)
+			app.activeHandles.Delete(h)
 		}
 	})
 }
 
 func TestBecomePrimaryDemotesTheOldPrimaryAndResetsItsStreak(t *testing.T) {
+	newTestApp(t)
 	const path = "/test/become-primary.mkv"
 	old, next, other := newTestHandle(path), newTestHandle(path), newTestHandle("/test/other.mkv")
 	old.isPrimaryHandle.Store(true)
@@ -476,6 +477,7 @@ func TestBecomePrimaryDemotesTheOldPrimaryAndResetsItsStreak(t *testing.T) {
 }
 
 func TestPrimaryOffsetForTakesTheHighestOtherPrimaryOnThePath(t *testing.T) {
+	newTestApp(t)
 	const path = "/test/primary-offset.mkv"
 	self, p1, p2, secondary, other := newTestHandle(path), newTestHandle(path), newTestHandle(path), newTestHandle(path), newTestHandle("/test/else.mkv")
 	for h, off := range map[*MkvHandle]int64{self: 9 * gb, p1: 1 * gb, p2: 3 * gb, secondary: 8 * gb, other: 7 * gb} {
@@ -496,6 +498,7 @@ func TestPrimaryOffsetForTakesTheHighestOtherPrimaryOnThePath(t *testing.T) {
 }
 
 func TestPromoteIfStreaming(t *testing.T) {
+	newTestApp(t)
 	useTestGlobals(t)
 	const (
 		path    = "/test/promote.mkv"
@@ -503,8 +506,8 @@ func TestPromoteIfStreaming(t *testing.T) {
 	)
 	healthy := func(t *testing.T) {
 		t.Helper()
-		playbackRegistry.Store(path, &PlaybackState{Path: path, IsHealthy: true})
-		t.Cleanup(func() { playbackRegistry.Delete(path) })
+		app.playbackRegistry.Store(path, &PlaybackState{Path: path, IsHealthy: true})
+		t.Cleanup(func() { app.playbackRegistry.Delete(path) })
 	}
 	// reads feeds n consecutive sequential reads starting at start.
 	reads := func(h *MkvHandle, start int64, n int) {
@@ -539,8 +542,8 @@ func TestPromoteIfStreaming(t *testing.T) {
 		}
 	})
 	t.Run("without confirmed or inferred playback nothing is promoted", func(t *testing.T) {
-		playbackRegistry.Store(path, &PlaybackState{Path: path})
-		t.Cleanup(func() { playbackRegistry.Delete(path) })
+		app.playbackRegistry.Store(path, &PlaybackState{Path: path})
+		t.Cleanup(func() { app.playbackRegistry.Delete(path) })
 		h := newTestHandle(path)
 		registerHandle(t, h)
 		reads(h, 1*gb, primaryProofReads+2)
@@ -624,24 +627,25 @@ func TestAttachToExistingPumpAttachesExactlyOnce(t *testing.T) {
 }
 
 func TestTerminateOrphanPump(t *testing.T) {
+	newTestApp(t)
 	const path = "/test/orphan.mkv"
-	t.Cleanup(func() { activePumps.Delete(path) })
+	t.Cleanup(func() { app.activePumps.Delete(path) })
 
 	if terminateOrphanPump(path) {
 		t.Error("no pump registered: must report false")
 	}
 	var cancelled atomic.Bool
-	activePumps.Store(path, &NativePumpState{cancel: func() { cancelled.Store(true) }})
+	app.activePumps.Store(path, &NativePumpState{cancel: func() { cancelled.Store(true) }})
 	if !terminateOrphanPump(path) {
 		t.Fatal("registered pump: must report true")
 	}
 	if !cancelled.Load() {
 		t.Error("the pump must be cancelled")
 	}
-	if _, ok := activePumps.Load(path); ok {
+	if _, ok := app.activePumps.Load(path); ok {
 		t.Error("the pump must be forgotten")
 	}
-	activePumps.Store(path, &NativePumpState{}) // nil cancel must not panic
+	app.activePumps.Store(path, &NativePumpState{}) // nil cancel must not panic
 	if !terminateOrphanPump(path) {
 		t.Error("a pump without a cancel func is still removed")
 	}

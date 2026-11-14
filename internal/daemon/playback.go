@@ -80,8 +80,6 @@ func (ps *PlaybackState) GetStatus() bool {
 	return ps.IsHealthy
 }
 
-var playbackRegistry sync.Map // path -> *PlaybackState
-
 // playbackOpen reports whether anyone may be watching: a read-ahead pump is running, or
 // a session confirmed by the media server (or inferred from its reads) still has a live
 // FUSE handle. States restored at start stay confirmed with no handle, so the handle is
@@ -110,11 +108,11 @@ var (
 
 func computePlaybackOpen() bool {
 	open := false
-	activePumps.Range(func(_, _ any) bool { open = true; return false })
+	app.activePumps.Range(func(_, _ any) bool { open = true; return false })
 	if open {
 		return true
 	}
-	playbackRegistry.Range(func(k, v any) bool {
+	app.playbackRegistry.Range(func(k, v any) bool {
 		ps, ok := v.(*PlaybackState)
 		if ok && (ps.GetStatus() || ps.IsInferredPlayback()) && anyLiveHandleFor(k.(string)) {
 			open = true
@@ -139,7 +137,7 @@ func isScanRead(h *MkvHandle) bool {
 	if gc().PumpOnOpen || h.hasSlot.Load() {
 		return false
 	}
-	if val, ok := playbackRegistry.Load(h.path); ok {
+	if val, ok := app.playbackRegistry.Load(h.path); ok {
 		if ps, ok := val.(*PlaybackState); ok && (ps.GetStatus() || ps.IsInferredPlayback()) {
 			return false
 		}
@@ -165,7 +163,7 @@ func scanFetchSize(off, target, headSize, readAhead int64) int64 {
 }
 
 func playbackConfirmed(path string) bool {
-	if val, ok := playbackRegistry.Load(path); ok {
+	if val, ok := app.playbackRegistry.Load(path); ok {
 		if ps, ok := val.(*PlaybackState); ok {
 			return ps.GetStatus()
 		}
@@ -311,7 +309,7 @@ func lazyPathMapStubNames(files []string) func() []string {
 // one call see the same entries and order, independent of concurrent registry writes.
 func snapshotPlaybackEntries() []exactMatchEntry {
 	entries := make([]exactMatchEntry, 0, 16)
-	playbackRegistry.Range(func(key, value interface{}) bool {
+	app.playbackRegistry.Range(func(key, value interface{}) bool {
 		entries = append(entries, exactMatchEntry{path: key.(string), state: value.(*PlaybackState)})
 		return true
 	})
@@ -324,7 +322,7 @@ func snapshotPlaybackEntries() []exactMatchEntry {
 // latch a stale count and would block stops forever.
 func anyLiveHandleFor(path string) bool {
 	found := false
-	activeHandles.Range(func(key, _ interface{}) bool {
+	app.activeHandles.Range(func(key, _ interface{}) bool {
 		if key.(*MkvHandle).path == path {
 			found = true
 			return false
@@ -341,7 +339,7 @@ func anyLiveHandleForHashExcept(hash, excludePath string) bool {
 		return false
 	}
 	found := false
-	activeHandles.Range(func(key, _ interface{}) bool {
+	app.activeHandles.Range(func(key, _ interface{}) bool {
 		h := key.(*MkvHandle)
 		if h.path == excludePath {
 			return true
@@ -412,7 +410,7 @@ func restorePlaybackStates(db *metadb.DB) {
 				LastSeekOff: rec.LastSeekOff,
 				LastReadAt:  rec.LastReadAt,
 			}
-			playbackRegistry.Store(rec.Path, ps)
+			app.playbackRegistry.Store(rec.Path, ps)
 			// Restore GoStorm priority
 			if rec.Hash != "" {
 				hHash := metainfo.NewHashFromHex(rec.Hash)

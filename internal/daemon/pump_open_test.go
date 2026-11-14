@@ -21,16 +21,17 @@ func TestStartPumpAtOpen(t *testing.T) {
 }
 
 func TestPlaybackConfirmedReadsTheRegistry(t *testing.T) {
+	newTestApp(t)
 	const path = "/test/pump-open.mkv"
-	defer playbackRegistry.Delete(path)
+	defer app.playbackRegistry.Delete(path)
 	if playbackConfirmed(path) {
 		t.Fatal("unknown path reported as confirmed playback")
 	}
-	playbackRegistry.Store(path, &PlaybackState{Path: path})
+	app.playbackRegistry.Store(path, &PlaybackState{Path: path})
 	if playbackConfirmed(path) {
 		t.Fatal("unconfirmed playback reported as confirmed")
 	}
-	playbackRegistry.Store(path, &PlaybackState{Path: path, IsHealthy: true})
+	app.playbackRegistry.Store(path, &PlaybackState{Path: path, IsHealthy: true})
 	if !playbackConfirmed(path) {
 		t.Fatal("confirmed playback not reported")
 	}

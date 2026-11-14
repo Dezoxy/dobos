@@ -78,12 +78,13 @@ func settled(t *testing.T) {
 	t.Helper()
 	waitUntil(t, "background prefetches to end", func() bool {
 		idle := true
-		inFlightPrefetches.Range(func(_, _ any) bool { idle = false; return false })
+		app.inFlightPrefetches.Range(func(_, _ any) bool { idle = false; return false })
 		return idle
 	})
 }
 
 func TestNotStoredReadAnswersEIOAndIsNotADeadSwarm(t *testing.T) {
+	newTestApp(t)
 	for _, slot := range []bool{false, true} {
 		t.Run(fmt.Sprintf("slot=%v", slot), func(t *testing.T) {
 			fe, db, s, h, _ := refusedEnv(t, slot)
@@ -213,6 +214,7 @@ func TestOpenOfANotStoredTorrent(t *testing.T) {
 // says nothing about the swarm: the read answers EIO with no fetch, no failed-read mark
 // and no dead-swarm verdict.
 func TestOtherWakeErrorsAreNotLatchedAndNotASwarmFailure(t *testing.T) {
+	newTestApp(t)
 	fe, db, s, h, _ := refusedEnv(t, false)
 	fe.wakeFn = func(context.Context, string, int) error { return errors.New("wake semaphore exhausted (system busy)") }
 	verdicts := deadSwarmVerdictCounts()

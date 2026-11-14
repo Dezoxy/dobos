@@ -105,12 +105,6 @@ var restartRequested atomic.Bool
 // readBufferPool size matches Config.ReadAheadBase (set in main).
 var readBufferPool *sync.Pool
 
-var activeHandles sync.Map      // key: *MkvHandle, value: bool
-var inFlightPrefetches sync.Map // key: "path:offset", value: bool
-
-// inFlightFetches dedups the sync FetchBlock fallback: concurrent misses in the same chunk
-// share one fetch instead of each running FetchBlock independently.
-var inFlightFetches sync.Map // key: "path:chunkAlignedOffset", value: *fetchFlight
 var fetchFlightDedupCount atomic.Int64
 
 // fuseShortReadCount counts reads served to FUSE with fewer bytes than requested, away from EOF.
@@ -134,10 +128,6 @@ const (
 type fetchFlight struct {
 	done chan struct{} // closed by the leader once its result is in raCache
 }
-
-var activePumps sync.Map    // Map[string]*NativePumpState — one pump per file path
-var pumpTimers sync.Map     // key: path, value: *time.Timer
-var priorityTimers sync.Map // key: path, value: *time.Timer
 
 // OpenTracker: contatori O(1) per handle aperti (per hash e per path).
 // Permette query rapide da cleanup e priority timer senza scansionare activeHandles.
@@ -180,6 +170,8 @@ func checkHardwareSupport() {
 }
 
 func Run() {
+	app = newApp()
+
 	// `flodni healthcheck` is the container health probe: before anything else
 	// runs, and without the daemon, the mount or the flags below.
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
@@ -867,7 +859,7 @@ func startHandleGC() {
 	safeGo(func() {
 		for range ticker.C {
 			count := 0
-			activeHandles.Range(func(key, value interface{}) bool {
+			app.activeHandles.Range(func(key, value interface{}) bool {
 				h := key.(*MkvHandle)
 				h.mu.Lock()
 				idle := time.Since(h.lastActivityTime)

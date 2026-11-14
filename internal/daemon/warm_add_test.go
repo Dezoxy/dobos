@@ -106,14 +106,15 @@ func TestEvictedSinceSurvivesTheReloadFromTheStore(t *testing.T) {
 // ---- playbackOpen: what pauses the warmer ----
 
 func playbackOpenSetup(t *testing.T) {
+	newTestApp(t)
 	t.Helper()
 	prevNow := playbackOpenNow
 	now := time.Unix(1_800_000_000, 0)
 	playbackOpenNow = func() time.Time { return now }
 	t.Cleanup(func() {
 		playbackOpenNow = prevNow
-		playbackRegistry.Range(func(k, _ any) bool { playbackRegistry.Delete(k); return true })
-		activePumps.Range(func(k, _ any) bool { activePumps.Delete(k); return true })
+		app.playbackRegistry.Range(func(k, _ any) bool { app.playbackRegistry.Delete(k); return true })
+		app.activePumps.Range(func(k, _ any) bool { app.activePumps.Delete(k); return true })
 		playbackOpenCache.mu.Lock()
 		playbackOpenCache.at = time.Time{}
 		playbackOpenCache.mu.Unlock()
@@ -124,6 +125,7 @@ func playbackOpenSetup(t *testing.T) {
 }
 
 func TestPlaybackOpen(t *testing.T) {
+	newTestApp(t)
 	inferred := func() *PlaybackState {
 		return &PlaybackState{Path: "/m/a.mkv", ReadCount: 5, LastSeekOff: 10 * mb, LastReadAt: time.Now()}
 	}
@@ -148,10 +150,10 @@ func TestPlaybackOpen(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			playbackOpenSetup(t)
 			if c.pump {
-				activePumps.Store("/m/a.mkv", &NativePumpState{})
+				app.activePumps.Store("/m/a.mkv", &NativePumpState{})
 			}
 			if c.state != nil {
-				playbackRegistry.Store("/m/a.mkv", c.state)
+				app.playbackRegistry.Store("/m/a.mkv", c.state)
 			}
 			if c.handle {
 				registerHandle(t, newTestHandle("/m/a.mkv"))
@@ -164,13 +166,14 @@ func TestPlaybackOpen(t *testing.T) {
 }
 
 func TestPlaybackOpenIsCachedForOneSecond(t *testing.T) {
+	newTestApp(t)
 	playbackOpenSetup(t)
 	now := time.Unix(1_800_000_000, 0)
 	playbackOpenNow = func() time.Time { return now }
 	if playbackOpen() {
 		t.Fatal("open with nothing running")
 	}
-	activePumps.Store("/m/a.mkv", &NativePumpState{})
+	app.activePumps.Store("/m/a.mkv", &NativePumpState{})
 	now = now.Add(900 * time.Millisecond)
 	if playbackOpen() {
 		t.Fatal("the answer changed inside the one-second cache")

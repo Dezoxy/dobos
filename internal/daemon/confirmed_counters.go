@@ -53,7 +53,7 @@ func confirmedSnapshot() (map[string]time.Time, uint64, time.Time) {
 	now := confirmedHashesNow()
 	if confirmedHashes.set == nil || now.Sub(confirmedHashes.at) >= time.Second {
 		set := make(map[string]time.Time)
-		playbackRegistry.Range(func(_, v any) bool {
+		app.playbackRegistry.Range(func(_, v any) bool {
 			ps, ok := v.(*PlaybackState)
 			if !ok || ps.Hash == "" {
 				return true
@@ -116,7 +116,7 @@ func countStall(path string) {
 		hash = v.(*TTFFSession).hash
 	}
 	if hash == "" {
-		if v, ok := playbackRegistry.Load(path); ok {
+		if v, ok := app.playbackRegistry.Load(path); ok {
 			if ps, ok := v.(*PlaybackState); ok {
 				hash = ps.Hash
 			}

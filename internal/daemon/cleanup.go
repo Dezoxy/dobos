@@ -177,14 +177,14 @@ func (cm *CleanupManager) runCleanup() {
 
 	// Prepare allow-list of active paths from activeHandles
 	activePaths := make(map[string]bool)
-	activeHandles.Range(func(key, value interface{}) bool {
+	app.activeHandles.Range(func(key, value interface{}) bool {
 		h := key.(*MkvHandle)
 		activePaths[h.path] = true
 		return true
 	})
 
 	// V750: Persist active playback states to SQLite before cleanup
-	playbackRegistry.Range(func(key, value interface{}) bool {
+	app.playbackRegistry.Range(func(key, value interface{}) bool {
 		ps, ok := value.(*PlaybackState)
 		if ok {
 			savePlaybackStateToDB(ps)
@@ -192,11 +192,11 @@ func (cm *CleanupManager) runCleanup() {
 		return true
 	})
 
-	playbackRegistry.Range(func(key, value interface{}) bool {
+	app.playbackRegistry.Range(func(key, value interface{}) bool {
 		path := key.(string)
 		ps, ok := value.(*PlaybackState)
 		if !ok {
-			playbackRegistry.Delete(key)
+			app.playbackRegistry.Delete(key)
 			stats.PlaybackRegistryPruned++
 			// V750: Also remove from SQLite
 			if stateDB != nil {
@@ -236,7 +236,7 @@ func (cm *CleanupManager) runCleanup() {
 						cm.logger.Printf("[V273] Force Priority OFF for zombie torrent: %s", ps.Hash[:8])
 					}
 				}
-				playbackRegistry.Delete(key)
+				app.playbackRegistry.Delete(key)
 				stats.PlaybackRegistryPruned++
 				// V750: Also remove from SQLite
 				if stateDB != nil {
@@ -260,7 +260,7 @@ func (cm *CleanupManager) runCleanup() {
 		// cannot be told apart from a long playback. Reclaiming is left to the idle handle
 		// reaper and to the 15-minute branch above, which runs once no handle is open.
 		if now.Sub(ps.GetOpenedAt()) > 24*time.Hour {
-			playbackRegistry.Delete(key)
+			app.playbackRegistry.Delete(key)
 			stats.PlaybackRegistryPruned++
 			// V750: Also remove from SQLite
 			if stateDB != nil {

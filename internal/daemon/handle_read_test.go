@@ -101,6 +101,7 @@ func TestReadInnerLeavesWarmupForStreamingOnASeekPastTheWarmupZone(t *testing.T)
 }
 
 func TestReadInnerRecordsPlaybackProgressOnlyForAHealthyPrimaryHandle(t *testing.T) {
+	newTestApp(t)
 	useFreshReadPath(t)
 	const path = "/test/progress.mkv"
 	off := int64(96)*mb + mb
@@ -118,8 +119,8 @@ func TestReadInnerRecordsPlaybackProgressOnlyForAHealthyPrimaryHandle(t *testing
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ps := &PlaybackState{Path: path, IsHealthy: c.healthy}
-			playbackRegistry.Store(path, ps)
-			t.Cleanup(func() { playbackRegistry.Delete(path) })
+			app.playbackRegistry.Store(path, ps)
+			t.Cleanup(func() { app.playbackRegistry.Delete(path) })
 			h := readHandle(path, 10*gb)
 			h.isPrimaryHandle.Store(c.isPrimary)
 
@@ -297,9 +298,10 @@ func TestReadStopsRefillingWhenTheContextIsCancelled(t *testing.T) {
 }
 
 func TestReleaseRemovesTheHandleAndSurvivesNoPump(t *testing.T) {
+	newTestApp(t)
 	useTestGlobals(t)
 	const path = "/test/release-no-pump.mkv"
-	t.Cleanup(func() { stopTimer(&priorityTimers, path) })
+	t.Cleanup(func() { stopTimer(&app.priorityTimers, path) })
 	h := readHandle(path, 10*gb)
 	h.hasSlot.Store(false)
 	h.nativeReader = &native.NativeReader{}
@@ -308,23 +310,24 @@ func TestReleaseRemovesTheHandleAndSurvivesNoPump(t *testing.T) {
 	if errno := h.Release(context.Background()); errno != 0 {
 		t.Fatalf("errno = %v", errno)
 	}
-	if _, ok := activeHandles.Load(h); ok {
+	if _, ok := app.activeHandles.Load(h); ok {
 		t.Error("Release must remove the handle from activeHandles")
 	}
 	if h.nativeReader != nil {
 		t.Error("Release must drop the handle's reader reference")
 	}
-	if _, ok := priorityTimers.Load(path); !ok {
+	if _, ok := app.priorityTimers.Load(path); !ok {
 		t.Error("Release must schedule the priority-retention timer")
 	}
 }
 
 func TestReleaseOfASlotlessProbeLeavesTheSharedPumpAlone(t *testing.T) {
+	newTestApp(t)
 	useTestGlobals(t)
 	const path = "/test/release-probe.mkv"
 	ps := &NativePumpState{refCount: 2}
-	activePumps.Store(path, ps)
-	t.Cleanup(func() { activePumps.Delete(path); stopTimer(&priorityTimers, path) })
+	app.activePumps.Store(path, ps)
+	t.Cleanup(func() { app.activePumps.Delete(path); stopTimer(&app.priorityTimers, path) })
 	h := readHandle(path, 10*gb)
 	h.hasSlot.Store(false)
 	h.isPrimaryHandle.Store(true)
@@ -340,11 +343,12 @@ func TestReleaseOfASlotlessProbeLeavesTheSharedPumpAlone(t *testing.T) {
 }
 
 func TestReleaseOfAStaleHandleLeavesTheReplacementPumpAlone(t *testing.T) {
+	newTestApp(t)
 	useTestGlobals(t)
 	const path = "/test/release-stale.mkv"
 	current := &NativePumpState{refCount: 1}
-	activePumps.Store(path, current)
-	t.Cleanup(func() { activePumps.Delete(path); stopTimer(&priorityTimers, path) })
+	app.activePumps.Store(path, current)
+	t.Cleanup(func() { app.activePumps.Delete(path); stopTimer(&app.priorityTimers, path) })
 	h := readHandle(path, 10*gb)
 	h.pumpState = &NativePumpState{refCount: 1} // an older, replaced pump
 
@@ -355,6 +359,7 @@ func TestReleaseOfAStaleHandleLeavesTheReplacementPumpAlone(t *testing.T) {
 }
 
 func TestReleaseOfTheLastHandleStartsOrSkipsTheGracePeriod(t *testing.T) {
+	newTestApp(t)
 	useTestGlobals(t)
 	cases := []struct {
 		name      string
@@ -369,16 +374,16 @@ func TestReleaseOfTheLastHandleStartsOrSkipsTheGracePeriod(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			path := "/test/release-last-" + string(rune('a'+i)) + ".mkv"
 			ps := &NativePumpState{refCount: 1}
-			activePumps.Store(path, ps)
+			app.activePumps.Store(path, ps)
 			if c.state != nil {
 				c.state.Path = path
-				playbackRegistry.Store(path, c.state)
+				app.playbackRegistry.Store(path, c.state)
 			}
 			t.Cleanup(func() {
-				activePumps.Delete(path)
-				playbackRegistry.Delete(path)
-				stopTimer(&pumpTimers, path)
-				stopTimer(&priorityTimers, path)
+				app.activePumps.Delete(path)
+				app.playbackRegistry.Delete(path)
+				stopTimer(&app.pumpTimers, path)
+				stopTimer(&app.priorityTimers, path)
 			})
 			h := readHandle(path, 10*gb)
 			h.pumpState = ps
@@ -387,10 +392,10 @@ func TestReleaseOfTheLastHandleStartsOrSkipsTheGracePeriod(t *testing.T) {
 			if got := atomic.LoadInt32(&ps.refCount); got != 0 {
 				t.Errorf("refCount = %d, want 0", got)
 			}
-			if _, has := pumpTimers.Load(path); has != c.wantTimer {
+			if _, has := app.pumpTimers.Load(path); has != c.wantTimer {
 				t.Errorf("grace timer present = %v, want %v", has, c.wantTimer)
 			}
-			if _, ok := activePumps.Load(path); !ok {
+			if _, ok := app.activePumps.Load(path); !ok {
 				t.Error("the pump must survive until the grace timer fires")
 			}
 		})
