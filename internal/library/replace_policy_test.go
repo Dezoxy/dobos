@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -345,4 +346,31 @@ func countOf(calls []string, name string) int {
 		}
 	}
 	return n
+}
+
+// The policy decides first; the sampled readability read (first and last regular
+// episode plus the replaced one) then runs only over the episodes that will replace.
+// A refused episode is never read, even when it is the pack's first or last.
+func TestSampledReadChoosesOnlyAmongTheReplacingEpisodes(t *testing.T) {
+	// Stored scores: E02, E04, E05 beat the pack's 5 and are refused; E01 and E03 lose.
+	e := newPolicyEnv(t, map[int]int{1: 1, 2: 9, 3: 1, 4: 9, 5: 9})
+	e.eng.files = nil
+	for ep := 1; ep <= 5; ep++ {
+		e.eng.files = append(e.eng.files, FileStat{ID: ep + 10, Path: "Show.S01/Show.S01E0" + string(rune('0'+ep)) + ".mkv", Length: 1 << 30})
+	}
+	resp, err := e.m.Add(context.Background(), AddRequest{
+		Type: "tv", Title: "Show", Hash: newHash, Season: 1, Replace: "if-better", QualityScore: 5, MetadataWait: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Decision != DecisionReplaced || len(resp.Files) != 2 || len(resp.Skipped) != 3 {
+		t.Fatalf("response = %+v", resp)
+	}
+	got := append([]int(nil), e.eng.readIDs...)
+	sort.Ints(got)
+	// E01 (replacing and first) and E03 (the last replacing episode): file ids 11 and 13.
+	if !reflect.DeepEqual(got, []int{11, 13}) {
+		t.Fatalf("read file ids = %v, want [11 13]: only replacing episodes may be sampled", got)
+	}
 }
