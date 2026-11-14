@@ -28,14 +28,18 @@ func (o *optInt) UnmarshalJSON(b []byte) error {
 
 // playedKeys is what a play webhook says about the file, already normalised.
 type playedKeys struct {
-	basenames   []string
-	imdbID      string
-	section     string // "movie" or "show"
-	title       string // the movie title
-	seriesTitle string // the show title
-	year        int
-	season      optInt
-	episode     optInt
+	basenames []string
+	// mappedBasenames is asked only when no basename matched a candidate: the stub
+	// names a library symlink points to (plex_path_map). It decides the same way the
+	// media server's own file name does. Nil means off.
+	mappedBasenames func() []string
+	imdbID          string
+	section         string // "movie" or "show"
+	title           string // the movie title
+	seriesTitle     string // the show title
+	year            int
+	season          optInt
+	episode         optInt
 }
 
 // playedCandidate is a file the mount has opened: only files with a resolved hash and
@@ -103,7 +107,8 @@ func fileSeasonEpisode(name string) (season, episode int, ok bool) {
 // file the webhook starts playback for.
 //
 // Tiers, in order:
-//  1. the file name the media server reports; when any candidate matches, this tier
+//  1. the file name the media server reports, or, when none matches, the stub name a
+//     library symlink points to (plex_path_map); when any candidate matches, this tier
 //     decides (one match marks it, several mark none);
 //  2. the IMDB id, only when exactly one candidate carries it; an episode must also
 //     agree on season and episode, read from its file name. Otherwise the name tier
@@ -119,17 +124,25 @@ func choosePlayedFile(k playedKeys, cands []playedCandidate) (playedCandidate, b
 		return none, false
 	}
 
-	var byName []playedCandidate
-	for _, c := range cands {
-		for _, b := range k.basenames {
-			if filepath.Base(c.path) == b {
-				byName = append(byName, c)
-				break
+	named := func(names []string) []playedCandidate {
+		var m []playedCandidate
+		for _, c := range cands {
+			for _, b := range names {
+				if filepath.Base(c.path) == b {
+					m = append(m, c)
+					break
+				}
 			}
 		}
+		return m
 	}
-	if len(byName) > 0 {
+	if byName := named(k.basenames); len(byName) > 0 {
 		return only(byName)
+	}
+	if k.mappedBasenames != nil {
+		if byName := named(k.mappedBasenames()); len(byName) > 0 {
+			return only(byName)
+		}
 	}
 
 	if k.imdbID != "" {

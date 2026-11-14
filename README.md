@@ -139,6 +139,43 @@ fails, the features are just inactive.
   401 and nothing is counted. A webhook counts when it is a play or resume
   of a movie or an episode. It is matched when it resolves to one file of
   the library.
+- **How a webhook is matched.** The media server reports each file as a path
+  of its own library, and the first match wins: (1) the base name of that
+  path, byte for byte, against the registered files; (2) with
+  `plex_path_map` set, the stub name behind a library symlink (below);
+  (3) the IMDb id; (4) when only a library type and an IMDb id are known, the
+  one registered file of that type with no id yet; (5) a fuzzy title match,
+  which can pick the wrong file. A play is confirmed and marked played only
+  for the file the match resolved to.
+- **`plex_path_map`** in `config.json` (default empty = off, read live) is for
+  a library of Sonarr or Radarr named symlinks into the mount, where the
+  media server's file name never equals the stub's (`Show Name - S01E02 -
+  Title WEBDL-720p.mkv` against `Show_Name_S01E02_1a2b3c4d.mkv`). It maps a
+  media server path prefix to the path of the same files inside this
+  container, for example `{"/movies/": "/media/movies/", "/series/":
+  "/media/series/"}`; both sides must be absolute, and an entry that is not
+  is logged as a `WARNING` and ignored. Only when no file name matched, each
+  reported path is taken through the longest matching prefix, checked once
+  with `lstat`, and when it is a symlink its target's base name is matched
+  against the registered files like a file name (a relative target is read
+  against the link's folder). It does not walk directories or follow a chain,
+  and a missing path or a regular file matches nothing, so the later steps
+  run as without it. The same name decides which file a play marks as played
+  (the strictness of that choice is unchanged) and which file a stop
+  releases. Use it when
+  `flodni_playback_webhooks_received_total{matched="false"}` moves for a
+  library of symlinks; the library must be mounted read-only in this container
+  at the mapped path. The lookup is meant for a local (not network) library
+  bind and runs inline in the webhook handler, at most 8 paths per webhook: a
+  hung mount delays that webhook. Prefixes and targets are cleaned at load;
+  a prefix given twice keeps the first in sorted order, with a warning. Built,
+  unit-tested against symlinks in a
+  temporary folder; not run against a media server.
+- **Which rule matched.**
+  `flodni_playback_webhook_match_rule_total{rule}` counts the same webhooks
+  by rule: `basename`, `path_map`, `imdb` (the id, or the bootstrap), `fuzzy`
+  or `none`. `fuzzy` is a guess: a library whose plays show up there mostly
+  is a candidate for `plex_path_map`.
 - **Check it.** The startup line, `[Webhook]`, says when the last matched
   play webhook arrived (`never` if none), whether played-file protection has
   a recorded play (`active`) or not (`inactive`), whether the reader budget
@@ -1038,6 +1075,7 @@ scraper on the same host or Docker network.
 | `flodni_keepalive_evicted_total` | counter | none | Confirmed torrents that lost their hold to `playback_keepalive_max_torrents`, once per episode. Present from 0. |
 | `flodni_keepalive_held_torrents` | gauge | none | Idle torrents the keep-alive is keeping open now (a torrent with a reader is not counted). |
 | `flodni_playback_webhooks_received_total` | counter | `matched` | Play and resume webhooks for a movie or an episode; `matched` is `true` when the webhook resolved to one file, else `false`. |
+| `flodni_playback_webhook_match_rule_total` | counter | `rule` | The same webhooks by the rule that resolved them: `basename`, `path_map`, `imdb`, `fuzzy` or `none`; every value present from 0. See Play webhook. |
 | `flodni_playback_webhook_last_timestamp_seconds` | gauge | `matched` | Unix time of the last play or resume webhook for a movie or an episode, `matched` as above; 0 = none seen. Persisted hourly with the state database. See Play webhook. |
 | `flodni_unconfirmed_read_last_session_timestamp_seconds` | gauge | none | Unix time of the last session that crossed `unconfirmed_read_margin_mb` and closed unconfirmed; 0 = none seen. |
 | `flodni_warning` | gauge | `name` | 1 while an advisory warning holds, else 0. `no_play_webhook`: see Play webhook. Never affects `/api/health` status. |

@@ -3,7 +3,9 @@ package daemon
 import (
 	"flodni/internal/gostorm/web"
 	"flodni/internal/metadb"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -181,9 +183,12 @@ type exactMatchEntry struct {
 type exactMatchKeys struct {
 	imdbID    string
 	basenames []string
+	// mappedBasenames is asked only when no basename matched, before the IMDB id: the
+	// stub names the library's symlinks point to (pathMapStubNames). Nil means off.
+	mappedBasenames func() []string
 }
 
-// findExactMatch selects the pass-1 match among the registry entries.
+// findExactMatchRule selects the pass-1 match among the registry entries.
 //
 // The hash suffix is deliberately NOT a key: every episode of a season pack shares
 // the same hash8 in its filename (HashPrefix = hash[:8]), so a suffix-only match can
@@ -191,16 +196,30 @@ type exactMatchKeys struct {
 // is actually playing. The filename (physical identity) wins over the IMDB ID
 // (metadata identity), which also protects against an IMDB id polluted by a
 // previous mis-matched media.play.
-func findExactMatch(keys exactMatchKeys, entries []exactMatchEntry) (string, *PlaybackState) {
-	for _, e := range entries {
-		if e.state == nil {
-			continue
-		}
-		base := filepath.Base(e.path)
-		for _, want := range keys.basenames {
-			if want == base {
-				return e.path, e.state
+//
+// It also says which rule matched: ruleBasename, rulePathMap or ruleIMDB (ruleNone
+// when nothing did). The path map sits between the file name and the IMDB id.
+func findExactMatchRule(keys exactMatchKeys, entries []exactMatchEntry) (string, *PlaybackState, int) {
+	byBase := func(names []string) (string, *PlaybackState) {
+		for _, e := range entries {
+			if e.state == nil {
+				continue
 			}
+			base := filepath.Base(e.path)
+			for _, want := range names {
+				if want == base {
+					return e.path, e.state
+				}
+			}
+		}
+		return "", nil
+	}
+	if p, s := byBase(keys.basenames); s != nil {
+		return p, s, ruleBasename
+	}
+	if keys.mappedBasenames != nil {
+		if p, s := byBase(keys.mappedBasenames()); s != nil {
+			return p, s, rulePathMap
 		}
 	}
 	if keys.imdbID != "" {
@@ -209,11 +228,83 @@ func findExactMatch(keys exactMatchKeys, entries []exactMatchEntry) (string, *Pl
 				continue
 			}
 			if imdb := e.state.GetImdbID(); imdb != "" && imdb == keys.imdbID {
-				return e.path, e.state
+				return e.path, e.state, ruleIMDB
 			}
 		}
 	}
-	return "", nil
+	return "", nil, ruleNone
+}
+
+// pathMapStubNames resolves the media server's own file paths through plex_path_map
+// (config.PlexPathMap): the longest prefix that matches a path decides, the mapped
+// path is checked with one Lstat, and when it is a symlink the base name of its
+// target is the stub name. A missing path or a regular file yields nothing. At most one
+// Lstat and one Readlink per path, local calls on a read-only bind, no retries.
+func pathMapStubNames(files []string, pathMap map[string]string) []string {
+	var names []string
+	logged := false
+	for _, f := range files {
+		if !filepath.IsAbs(f) {
+			continue // the media server reports absolute paths; a relative one could climb out
+		}
+		f = filepath.Clean(f)
+		best, mapped, root := "", "", ""
+		for p, target := range pathMap { // prefixes are cleaned at load: no trailing slash
+			if len(p) < len(best) || (p != "/" && f != p && !strings.HasPrefix(f, p+"/")) {
+				continue
+			}
+			best, mapped, root = p, filepath.Join(target, strings.TrimPrefix(f, p)), target
+		}
+		if mapped == "" || (mapped != root && !strings.HasPrefix(mapped, strings.TrimSuffix(root, "/")+"/")) {
+			continue // never look outside the mapped folder
+		}
+		fi, err := os.Lstat(mapped)
+		var dest string
+		if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			dest, err = os.Readlink(mapped)
+		} else if err == nil {
+			continue // a regular file: not a library symlink
+		}
+		if err != nil {
+			if !logged { // once per webhook: a wrong container path shows up here
+				logged = true
+				logger.Printf("[PLEX] plex_path_map lookup of %q failed: %v", mapped, err)
+			}
+			continue
+		}
+		if !filepath.IsAbs(dest) {
+			dest = filepath.Join(filepath.Dir(mapped), dest)
+		}
+		if b := filepath.Base(dest); b != "" && b != "." && b != "/" {
+			names = append(names, b)
+		}
+	}
+	return names
+}
+
+// lazyPathMapStubNames is pathMapStubNames asked at most once, and only if needed: the
+// result is shared by the match and the played mark of one webhook. It returns nil when
+// plex_path_map is empty.
+func lazyPathMapStubNames(files []string) func() []string {
+	var pathMap map[string]string
+	if c := gc(); c != nil {
+		pathMap = c.PlexPathMap
+	}
+	if len(pathMap) == 0 || len(files) == 0 {
+		return nil
+	}
+	// The webhook is unauthenticated when no api_token is set: bound the syscalls one
+	// post can cause.
+	const pathMapMaxFiles = 8
+	if len(files) > pathMapMaxFiles {
+		files = files[:pathMapMaxFiles]
+	}
+	var once sync.Once
+	var names []string
+	return func() []string {
+		once.Do(func() { names = pathMapStubNames(files, pathMap) })
+		return names
+	}
 }
 
 // snapshotPlaybackEntries copies the registry into a slice: both pass-1 scans within

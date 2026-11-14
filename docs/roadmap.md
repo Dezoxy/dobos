@@ -283,9 +283,9 @@ finished.
 
 These came out of reviews of the removal path, the cache directory and the
 file mapping. Steps 1 to 4 should land before a deployment depends on
-Flodni; steps 5 to 7 can land at any time. Step 8 is owner-ordered ahead of
-the move to a deployment. The steps marked [FINISHED] are built, the others
-are designed, not built.
+Flodni; steps 5 to 7 and 9 can land at any time. Step 8 is owner-ordered
+ahead of the move to a deployment. The steps marked [FINISHED] are built, the
+others are designed, not built.
 
 1. **One wake path, and removals that stay removed.** [FINISHED] The mount's
    open and its read-time rewake used to wake a closed torrent from a bare
@@ -384,6 +384,17 @@ are designed, not built.
    the swarm served, failed or not, counts as today; `dropped_quota`,
    `write_failed`, `lost` and a refused wake never count as swarm evidence and
    never touch the readability or the per-torrent streak.
+9. **Match webhooks through library symlinks.** [FINISHED] The media
+   server reports the path of its own library, and a library of Sonarr or
+   Radarr named symlinks into the mount never shares a base name with the
+   stub, so those webhooks fell to the IMDb id or a fuzzy title guess. The
+   opt-in `plex_path_map` maps a media server path prefix to a path in the
+   container; when no file name matched, the longest prefix is applied, the
+   path is read with one `lstat` and `readlink`, and the target's base name is
+   matched exactly. The same name picks the file a play marks played and a
+   stop releases. A missing path or a regular file changes nothing. New:
+   `flodni_playback_webhook_match_rule_total{rule}`. Unit-tested against
+   symlinks in a temporary folder; not run against a media server.
 
 ## Done
 
@@ -702,3 +713,10 @@ are designed, not built.
   naming jellyfin logs a WARNING and runs as Plex.
 - 2026-11-14, repository layout: the daemon moved from the root to
   internal/daemon, with cmd/flodni as the entry point; no behaviour change.
+- 2026-11-14, before a deployment, step 9: `plex_path_map`, an opt-in map from
+  media server library prefixes to container paths. A play or stop webhook
+  whose file name matches no registered file is resolved through the library
+  symlink (one `lstat` and `readlink`) and matched by the target's base name,
+  and a play marks that file played. Off while the map is empty. New metric:
+  `flodni_playback_webhook_match_rule_total{rule}`. Tested against symlinks in
+  a temporary folder, not against a media server.
