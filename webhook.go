@@ -148,16 +148,20 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Pass 1: Exact matches only (filename, IMDB ID).
-		var basenames []string
+		var basenames, files []string
 		for _, m := range payload.Metadata.Media {
 			for _, p := range m.Part {
+				files = append(files, p.File)
 				if b := filepath.Base(p.File); b != "" && b != "." {
 					basenames = append(basenames, b)
 				}
 			}
 		}
-		exactMatch, exactState := findExactMatch(
-			exactMatchKeys{imdbID: webhookImdbID, basenames: basenames},
+		// plex_path_map: library symlinks into the mount, resolved only when no file
+		// name matched; nil with the key empty.
+		mappedNames := lazyPathMapStubNames(files)
+		exactMatch, exactState, matchRule := findExactMatchRule(
+			exactMatchKeys{imdbID: webhookImdbID, basenames: basenames, mappedBasenames: mappedNames},
 			snapshotPlaybackEntries(),
 		)
 
@@ -189,6 +193,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 				if bootCount == 1 {
 					exactMatch = bootPath
 					exactState = bootState
+					matchRule = ruleIMDB
 				}
 			}
 		}
@@ -245,11 +250,18 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			})
 			exactMatch = bestMatch
 			exactState = bestState
+			if exactMatch != "" {
+				matchRule = ruleFuzzy
+			}
 		}
 
 		// Counted after the library-type filter: a movie or episode play or resume,
 		// matched when it resolved to the one file that gets confirmed below.
 		countPlaybackWebhook(exactMatch != "" && exactState != nil)
+		if exactMatch == "" || exactState == nil {
+			matchRule = ruleNone
+		}
+		playbackWebhookRules[matchRule].Add(1)
 		if exactMatch != "" && exactState != nil {
 			wasPlaying := exactState.GetStatus()
 			exactState.SetHealthy(true)
@@ -258,7 +270,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 				// A confirmed start. What gets marked played is decided separately and
 				// narrowly (played_mark.go); it never changes which file plays.
 				chosen, ok := choosePlayedFile(playedKeys{
-					basenames: basenames, imdbID: webhookImdbID,
+					basenames: basenames, mappedBasenames: mappedNames, imdbID: webhookImdbID,
 					section: payload.Metadata.LibrarySectionType,
 					title:   targetTitle, seriesTitle: seriesTitle, year: targetYear,
 					season: payload.Metadata.ParentIndex, episode: payload.Metadata.Index,
@@ -301,18 +313,20 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			stopImdbID = m[1]
 		}
 
-		var basenames []string
+		var basenames, files []string
 		for _, m := range payload.Metadata.Media {
 			for _, p := range m.Part {
+				files = append(files, p.File)
 				if b := filepath.Base(p.File); b != "" && b != "." {
 					basenames = append(basenames, b)
 				}
 			}
 		}
 
-		// Pass 1: Exact matches (filename, IMDB ID) — never the shared hash suffix.
-		stopMatch, stopState := findExactMatch(
-			exactMatchKeys{imdbID: stopImdbID, basenames: basenames},
+		// Pass 1: Exact matches (filename, plex_path_map stub name, IMDB ID) — never the
+		// shared hash suffix.
+		stopMatch, stopState, stopRule := findExactMatchRule(
+			exactMatchKeys{imdbID: stopImdbID, basenames: basenames, mappedBasenames: lazyPathMapStubNames(files)},
 			snapshotPlaybackEntries(),
 		)
 
@@ -368,7 +382,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		// Only a basename match (pass 1) is the file by construction. An IMDB-only match
 		// is precise on this deployment (episode-level IDs) but only when the registry
 		// holds exactly one entry with that ID; otherwise it is a guess like fuzzy.
-		matchByBasename := false
+		matchByBasename := stopRule == rulePathMap // the stub name of a library symlink
 		if stopMatch != "" {
 			base := filepath.Base(stopMatch)
 			for _, b := range basenames {

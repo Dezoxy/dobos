@@ -153,6 +153,15 @@ type Config struct {
 	// live.
 	PlaybackKeepaliveMaxTorrents int `json:"playback_keepalive_max_torrents"`
 
+	// PlexPathMap maps a media server library path prefix to the path of the same
+	// files inside this container, for libraries whose files are Sonarr/Radarr-named
+	// symlinks into the mount (webhook.go, playback.go pathMapStubNames). Off while
+	// empty. A webhook whose file name matches no registered file is resolved through
+	// the longest matching prefix: the mapped path is checked once with Lstat and, if
+	// it is a symlink, the base name of its target is matched. Both sides must be
+	// absolute; an entry that is not is dropped with a warning at load. Read live.
+	PlexPathMap map[string]string `json:"plex_path_map"`
+
 	// --- External Services (V1.4.6) ---
 	Plex struct {
 		URL         string `json:"url"`
@@ -458,6 +467,21 @@ func (c *Config) finalize() {
 	if c.PlaybackKeepaliveMaxTorrents < 1 {
 		log.Printf("[Config] WARNING: playback_keepalive_max_torrents %d is below 1; using 4", c.PlaybackKeepaliveMaxTorrents)
 		c.PlaybackKeepaliveMaxTorrents = 4
+	}
+
+	// An entry whose prefix or target is not absolute cannot match a library path or
+	// name a file here, so it is dropped rather than guessed at. The map is replaced, not
+	// edited: the caller may share the decoded one.
+	if len(c.PlexPathMap) > 0 {
+		valid := make(map[string]string, len(c.PlexPathMap))
+		for prefix, target := range c.PlexPathMap {
+			if !filepath.IsAbs(prefix) || !filepath.IsAbs(target) {
+				log.Printf("[Config] WARNING: plex_path_map entry %q -> %q needs an absolute prefix and an absolute target; ignoring it", prefix, target)
+				continue
+			}
+			valid[prefix] = target
+		}
+		c.PlexPathMap = valid
 	}
 
 	// Calculate MetadataCacheSize in bytes

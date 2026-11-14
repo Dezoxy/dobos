@@ -94,6 +94,24 @@ const (
 // MkvHandle.Read maps it at both readInner call sites.
 const errnoBudgetRefused = syscall.EDQUOT
 
+// The rule that resolved a play or resume webhook, in the order they are tried.
+const (
+	ruleBasename = iota
+	rulePathMap
+	ruleIMDB
+	ruleFuzzy
+	ruleNone
+	numWebhookRules
+)
+
+// webhookRuleNames are the values of the rule label of
+// flodni_playback_webhook_match_rule_total, indexed by the constants above.
+var webhookRuleNames = [numWebhookRules]string{"basename", "path_map", "imdb", "fuzzy", "none"}
+
+// playbackWebhookRules counts play and resume webhooks by the rule that resolved them,
+// since process start.
+var playbackWebhookRules [numWebhookRules]atomic.Int64
+
 func countPlaybackWebhook(matched bool) {
 	if matched {
 		playbackWebhooksMatched.Add(1)

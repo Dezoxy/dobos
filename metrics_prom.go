@@ -261,6 +261,13 @@ func collectReaderBudgetProm(w *promtext.Writer) {
 		"Playback start and resume webhooks for a movie or an episode, matched to one file or not.",
 		promSample(playbackWebhooksMatched.Load(), lbl("matched", "true")),
 		promSample(playbackWebhooksUnmatched.Load(), lbl("matched", "false")))
+	rules := make([]promtext.Sample, 0, numWebhookRules)
+	for i, name := range webhookRuleNames {
+		rules = append(rules, promSample(playbackWebhookRules[i].Load(), lbl("rule", name)))
+	}
+	w.Counter("flodni_playback_webhook_match_rule_total",
+		"Playback start and resume webhooks by the rule that resolved them: basename, path_map, imdb, fuzzy, or none.",
+		rules...)
 }
 
 func collectReadAheadProm(w *promtext.Writer) {

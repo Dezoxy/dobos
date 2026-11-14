@@ -3,7 +3,9 @@ package main
 import (
 	"flodni/internal/gostorm/web"
 	"flodni/internal/metadb"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -181,6 +183,9 @@ type exactMatchEntry struct {
 type exactMatchKeys struct {
 	imdbID    string
 	basenames []string
+	// mappedBasenames is asked only when no basename matched, before the IMDB id: the
+	// stub names the library's symlinks point to (pathMapStubNames). Nil means off.
+	mappedBasenames func() []string
 }
 
 // findExactMatch selects the pass-1 match among the registry entries.
@@ -192,15 +197,33 @@ type exactMatchKeys struct {
 // (metadata identity), which also protects against an IMDB id polluted by a
 // previous mis-matched media.play.
 func findExactMatch(keys exactMatchKeys, entries []exactMatchEntry) (string, *PlaybackState) {
-	for _, e := range entries {
-		if e.state == nil {
-			continue
-		}
-		base := filepath.Base(e.path)
-		for _, want := range keys.basenames {
-			if want == base {
-				return e.path, e.state
+	path, state, _ := findExactMatchRule(keys, entries)
+	return path, state
+}
+
+// findExactMatchRule is findExactMatch that also says which rule matched: ruleBasename,
+// rulePathMap or ruleIMDB (ruleNone when nothing did).
+func findExactMatchRule(keys exactMatchKeys, entries []exactMatchEntry) (string, *PlaybackState, int) {
+	byBase := func(names []string) (string, *PlaybackState) {
+		for _, e := range entries {
+			if e.state == nil {
+				continue
 			}
+			base := filepath.Base(e.path)
+			for _, want := range names {
+				if want == base {
+					return e.path, e.state
+				}
+			}
+		}
+		return "", nil
+	}
+	if p, s := byBase(keys.basenames); s != nil {
+		return p, s, ruleBasename
+	}
+	if keys.mappedBasenames != nil {
+		if p, s := byBase(keys.mappedBasenames()); s != nil {
+			return p, s, rulePathMap
 		}
 	}
 	if keys.imdbID != "" {
@@ -209,11 +232,68 @@ func findExactMatch(keys exactMatchKeys, entries []exactMatchEntry) (string, *Pl
 				continue
 			}
 			if imdb := e.state.GetImdbID(); imdb != "" && imdb == keys.imdbID {
-				return e.path, e.state
+				return e.path, e.state, ruleIMDB
 			}
 		}
 	}
-	return "", nil
+	return "", nil, ruleNone
+}
+
+// pathMapStubNames resolves the media server's own file paths through plex_path_map
+// (config.PlexPathMap): the longest prefix that matches a path decides, the mapped
+// path is checked with one Lstat, and when it is a symlink the base name of its
+// target is the stub name. A missing path or a regular file yields nothing. At most one
+// Lstat and one Readlink per path, local calls on a read-only bind, no retries.
+func pathMapStubNames(files []string, pathMap map[string]string) []string {
+	var names []string
+	for _, f := range files {
+		f = filepath.Clean(f)
+		best, mapped := "", ""
+		for prefix, target := range pathMap {
+			p := strings.TrimSuffix(prefix, "/")
+			if len(p) < len(best) || (f != p && !strings.HasPrefix(f, p+"/")) {
+				continue
+			}
+			best, mapped = p, filepath.Join(target, strings.TrimPrefix(f, p))
+		}
+		if mapped == "" {
+			continue
+		}
+		fi, err := os.Lstat(mapped)
+		if err != nil || fi.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		dest, err := os.Readlink(mapped)
+		if err != nil {
+			continue
+		}
+		if !filepath.IsAbs(dest) {
+			dest = filepath.Join(filepath.Dir(mapped), dest)
+		}
+		if b := filepath.Base(dest); b != "" && b != "." && b != "/" {
+			names = append(names, b)
+		}
+	}
+	return names
+}
+
+// lazyPathMapStubNames is pathMapStubNames asked at most once, and only if needed: the
+// result is shared by the match and the played mark of one webhook. It returns nil when
+// plex_path_map is empty.
+func lazyPathMapStubNames(files []string) func() []string {
+	var pathMap map[string]string
+	if c := gc(); c != nil {
+		pathMap = c.PlexPathMap
+	}
+	if len(pathMap) == 0 || len(files) == 0 {
+		return nil
+	}
+	var once sync.Once
+	var names []string
+	return func() []string {
+		once.Do(func() { names = pathMapStubNames(files, pathMap) })
+		return names
+	}
 }
 
 // snapshotPlaybackEntries copies the registry into a slice: both pass-1 scans within
