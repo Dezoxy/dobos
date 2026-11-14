@@ -3,8 +3,8 @@ module github.com/anacrolix/torrent
 go 1.26.0
 
 require (
-	github.com/RoaringBitmap/roaring v1.9.4
-	github.com/ajwerner/btree v0.0.0-20211221152037-f427b3e689c0
+	github.com/RoaringBitmap/roaring/v2 v2.30.0
+	github.com/ajwerner/btree v0.3.0
 	github.com/alexflint/go-arg v1.6.1
 	github.com/anacrolix/chansync v0.8.0
 	github.com/anacrolix/dht/v2 v2.24.0
@@ -15,7 +15,7 @@ require (
 	github.com/anacrolix/log v0.17.0
 	github.com/anacrolix/missinggo v1.3.0
 	github.com/anacrolix/missinggo/perf v1.0.0
-	github.com/anacrolix/missinggo/v2 v2.10.0
+	github.com/anacrolix/missinggo/v2 v2.11.0
 	github.com/anacrolix/multiless v0.4.0
 	github.com/anacrolix/possum/go v0.4.0
 	github.com/anacrolix/squirrel v0.6.4
@@ -51,7 +51,7 @@ require (
 	github.com/anacrolix/mmsg v1.0.1 // indirect
 	github.com/anacrolix/stm v0.5.0 // indirect
 	github.com/benbjohnson/immutable v0.4.1-0.20221220213129-8932b999621d // indirect
-	github.com/bits-and-blooms/bitset v1.12.0 // indirect
+	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/bradfitz/iter v0.0.0-20191230175014-e8f45d346db8 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/felixge/fgprof v0.9.5 // indirect
