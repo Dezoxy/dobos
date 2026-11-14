@@ -80,9 +80,11 @@ Four parts. All are opt-in.
 2. `--device /dev/fuse`, as before.
 3. `--security-opt apparmor=flodni-fuse` instead of `apparmor:unconfined`.
    The profile is [docker/apparmor/flodni-fuse](../../docker/apparmor/flodni-fuse):
-   `docker-default` with `deny mount,` replaced by
-   `mount fstype=fuse* -> /mnt/flodni-virtual/,` and the umount narrowed to the
-   same path. Edit both paths if `FLODNI_MOUNT_PATH` differs.
+   `docker-default` with `deny mount,` replaced by two rules that allow only
+   `fstype=fuse` and `fstype=fuse.*` with `rw`, `nosuid` and `nodev` onto
+   `/mnt/flodni-virtual/` (never `fuseblk` or `fusectl`, which are denied), and
+   the umount narrowed to the same path. Edit the paths if `FLODNI_MOUNT_PATH`
+   differs.
 4. Mount propagation, only if another container reads the mount: bind the
    mount path with `rshared` and make the host directory a shared mount.
    This is independent of the privilege change and works the same in both
