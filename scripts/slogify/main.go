@@ -208,7 +208,7 @@ func convert(name string, src []byte) (out []byte, calls, dyn int, manual []stri
 					dyn++
 				}
 				edits = append(edits, edit{off(n.Pos()), off(n.End()), t})
-			default:
+			case "SetOutput", "SetPrefix", "SetFlags", "Writer", "Prefix", "Flags", "Output", "Fatal", "Fatalf", "Fatalln", "Panic", "Panicf", "Panicln":
 				if r != "flog.Std" {
 					manual = append(manual, where(n)+": ."+sel.Sel.Name+" has no *slog.Logger equivalent")
 				}

@@ -63,3 +63,11 @@ func TestManualList(t *testing.T) {
 		t.Errorf("manual = %v", manual)
 	}
 }
+
+func TestRerunOnConvertedCodeIsQuiet(t *testing.T) {
+	out, _ := conv(t, `logger.Printf("a %s", hash)`)
+	_, _, _, manual, err := convert("p.go", []byte(out))
+	if err != nil || len(manual) != 0 {
+		t.Errorf("err=%v manual=%v", err, manual)
+	}
+}
