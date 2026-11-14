@@ -73,7 +73,7 @@ func pmPayload(event, file, imdb string) string {
 
 func ruleCounts() (c [numWebhookRules]int64) {
 	for i := range c {
-		c[i] = playbackWebhookRules[i].Load()
+		c[i] = app.playbackWebhookRules[i].Load()
 	}
 	return c
 }
@@ -327,11 +327,11 @@ func TestPathMapResolvesAtMostEightParts(t *testing.T) {
 func TestWebhookRuleSeriesRenderAtZero(t *testing.T) {
 	var saved [numWebhookRules]int64
 	for i := range saved {
-		saved[i] = playbackWebhookRules[i].Swap(0)
+		saved[i] = app.playbackWebhookRules[i].Swap(0)
 	}
 	t.Cleanup(func() {
 		for i := range saved {
-			playbackWebhookRules[i].Store(saved[i])
+			app.playbackWebhookRules[i].Store(saved[i])
 		}
 	})
 	body := scrape(t).Body.String()

@@ -205,13 +205,16 @@ func (bt *BTServer) Disconnect() {
 	}
 }
 
+// trackerUserAgent is what the engine sends to HTTP trackers; the scrape sends the same.
+const trackerUserAgent = "qBittorrent/5.0.3"
+
 func (bt *BTServer) configure(ctx context.Context) {
 	bt.config = torrent.NewDefaultClientConfig()
 
 	bt.storage = torrstor.NewStorage(settings.BTsets.CacheSize)
 	bt.config.DefaultStorage = bt.storage
 
-	userAgent := "qBittorrent/5.0.3"
+	userAgent := trackerUserAgent
 	peerID := "-qB5030-"
 	upnpID := "GoStorm/" + version.Version
 	cliVers := userAgent
@@ -273,6 +276,8 @@ func (bt *BTServer) configure(ctx context.Context) {
 	bt.config.TorrentPeersHighWater = 200 // V266: Was 40
 	bt.config.TorrentPeersLowWater = 50   // V266: Was 25
 	bt.config.DropMutuallyCompletePeers = true
+	// Opt-in (redial_dropped_peer, redial.go): without the switch the callback does nothing.
+	bt.config.Callbacks.PeerConnClosed = onPeerConnClosed
 
 	// V93-Aggressive-Discovery: Reduce timeouts to filter slow peers quickly
 	bt.config.NominalDialTimeout = 6 * time.Second // Balance: 3s -> 6s (Stability)

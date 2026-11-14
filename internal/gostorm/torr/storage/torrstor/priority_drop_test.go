@@ -13,8 +13,13 @@ import (
 // newPriorityTestCache starts a client with a capped cache and an 8-piece torrent.
 func newPriorityTestCache(t *testing.T) (*torrent.Torrent, *Cache) {
 	t.Helper()
+	return newPriorityTestCacheN(t, 8)
+}
+
+// newPriorityTestCacheN is the same with a torrent of this many 16 KiB pieces.
+func newPriorityTestCacheN(t *testing.T, pieces int) (*torrent.Torrent, *Cache) {
+	t.Helper()
 	const pieceLen = 16 << 10
-	const pieces = 8
 	stor := NewStorage(int64(pieces) * pieceLen)
 
 	cfg := torrent.NewDefaultClientConfig()
@@ -30,7 +35,7 @@ func newPriorityTestCache(t *testing.T) (*torrent.Torrent, *Cache) {
 	}
 	t.Cleanup(func() { cl.Close() })
 
-	info := metainfo.Info{PieceLength: pieceLen, Length: pieces * pieceLen, Name: "x", Pieces: make([]byte, 20*pieces)}
+	info := metainfo.Info{PieceLength: pieceLen, Length: int64(pieces) * pieceLen, Name: "x", Pieces: make([]byte, 20*pieces)}
 	ib, err := bencode.Marshal(info)
 	if err != nil {
 		t.Fatal(err)

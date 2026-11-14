@@ -54,7 +54,7 @@ func headHasHoles(path string) (bool, error) {
 func seekErr(err error) error {
 	if errors.Is(err, syscall.EINVAL) {
 		if seekUnsupportedLogged.CompareAndSwap(false, true) {
-			logf.Printf("[DiskWarmup] SEEK_HOLE is not supported on this filesystem: heads are assumed dense")
+			logf.Info("[DiskWarmup] SEEK_HOLE is not supported on this filesystem: heads are assumed dense")
 		}
 		return nil
 	}

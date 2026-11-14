@@ -3,9 +3,9 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"flodni/internal/flog"
 	"flodni/internal/gostorm/native"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -135,6 +135,7 @@ func resetSessionState(t *testing.T) {
 	t.Helper()
 	clear := func() {
 		sessions.Range(func(k, _ any) bool { sessions.Delete(k); return true })
+		lastClosed.Range(func(k, _ any) bool { lastClosed.Delete(k); return true })
 		closedSessions.mu.Lock()
 		closedSessions.next, closedSessions.n = 0, 0
 		closedSessions.mu.Unlock()
@@ -300,7 +301,7 @@ func TestCloseAllSessions(t *testing.T) {
 	var buf bytes.Buffer
 	prevLog := logger
 	t.Cleanup(func() { logger = prevLog })
-	logger = log.New(&buf, "", 0)
+	logger = flog.NewText(&buf)
 
 	mk := func(path string, age time.Duration, fail bool) *TTFFSession {
 		s := &TTFFSession{path: path, size: 1, hash: "h" + path}

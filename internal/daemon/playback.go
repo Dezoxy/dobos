@@ -3,6 +3,7 @@ package daemon
 import (
 	"flodni/internal/gostorm/web"
 	"flodni/internal/metadb"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -266,7 +267,7 @@ func pathMapStubNames(files []string, pathMap map[string]string) []string {
 		if err != nil {
 			if !logged { // once per webhook: a wrong container path shows up here
 				logged = true
-				logger.Printf("[PLEX] plex_path_map lookup of %q failed: %v", mapped, err)
+				logger.Info(fmt.Sprintf("[PLEX] plex_path_map lookup of %q failed: %v", mapped, err), "mapped", mapped, "err", err)
 			}
 			continue
 		}
@@ -384,7 +385,7 @@ func savePlaybackStateToDB(ps *PlaybackState) {
 	}
 	ps.mu.RUnlock()
 	if err := stateDB.SavePlaybackState(rec); err != nil {
-		logger.Printf("[V750] Failed to persist playback state for %s: %v", filepath.Base(rec.Path), err)
+		logger.Info(fmt.Sprintf("[V750] Failed to persist playback state for %s: %v", filepath.Base(rec.Path), err), "file", filepath.Base(rec.Path), "err", err)
 	}
 }
 
@@ -392,7 +393,7 @@ func savePlaybackStateToDB(ps *PlaybackState) {
 func restorePlaybackStates(db *metadb.DB) {
 	records, err := db.LoadPlaybackStates(4 * time.Hour)
 	if err != nil {
-		logger.Printf("[V750] Failed to load playback states: %v", err)
+		logger.Info(fmt.Sprintf("[V750] Failed to load playback states: %v", err), "err", err)
 		return
 	}
 	restored := 0
@@ -418,11 +419,11 @@ func restorePlaybackStates(db *metadb.DB) {
 					t.IsPriority.Store(true)
 					t.SetAggressiveMode(true, GetEffectiveConcurrencyLimit())
 					priorityApplied++
-					logger.Printf("[V750] Priority RESTORED from DB: %s", filepath.Base(rec.Path))
+					logger.Info(fmt.Sprintf("[V750] Priority RESTORED from DB: %s", filepath.Base(rec.Path)), "file", filepath.Base(rec.Path))
 				}
 			}
 			restored++
 		}
 	}
-	logger.Printf("[V750] Restored %d/%d PlaybackStates, %d priorities reapplied", restored, len(records), priorityApplied)
+	logger.Info(fmt.Sprintf("[V750] Restored %d/%d PlaybackStates, %d priorities reapplied", restored, len(records), priorityApplied), "restored", restored, "priority_applied", priorityApplied)
 }

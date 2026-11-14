@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -67,6 +68,10 @@ type sessionRecord struct {
 	Stalls     int64 `json:"stalls"`
 	MaxStallMS int64 `json:"max_stall_ms"`
 	Confirmed  bool  `json:"confirmed"`
+	// Added with resumed sessions. A read after a close opens a new session; ids are
+	// per process (they restart at 1), resumed_from is 0 for a session opened fresh.
+	ID          uint64 `json:"id"`
+	ResumedFrom uint64 `json:"resumed_from"`
 }
 
 // record snapshots the session. closedAt is the zero time for an open session.
@@ -93,6 +98,8 @@ func (s *TTFFSession) record(closedAt time.Time, dead bool) sessionRecord {
 		Stalls:          s.stallCount.Load(),
 		MaxStallMS:      s.maxStallMS.Load(),
 		Confirmed:       s.confirmed.Load(),
+		ID:              s.id,
+		ResumedFrom:     s.resumedFrom,
 	}
 	end := time.Now()
 	if fd := s.firstDataAt.Load(); fd > 0 {
@@ -116,10 +123,10 @@ const sessionLogPrefix = "[Session] "
 func logSessionRecord(rec sessionRecord) {
 	line, err := json.Marshal(rec)
 	if err != nil {
-		logger.Printf("WARNING: session log line for %s not written: %v", rec.Path, err)
+		logger.Warn(fmt.Sprintf("WARNING: session log line for %s not written: %v", rec.Path, err), "path", rec.Path, "err", err)
 		return
 	}
-	logger.Printf("%s%s", sessionLogPrefix, line)
+	logger.Info(fmt.Sprintf("%s%s", sessionLogPrefix, line))
 }
 
 // sessionRing keeps the most recent closed sessions, overwriting the oldest.

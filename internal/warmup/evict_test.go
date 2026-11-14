@@ -1,6 +1,7 @@
 package warmup
 
 import (
+	"flodni/internal/flog"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -16,6 +17,7 @@ func evictEnv(t *testing.T) *DiskWarmupCache {
 	t.Cleanup(func() { diskQuotaGB, IsPlayed, OnEvicted = oldGB, oldPlayed, oldOn })
 	diskQuotaGB = 1
 	IsPlayed, OnEvicted = nil, nil
+	countApparent(t) // its tests fake a large cache with sparse files
 	return indexCache(t, t.TempDir())
 }
 
@@ -306,9 +308,9 @@ func TestEvictToRecordsLikeAQuotaEviction(t *testing.T) {
 	var got []Eviction
 	OnEvicted = func(evs []Eviction) { got = append(got, evs...) }
 	var logged strings.Builder
-	oldOut := evictLog.Writer()
-	evictLog.SetOutput(&logged)
-	t.Cleanup(func() { evictLog.SetOutput(oldOut) })
+	oldLog := evictLog
+	evictLog = flog.New(&logged, "WarmupEvict", true)
+	t.Cleanup(func() { evictLog = oldLog })
 
 	before := CounterStats()
 	d.EvictTo(600 * mb)

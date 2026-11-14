@@ -2,8 +2,8 @@ package daemon
 
 import (
 	"flodni/internal/config"
+	"flodni/internal/flog"
 	"io"
-	"log"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -27,7 +27,7 @@ func useTestGlobals(t *testing.T) {
 		WarmStartIdleSeconds: 6,
 		PumpOnOpen:           true,
 	})
-	logger = log.New(io.Discard, "", 0)
+	logger = flog.NewText(io.Discard)
 	t.Cleanup(func() {
 		globalConfig.Store(prevCfg)
 		logger = prevLog

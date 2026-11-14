@@ -6,6 +6,7 @@ import (
 	torrstor "flodni/internal/gostorm/torr/storage/torrstor"
 	"flodni/internal/gostorm/web"
 	"flodni/internal/warmup"
+	"fmt"
 	"io"
 	"net/http"
 	"path/filepath"
@@ -26,7 +27,7 @@ const webhookMaxBody = 10 * 1024 * 1024
 
 // handlePlexWebhook gestisce i messaggi in arrivo dal server Plex
 func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
-	logger.Printf("[PLEX] Webhook connection from %s", r.RemoteAddr)
+	logger.Info(fmt.Sprintf("[PLEX] Webhook connection from %s", r.RemoteAddr), "remote_addr", r.RemoteAddr)
 
 	var payloadStr string
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
@@ -65,7 +66,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if payloadStr == "" {
 		// Silent 200s make a misconfigured plugin a mystery: say so once per event.
-		logger.Printf("[PLEX] Webhook from %s carried no payload", r.RemoteAddr)
+		logger.Info(fmt.Sprintf("[PLEX] Webhook from %s carried no payload", r.RemoteAddr), "remote_addr", r.RemoteAddr)
 		return
 	}
 
@@ -74,7 +75,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 	if len(displayPayload) > 500 {
 		displayPayload = displayPayload[:500] + "..."
 	}
-	logger.Printf("[DEBUG] Webhook received: %s", displayPayload)
+	logger.Debug(fmt.Sprintf("[DEBUG] Webhook received: %s", displayPayload), "display_payload", displayPayload)
 
 	var payload struct {
 		Event    string `json:"event"`
@@ -108,9 +109,9 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		seriesTitle := strings.ToLower(payload.Metadata.GrandparentTitle)
 		targetYear := payload.Metadata.Year
 
-		logger.Printf("[DEBUG] Webhook for '%s' / '%s' (%d). Current registry:", targetTitle, seriesTitle, targetYear)
+		logger.Debug(fmt.Sprintf("[DEBUG] Webhook for '%s' / '%s' (%d). Current registry:", targetTitle, seriesTitle, targetYear), "target_title", targetTitle, "series_title", seriesTitle, "target_year", targetYear)
 		app.playbackRegistry.Range(func(key, value interface{}) bool {
-			logger.Printf("  - Registered: %s", key.(string))
+			logger.Info(fmt.Sprintf("  - Registered: %s", key.(string)))
 			return true
 		})
 
@@ -239,7 +240,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		if exactMatch == "" || exactState == nil {
 			matchRule = ruleNone
 		}
-		playbackWebhookRules[matchRule].Add(1)
+		app.playbackWebhookRules[matchRule].Add(1)
 		if exactMatch != "" && exactState != nil {
 			wasPlaying := exactState.GetStatus()
 			exactState.SetHealthy(true)
@@ -254,6 +255,9 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 					season: payload.Metadata.ParentIndex, episode: payload.Metadata.Index,
 				}, playedCandidates())
 				countConfirmedPlay(chosen.path, chosen.key, ok)
+				if ok && warmNext != nil {
+					go warmNext.onConfirmedPlay(chosen.key) // off the webhook's path: it lists the library
+				}
 			}
 			exactState.mu.Lock()
 			exactState.IsStopped = false
@@ -262,18 +266,18 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			// episodes of a season pack; the pass-1c/fuzzy fallbacks are less precise.
 			if exactState.ImdbID == "" && webhookImdbID != "" {
 				exactState.ImdbID = webhookImdbID
-				logger.Printf("[PLEX] IMDB ID cached for future matching: %s → %s", filepath.Base(exactMatch), webhookImdbID)
+				logger.Info(fmt.Sprintf("[PLEX] IMDB ID cached for future matching: %s → %s", filepath.Base(exactMatch), webhookImdbID), "file", filepath.Base(exactMatch), "webhook_imdb_i_d", webhookImdbID)
 			}
 			exactState.mu.Unlock()
 			invalidateConfirmed() // after IsStopped is cleared: the keep-alive sees the confirmation at once
-			logger.Printf("[PLEX] Playback confirmed by webhook for: %s", filepath.Base(exactMatch))
+			logger.Info(fmt.Sprintf("[PLEX] Playback confirmed by webhook for: %s", filepath.Base(exactMatch)), "file", filepath.Base(exactMatch))
 
 			if exactState.Hash != "" {
 				h := metainfo.NewHashFromHex(exactState.Hash)
 				if t := web.BTS.GetTorrent(h); t != nil {
 					t.IsPriority.Store(true)
 					t.SetAggressiveMode(true, GetEffectiveConcurrencyLimit())
-					logger.Printf("[PLEX] High Priority + Aggressive Mode for: %s", exactState.Hash)
+					logger.Info(fmt.Sprintf("[PLEX] High Priority + Aggressive Mode for: %s", exactState.Hash), "hash", exactState.Hash)
 				}
 			}
 		}
@@ -391,14 +395,14 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		// Basename and unique-IMDB matches are honored even with the handle open:
 		// ignoring them would leave the pump alive until the 2h idle timeout (V262).
 		if stopMatch != "" && stopState != nil && !matchByBasename && !imdbUnique && anyLiveHandleFor(stopMatch) {
-			logger.Printf("[PLEX] STOP ignored for %s: fuzzy or ambiguous match with handle still open", filepath.Base(stopMatch))
+			logger.Info(fmt.Sprintf("[PLEX] STOP ignored for %s: fuzzy or ambiguous match with handle still open", filepath.Base(stopMatch)), "file", filepath.Base(stopMatch))
 		} else if stopMatch != "" && stopState != nil {
 			stopState.mu.Lock()
 			stopState.IsStopped = true
 			stopState.mu.Unlock()
 			stopState.SetHealthy(false) // persists with IsStopped=true
 			invalidateConfirmed()       // the keep-alive releases the torrent at once
-			logger.Printf("[PLEX] STOP applied for: %s (Event: %s)", filepath.Base(stopMatch), payload.Event)
+			logger.Info(fmt.Sprintf("[PLEX] STOP applied for: %s (Event: %s)", filepath.Base(stopMatch), payload.Event), "file", filepath.Base(stopMatch), "event", payload.Event)
 
 			if val, ok := app.activePumps.Load(stopMatch); ok {
 				ps := val.(*NativePumpState)
@@ -406,11 +410,11 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 					ps.cancel()
 				}
 				app.activePumps.Delete(stopMatch)
-				logger.Printf("[PLEX] STOP: force-terminated pump for %s", filepath.Base(stopMatch))
+				logger.Info(fmt.Sprintf("[PLEX] STOP: force-terminated pump for %s", filepath.Base(stopMatch)), "file", filepath.Base(stopMatch))
 			}
 
 			torrstor.ResetShield()
-			logger.Printf("[AdaptiveShield] Shield reset on media.stop")
+			logger.Info("[AdaptiveShield] Shield reset on media.stop")
 
 			// Pull the rest of the tail window now that the pump is gone: piece requests at
 			// the file end would otherwise compete with the sequential download front. Ready
@@ -431,7 +435,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 					t.IsPriority.Store(false)
 					t.SetAggressiveMode(false, 0) // Back to normal download priority
 					t.AddExpiredTime(30 * time.Second)
-					logger.Printf("[PLEX] STOP detected. Grace period 30s for: %s", stopState.Hash)
+					logger.Info(fmt.Sprintf("[PLEX] STOP detected. Grace period 30s for: %s", stopState.Hash), "hash", stopState.Hash)
 				}
 			}
 		}

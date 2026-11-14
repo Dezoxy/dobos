@@ -2,7 +2,7 @@ package daemon
 
 import (
 	"bytes"
-	"log"
+	"flodni/internal/flog"
 	"reflect"
 	"strings"
 	"sync"
@@ -224,7 +224,7 @@ func withConfig(t *testing.T, mutate func(*config.Config)) *bytes.Buffer {
 	mutate(&cfg)
 	globalConfig.Store(&cfg)
 	var buf bytes.Buffer
-	logger = log.New(&buf, "", 0)
+	logger = flog.NewText(&buf)
 	warnWarmOnAddNoDir = sync.Once{}
 	return &buf
 }

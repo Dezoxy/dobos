@@ -136,7 +136,7 @@ var _ = (fs.NodeStatfser)((*VirtualMkvRoot)(nil))
 func (r *VirtualMkvRoot) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	st := syscall.Stat_t{}
 	if err := syscall.Stat(r.sourcePath, &st); err != nil {
-		logger.Printf("ROOT GETATTR ERROR: stat failed for %s: %v", r.sourcePath, err)
+		logger.Error(fmt.Sprintf("ROOT GETATTR ERROR: stat failed for %s: %v", r.sourcePath, err), "source_path", r.sourcePath, "err", err)
 		return vfs.ToErrno(err)
 	}
 
@@ -238,7 +238,7 @@ func (r *VirtualMkvRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Err
 
 	entries, err := os.ReadDir(r.sourcePath)
 	if err != nil {
-		logger.Printf("READDIR ERROR: %v", err)
+		logger.Error(fmt.Sprintf("READDIR ERROR: %v", err), "err", err)
 		return nil, vfs.ToErrno(err)
 	}
 
@@ -269,7 +269,7 @@ func (r *VirtualMkvRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Err
 
 // Statfs implements fs.NodeStatfser to provide filesystem statistics for Samba compatibility
 func (r *VirtualMkvRoot) Statfs(ctx context.Context, out *fuse.StatfsOut) syscall.Errno {
-	logger.Printf("=== STATFS === path=%s", r.sourcePath)
+	logger.Info(fmt.Sprintf("=== STATFS === path=%s", r.sourcePath), "source_path", r.sourcePath)
 
 	// Calculate realistic values based on virtual files
 	// Block size: standard 4KB
@@ -293,8 +293,7 @@ func (r *VirtualMkvRoot) Statfs(ctx context.Context, out *fuse.StatfsOut) syscal
 	// Namemax: maximum filename length
 	out.NameLen = 255
 
-	logger.Printf("STATFS: blocks=%d/%d files=%d/%d bsize=%d",
-		out.Blocks, out.Bfree, out.Files, out.Ffree, out.Bsize)
+	logger.Info(fmt.Sprintf("STATFS: blocks=%d/%d files=%d/%d bsize=%d", out.Blocks, out.Bfree, out.Files, out.Ffree, out.Bsize), "blocks", out.Blocks, "bfree", out.Bfree, "files", out.Files, "ffree", out.Ffree, "bsize", out.Bsize)
 
 	return 0
 }
@@ -342,7 +341,7 @@ func (d *VirtualDirNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Err
 
 	entries, err := os.ReadDir(d.physicalPath)
 	if err != nil {
-		logger.Printf("READDIR DIR ERROR: %v", err)
+		logger.Error(fmt.Sprintf("READDIR DIR ERROR: %v", err), "err", err)
 		return nil, vfs.ToErrno(err)
 	}
 
@@ -421,7 +420,7 @@ func (d *VirtualDirNode) Lookup(ctx context.Context, name string, out *fuse.Entr
 func (d *VirtualDirNode) Getattr(ctx context.Context, f fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
 	st := syscall.Stat_t{}
 	if err := syscall.Stat(d.physicalPath, &st); err != nil {
-		logger.Printf("GETATTR DIR ERROR: %v", err)
+		logger.Error(fmt.Sprintf("GETATTR DIR ERROR: %v", err), "err", err)
 		return vfs.ToErrno(err)
 	}
 
@@ -457,7 +456,7 @@ func forceCloseVirtualFile(fullPath string) {
 			ps.cancel()
 		}
 		app.activePumps.Delete(fullPath)
-		logger.Printf("UNLINK: force-terminated active pump for %s", filepath.Base(fullPath))
+		logger.Info(fmt.Sprintf("UNLINK: force-terminated active pump for %s", filepath.Base(fullPath)), "file", filepath.Base(fullPath))
 	}
 	// Close all handles referencing this file
 	app.activeHandles.Range(func(key, value interface{}) bool {
@@ -467,7 +466,7 @@ func forceCloseVirtualFile(fullPath string) {
 				_ = h.nativeReader.Close() // force-closing a read handle; nothing to recover
 			}
 			app.activeHandles.Delete(h)
-			logger.Printf("UNLINK: force-closed handle for %s", filepath.Base(fullPath))
+			logger.Info(fmt.Sprintf("UNLINK: force-closed handle for %s", filepath.Base(fullPath)), "file", filepath.Base(fullPath))
 		}
 		return true
 	})
@@ -481,6 +480,15 @@ func forceCloseVirtualFile(fullPath string) {
 func invalidateSyncRemovedPath(path string) {
 	if strings.HasSuffix(path, ".mkv") {
 		forceCloseVirtualFile(path)
+		// Close the session now, before the library clears the readability row: a session
+		// left open writes its row back when it closes. closeSession keeps its usual
+		// rules, so a young one gets no dead-swarm verdict.
+		if v, ok := sessions.Load(path); ok {
+			v.(*TTFFSession).closeSession()
+		}
+		// The stub is gone: a later read on this path must not resume the session
+		// that just closed (or one that closed earlier on idle).
+		lastClosed.Delete(path)
 		registry.RemoveFromRegistry(path)
 	}
 	// The directory listing is not the only way back to a removed stub: a lookup by
@@ -517,11 +525,11 @@ var unlinkRemove func(ctx context.Context, path string) error
 
 // Unlink handles file deletion and triggers torrent auto-remove (FASE 4.2)
 func (d *VirtualDirNode) Unlink(ctx context.Context, name string) syscall.Errno {
-	logger.Printf("=== UNLINK === dir=%s file=%s", d.physicalPath, name)
+	logger.Info(fmt.Sprintf("=== UNLINK === dir=%s file=%s", d.physicalPath, name), "physical_path", d.physicalPath, "name", name)
 
 	// Only handle .mkv files
 	if !strings.HasSuffix(name, ".mkv") {
-		logger.Printf("UNLINK: not an mkv file, skipping auto-remove")
+		logger.Info("UNLINK: not an mkv file, skipping auto-remove")
 		return syscall.EPERM // Not permitted for non-mkv files
 	}
 
@@ -534,7 +542,7 @@ func (d *VirtualDirNode) Unlink(ctx context.Context, name string) syscall.Errno 
 	// episode, then drops the torrent only when no other stub uses it. A torrent
 	// that is not dropped is not an error here: the stub is gone.
 	if unlinkRemove == nil {
-		logger.Printf("UNLINK ERROR: no library removal is wired")
+		logger.Error("UNLINK ERROR: no library removal is wired")
 		return syscall.EIO
 	}
 	if err := unlinkRemove(ctx, fullPath); err != nil {
@@ -542,18 +550,18 @@ func (d *VirtualDirNode) Unlink(ctx context.Context, name string) syscall.Errno 
 		if errors.As(err, &le) {
 			switch le.Status {
 			case http.StatusBadRequest:
-				logger.Printf("UNLINK: refused, %s is not a stub inside the media directories: %v", fullPath, err)
+				logger.Info(fmt.Sprintf("UNLINK: refused, %s is not a stub inside the media directories: %v", fullPath, err), "full_path", fullPath, "err", err)
 				return syscall.EPERM
 			case http.StatusNotFound:
-				logger.Printf("UNLINK: no stub at %s", fullPath)
+				logger.Info(fmt.Sprintf("UNLINK: no stub at %s", fullPath), "full_path", fullPath)
 				return syscall.ENOENT
 			}
 		}
-		logger.Printf("UNLINK ERROR: failed to remove %s: %v", fullPath, err)
+		logger.Error(fmt.Sprintf("UNLINK ERROR: failed to remove %s: %v", fullPath, err), "full_path", fullPath, "err", err)
 		return syscall.EIO
 	}
 
-	logger.Printf("UNLINK COMPLETE: stub removed")
+	logger.Info("UNLINK COMPLETE: stub removed")
 	return 0
 }
 
@@ -582,7 +590,7 @@ func (n *VirtualMkvNode) Setattr(ctx context.Context, f fs.FileHandle, in *fuse.
 
 func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle, uint32, syscall.Errno) {
 	if gc().LogLevel == "DEBUG" {
-		logger.Printf("=== OPEN VIRTUAL === path=%s", n.vMeta.Path)
+		logger.Info(fmt.Sprintf("=== OPEN VIRTUAL === path=%s", n.vMeta.Path), "path", n.vMeta.Path)
 	}
 	// PROACTIVE CLEANUP TRIGGER (V246): must be sync before any Read() can arrive.
 	raCache.SwitchContext(n.vMeta.Path)
@@ -632,7 +640,7 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 						noteWakeRefused(n.vMeta.Path, hashStr, "open (background)")
 						return
 					}
-					logger.Printf("[VFS] background activation failed for %s: %v", n.vMeta.Path, err)
+					logger.Info(fmt.Sprintf("[VFS] background activation failed for %s: %v", n.vMeta.Path, err), "path", n.vMeta.Path, "err", err)
 				}
 			})
 		} else {
@@ -649,7 +657,7 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 				// A panicking activation must fail the Open, not take the process down.
 				defer func() {
 					if r := recover(); r != nil {
-						logger.Printf("[PANIC] wake goroutine recovered for %s: %v\n%s", magnetCandidate, r, debug.Stack())
+						logger.Error(fmt.Sprintf("[PANIC] wake goroutine recovered for %s: %v\n%s", magnetCandidate, r, debug.Stack()), "magnet_candidate", magnetCandidate, "r", r)
 						activated <- fmt.Errorf("activation panicked: %v", r)
 					}
 				}()
@@ -666,7 +674,7 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 						}
 						return nil, 0, syscall.EIO
 					}
-					logger.Printf("[VFS] activation failed for %s: %v", n.vMeta.Path, err)
+					logger.Info(fmt.Sprintf("[VFS] activation failed for %s: %v", n.vMeta.Path, err), "path", n.vMeta.Path, "err", err)
 					return nil, 0, syscall.EIO
 				}
 			case <-ctx.Done():
@@ -706,7 +714,7 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 				if t := web.BTS.GetTorrent(hHash); t != nil {
 					if !t.IsPriority.Load() {
 						t.IsPriority.Store(true)
-						logger.Printf("[NativeBridge] Priority RESTORED for Silent Re-Open: %s", state.Hash)
+						logger.Info(fmt.Sprintf("[NativeBridge] Priority RESTORED for Silent Re-Open: %s", state.Hash), "hash", state.Hash)
 					}
 				}
 			}
@@ -722,7 +730,7 @@ func (n *VirtualMkvNode) Open(ctx context.Context, flags uint32) (fs.FileHandle,
 	}
 	isNative := (err == nil)
 	if !isNative && gc().LogLevel == "DEBUG" {
-		logger.Printf("[NativeBridge] Resolution failed for %s: %v. Access will rely on cache/retry.", filepath.Base(n.vMeta.Path), err)
+		logger.Info(fmt.Sprintf("[NativeBridge] Resolution failed for %s: %v. Access will rely on cache/retry.", filepath.Base(n.vMeta.Path), err), "file", filepath.Base(n.vMeta.Path), "err", err)
 	}
 
 	h := &MkvHandle{

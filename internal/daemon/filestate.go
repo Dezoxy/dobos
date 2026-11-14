@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"flodni/internal/library"
 	"flodni/internal/metadb"
 	"flodni/internal/warmup"
 )
@@ -312,7 +314,7 @@ func markColdOpen(path string, k warmup.FileKey, headReady bool) {
 func countConfirmedPlay(path string, k warmup.FileKey, ok bool) {
 	playbackStarts.Add(1)
 	if !ok {
-		logger.Printf("[PLEX] Playback start resolved to no single file: not marked, no cold reopen counted (%s)", filepath.Base(path))
+		logger.Info(fmt.Sprintf("[PLEX] Playback start resolved to no single file: not marked, no cold reopen counted (%s)", filepath.Base(path)), "file", filepath.Base(path))
 		return
 	}
 	if v, found := sessions.Load(path); found && v.(*TTFFSession).coldEvicted.Swap(false) {
@@ -325,5 +327,93 @@ func countConfirmedPlay(path string, k warmup.FileKey, ok bool) {
 			}
 		}
 	}
+	recordPlay(k, playSourceWebhook)
+}
+
+// Where a recorded play came from, the label of flodni_played_marks_total.
+const (
+	playSourceWebhook = iota
+	playSourceManual
+)
+
+var playSources = [...]string{playSourceWebhook: "webhook", playSourceManual: "manual"}
+
+// playMarks counts the plays recorded since the process started, by source.
+var playMarks [len(playSources)]atomic.Int64
+
+// recordPlay is the played mark itself: the one write a media-server webhook and a
+// manual confirm share, so a file played either way is protected the same.
+func recordPlay(k warmup.FileKey, source int) {
 	fileStates.MarkPlayed(k)
+	playMarks[source].Add(1)
+}
+
+// confirmPlayByHand is library.Config.Confirm (POST /api/library/confirm): it clears the
+// file's eviction mark and records the play, so the protection applies. It touches no
+// session: it does not confirm one, and a reader-budget hold waits for a webhook as
+// before. It counts no playback start (that is the webhook's), only a play mark with
+// source "manual".
+func confirmPlayByHand(hash string, fileIdx int) {
+	k := warmup.FileKey{Hash: strings.ToLower(hash), FileIdx: fileIdx}
+	fileStates.ClearEvicted(k)
+	recordPlay(k, playSourceManual)
+}
+
+// apiTokenSet reports whether the control server enforces a bearer token: the start-up
+// value the middleware was built with (controlToken), not the live config, which a
+// POST /api/config can change on an open port without any enforcement following.
+func apiTokenSet() bool { return app.controlToken != "" }
+
+// libraryFileFacts is library.Config.FileState: the per-file facts GET /api/library/file
+// reports, read from the process-wide index and the live sessions.
+func libraryFileFacts(hash string, fileIdx int) library.FileFacts {
+	return fileStates.facts(warmup.FileKey{Hash: hash, FileIdx: fileIdx})
+}
+
+// facts reads one file's record. Memory only; a file the index has never heard of
+// reports nothing recorded.
+func (x *fileStateIndex) facts(k warmup.FileKey) library.FileFacts {
+	k = normKey(k)
+	var f library.FileFacts
+	x.mu.Lock()
+	if e := x.m[k]; e != nil {
+		f.Readability, f.Cache = e.warm.readability, e.warm.cache
+		f.Queued, f.FailedAttempts = e.warm.queuedAt > 0, e.warm.failedAttempts
+		f.Evicted = e.evicted
+		if !e.lastPlayed.IsZero() {
+			f.PlayedAt = e.lastPlayed
+			f.Protected = x.protect == 0 || x.now().Sub(e.lastPlayed) < x.protect
+		}
+	}
+	x.mu.Unlock()
+	f.Confirmed = confirmedSessionOn(k)
+	return f
+}
+
+// confirmedSessionOn reports whether a media-server session is open on the file: a
+// webhook confirmed it, no stop came, and a handle on its path is still open. States
+// restored at start stay confirmed with no handle, so the handle is what says it is open.
+func confirmedSessionOn(k warmup.FileKey) bool {
+	found := false
+	app.playbackRegistry.Range(func(p, v any) bool {
+		ps, ok := v.(*PlaybackState)
+		if !ok || !ps.GetStatus() {
+			return true
+		}
+		ps.mu.RLock()
+		stopped := ps.IsStopped
+		ps.mu.RUnlock()
+		path := p.(string)
+		t, ok := tailFillTargets.Load(path)
+		if stopped || !ok {
+			return true
+		}
+		tt := t.(tailFillTarget)
+		if strings.ToLower(tt.hash) == k.Hash && tt.fileID == k.FileIdx && anyLiveHandleFor(path) {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }

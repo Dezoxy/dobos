@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,11 +18,11 @@ import (
 // TorrentRemover writes the blacklist and names a title from its path. It no
 // longer removes torrents: unlink goes through the library's reference check.
 type TorrentRemover struct {
-	logger *log.Logger
+	logger *slog.Logger
 }
 
 // NewTorrentRemover creates a new torrent remover
-func NewTorrentRemover(logger *log.Logger) *TorrentRemover {
+func NewTorrentRemover(logger *slog.Logger) *TorrentRemover {
 	return &TorrentRemover{logger: logger}
 }
 
@@ -77,7 +77,7 @@ func (tr *TorrentRemover) addToBlacklistAt(blacklistPath, hash, title string) er
 			if rerr := os.Rename(blacklistPath, aside); rerr != nil {
 				return fmt.Errorf("blacklist %s is unreadable (%v) and cannot be set aside: %w", blacklistPath, err, rerr)
 			}
-			tr.logger.Printf("BLACKLIST WARNING: %s was unreadable (%v), moved to %s; starting a new one: every release blacklisted before is no longer excluded until that file is repaired and merged back", blacklistPath, err, aside)
+			tr.logger.Warn(fmt.Sprintf("BLACKLIST WARNING: %s was unreadable (%v), moved to %s; starting a new one: every release blacklisted before is no longer excluded until that file is repaired and merged back", blacklistPath, err, aside), "blacklist_path", blacklistPath, "err", err, "aside", aside)
 			bl = Blacklist{}
 		}
 	case !os.IsNotExist(err):
@@ -137,6 +137,6 @@ func (tr *TorrentRemover) addToBlacklistAt(blacklistPath, hash, title string) er
 	if err := atomicfile.WriteFile(blacklistPath, newData, 0644); err != nil {
 		return fmt.Errorf("write blacklist: %w", err)
 	}
-	tr.logger.Printf("BLACKLISTED: %s (%s)", hash[:8], title)
+	tr.logger.Info(fmt.Sprintf("BLACKLISTED: %s (%s)", hash[:8], title), "hash", hash[:8], "title", title)
 	return nil
 }

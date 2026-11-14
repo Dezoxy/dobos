@@ -1,6 +1,9 @@
 package daemon
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // App holds the process-wide read-path state that the FUSE handle, the pump, the
 // webhook handler and the cleanup manager share. One instance is created in Run()
@@ -16,9 +19,25 @@ type App struct {
 	pumpTimers       sync.Map // key: path, value: *time.Timer
 	priorityTimers   sync.Map // key: path, value: *time.Timer
 	playbackRegistry sync.Map // path -> *PlaybackState
+
+	// controlToken is the bearer token the control server enforces, fixed at start-up.
+	// Empty means the port is open. Never read gc().APIToken to decide that. It is read
+	// once in Run() and shared by the auth middleware and the confirm gate (apiTokenSet).
+	controlToken string
+
+	// startup collects the startup stages and emits the one [Startup] report.
+	startup *startupReporter
+
+	// Reader budget counters, since process start, for /metrics/prometheus.
+	readaheadOvershootBytes          atomic.Int64
+	attributedFillBytes              atomic.Int64
+	unconfirmedRefusedReads          atomic.Int64
+	unconfirmedHolds                 [2]atomic.Int64 // by rbHoldLifted, rbHoldRefused
+	unconfirmedConfirmedAfterRefusal atomic.Int64    // sessions, once each
+	playbackWebhookRules             [numWebhookRules]atomic.Int64
 }
 
-func newApp() *App { return &App{} }
+func newApp() *App { return &App{startup: &startupReporter{}} }
 
 // app is set once in Run() before any goroutine starts and never reassigned there.
 var app *App

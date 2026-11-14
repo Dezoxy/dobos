@@ -4,7 +4,8 @@ package apiauth
 
 import (
 	"crypto/subtle"
-	"log"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -32,17 +33,17 @@ func never(*http.Request) bool { return false }
 // Middleware gates the control server. It returns next unchanged when token is
 // empty (auth off). Otherwise it answers 401 unless the request carries the
 // token. The token and the credential offered are never logged.
-func Middleware(token string, logger *log.Logger, next http.Handler) http.Handler {
+func Middleware(token string, logger *slog.Logger, next http.Handler) http.Handler {
 	return gate("Control", token, logger, next, controlOpen, controlWebhook)
 }
 
 // GoStorm gates the engine's server on port 8090 the same way, with only
 // GET /echo open and no query token anywhere. A nil logger logs nothing.
-func GoStorm(token string, logger *log.Logger, next http.Handler) http.Handler {
+func GoStorm(token string, logger *slog.Logger, next http.Handler) http.Handler {
 	return gate("GoStorm", token, logger, next, gostormOpen, never)
 }
 
-func gate(name, token string, logger *log.Logger, next http.Handler, open, queryToken func(*http.Request) bool) http.Handler {
+func gate(name, token string, logger *slog.Logger, next http.Handler, open, queryToken func(*http.Request) bool) http.Handler {
 	if token == "" {
 		return next
 	}
@@ -53,7 +54,7 @@ func gate(name, token string, logger *log.Logger, next http.Handler, open, query
 			return
 		}
 		if logger != nil {
-			logger.Printf("[%s] 401 %s %s from %s", name, r.Method, r.URL.Path, r.RemoteAddr)
+			logger.Info(fmt.Sprintf("[%s] 401 %s %s from %s", name, r.Method, r.URL.Path, r.RemoteAddr), "name", name, "method", r.Method, "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 		}
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		http.Error(w, "unauthorized", http.StatusUnauthorized)

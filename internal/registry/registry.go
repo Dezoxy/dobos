@@ -2,7 +2,8 @@ package registry
 
 import (
 	"encoding/json"
-	"log"
+	"flodni/internal/flog"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,7 +13,7 @@ import (
 	"flodni/internal/metadb"
 )
 
-var logger = log.New(os.Stdout, "[Registry] ", log.LstdFlags)
+var logger = flog.New(os.Stdout, "Registry", true)
 
 // EpisodeEntry matches the Python registry format.
 type EpisodeEntry struct {
@@ -52,14 +53,14 @@ func StartRegistryWatchdog(stopChan chan struct{}) {
 	ticker := time.NewTicker(24 * time.Hour)
 	defer ticker.Stop()
 
-	logger.Printf("[Registry] Watchdog active (interval: 24h)")
+	logger.Info("[Registry] Watchdog active (interval: 24h)")
 
 	for {
 		select {
 		case <-ticker.C:
 			SyncRegistryWithDisk()
 		case <-stopChan:
-			logger.Printf("[Registry] Watchdog stopping")
+			logger.Info("[Registry] Watchdog stopping")
 			return
 		}
 	}
@@ -85,11 +86,11 @@ func syncRegistryWithDB() {
 		return
 	}
 
-	logger.Printf("[Registry] Starting self-healing check (StateDB): %s", path)
+	logger.Info(fmt.Sprintf("[Registry] Starting self-healing check (StateDB): %s", path), "path", path)
 
 	entries, err := registryDB.AllEpisodes()
 	if err != nil {
-		logger.Printf("[Registry] ERROR: could not read episodes from DB: %v", err)
+		logger.Error(fmt.Sprintf("[Registry] ERROR: could not read episodes from DB: %v", err), "err", err)
 		return
 	}
 
@@ -97,7 +98,7 @@ func syncRegistryWithDB() {
 	for _, entry := range entries {
 		if _, err := os.Stat(entry.FilePath); err != nil {
 			if err := registryDB.DeleteEpisode(entry.EpisodeKey); err != nil {
-				logger.Printf("[Registry] ERROR: failed to delete episode %s: %v", entry.EpisodeKey, err)
+				logger.Error(fmt.Sprintf("[Registry] ERROR: failed to delete episode %s: %v", entry.EpisodeKey, err), "episode_key", entry.EpisodeKey, "err", err)
 			} else {
 				removed++
 			}
@@ -105,9 +106,9 @@ func syncRegistryWithDB() {
 	}
 
 	if removed == 0 {
-		logger.Printf("[Registry] Audit complete: 0 ghost entries found (Total: %d)", len(entries))
+		logger.Info(fmt.Sprintf("[Registry] Audit complete: 0 ghost entries found (Total: %d)", len(entries)))
 	} else {
-		logger.Printf("[Registry] Self-Healing (StateDB): Purged %d ghost entries. Remaining: %d", removed, len(entries)-removed)
+		logger.Info(fmt.Sprintf("[Registry] Self-Healing (StateDB): Purged %d ghost entries. Remaining: %d", removed, len(entries)-removed), "removed", removed)
 	}
 }
 
@@ -117,17 +118,17 @@ func syncRegistryWithJSON() {
 		return
 	}
 
-	logger.Printf("[Registry] Starting self-healing check: %s", path)
+	logger.Info(fmt.Sprintf("[Registry] Starting self-healing check: %s", path), "path", path)
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		logger.Printf("[Registry] ERROR: could not read registry: %v", err)
+		logger.Error(fmt.Sprintf("[Registry] ERROR: could not read registry: %v", err), "err", err)
 		return
 	}
 
 	var registry map[string]EpisodeEntry
 	if err := unmarshalJSON(data, &registry); err != nil {
-		logger.Printf("[Registry] ERROR: could not parse registry: %v", err)
+		logger.Error(fmt.Sprintf("[Registry] ERROR: could not parse registry: %v", err), "err", err)
 		return
 	}
 
@@ -144,14 +145,14 @@ func syncRegistryWithJSON() {
 	}
 
 	if removed == 0 {
-		logger.Printf("[Registry] Audit complete: 0 ghost entries found (Total: %d)", initialCount)
+		logger.Info(fmt.Sprintf("[Registry] Audit complete: 0 ghost entries found (Total: %d)", initialCount), "initial_count", initialCount)
 		return
 	}
 
 	if err := saveRegistryLocked(path, newRegistry); err != nil {
-		logger.Printf("[Registry] ERROR: could not save cleaned registry: %v", err)
+		logger.Error(fmt.Sprintf("[Registry] ERROR: could not save cleaned registry: %v", err), "err", err)
 	} else {
-		logger.Printf("[Registry] Self-Healing: Purged %d ghost entries. Remaining: %d", removed, len(newRegistry))
+		logger.Info(fmt.Sprintf("[Registry] Self-Healing: Purged %d ghost entries. Remaining: %d", removed, len(newRegistry)), "removed", removed)
 	}
 }
 
@@ -174,9 +175,9 @@ func removeFromRegistryDB(filePath string) {
 	}
 	for _, entry := range entries {
 		if err := registryDB.DeleteEpisode(entry.EpisodeKey); err != nil {
-			logger.Printf("[Registry] ERROR: failed to delete episode %s: %v", entry.EpisodeKey, err)
+			logger.Error(fmt.Sprintf("[Registry] ERROR: failed to delete episode %s: %v", entry.EpisodeKey, err), "episode_key", entry.EpisodeKey, "err", err)
 		} else {
-			logger.Printf("[Registry] Real-time (StateDB): Removed deleted file from registry: %s", filepath.Base(filePath))
+			logger.Info(fmt.Sprintf("[Registry] Real-time (StateDB): Removed deleted file from registry: %s", filepath.Base(filePath)), "file", filepath.Base(filePath))
 		}
 	}
 }
@@ -202,14 +203,14 @@ func removeFromRegistryJSON(filePath string) {
 		if entry.FilePath == filePath {
 			delete(registry, key)
 			removed = true
-			logger.Printf("[Registry] Real-time: Removed deleted file from registry: %s", filepath.Base(filePath))
+			logger.Info(fmt.Sprintf("[Registry] Real-time: Removed deleted file from registry: %s", filepath.Base(filePath)), "file", filepath.Base(filePath))
 			break
 		}
 	}
 
 	if removed {
 		if err := saveRegistryLocked(path, registry); err != nil {
-			logger.Printf("[Registry] WARNING: could not save registry after removing %s: %v", filepath.Base(filePath), err)
+			logger.Warn(fmt.Sprintf("[Registry] WARNING: could not save registry after removing %s: %v", filepath.Base(filePath), err), "file", filepath.Base(filePath), "err", err)
 		}
 	}
 }

@@ -1,7 +1,8 @@
 package daemon
 
 import (
-	"log"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,7 +43,7 @@ type CleanupManager struct {
 	mu      sync.Mutex
 	stopped bool
 	stopCh  chan struct{}
-	logger  *log.Logger
+	logger  *slog.Logger
 
 	// inodePruneSkipped is set while the periodic inode prune is being skipped, so the
 	// skip is logged once per spell and not on every cycle.
@@ -57,7 +58,7 @@ type offsetEntry struct {
 }
 
 // NewCleanupManager creates a new cleanup manager with references to components
-func NewCleanupManager(logger *log.Logger, mc *cache.LRUCache, nb engineBridge) *CleanupManager {
+func NewCleanupManager(logger *slog.Logger, mc *cache.LRUCache, nb engineBridge) *CleanupManager {
 	return &CleanupManager{
 		deletedHashes:   make(map[string]time.Time),
 		fileOffsets:     make(map[string]*offsetEntry),
@@ -76,7 +77,7 @@ func NewCleanupManager(logger *log.Logger, mc *cache.LRUCache, nb engineBridge) 
 // Start begins the periodic cleanup loop
 func (cm *CleanupManager) Start() {
 	go cm.cleanupLoop()
-	cm.logger.Printf("Cleanup manager started (interval: %v)", cm.cleanupInterval)
+	cm.logger.Info(fmt.Sprintf("Cleanup manager started (interval: %v)", cm.cleanupInterval), "cleanup_interval", cm.cleanupInterval)
 }
 
 // Stop stops the cleanup manager
@@ -87,7 +88,7 @@ func (cm *CleanupManager) Stop() {
 	if !cm.stopped {
 		cm.stopped = true
 		close(cm.stopCh)
-		cm.logger.Printf("Cleanup manager stopped")
+		cm.logger.Info("Cleanup manager stopped")
 	}
 }
 
@@ -201,7 +202,7 @@ func (cm *CleanupManager) runCleanup() {
 			// V750: Also remove from SQLite
 			if stateDB != nil {
 				if err := stateDB.DeletePlaybackState(path); err != nil {
-					cm.logger.Printf("[Cleanup] WARNING: delete playback state for %s failed: %v", filepath.Base(path), err)
+					cm.logger.Warn(fmt.Sprintf("[Cleanup] WARNING: delete playback state for %s failed: %v", filepath.Base(path), err), "file", filepath.Base(path), "err", err)
 				}
 			}
 			return true
@@ -233,7 +234,7 @@ func (cm *CleanupManager) runCleanup() {
 					if t := torr.PeekTorrent(ps.Hash); t != nil && t.Torrent != nil && t.IsPriority.Load() {
 						t.IsPriority.Store(false)
 						t.SetAggressiveMode(false, 0)
-						cm.logger.Printf("[V273] Force Priority OFF for zombie torrent: %s", ps.Hash[:8])
+						cm.logger.Info(fmt.Sprintf("[V273] Force Priority OFF for zombie torrent: %s", ps.Hash[:8]), "hash", ps.Hash[:8])
 					}
 				}
 				app.playbackRegistry.Delete(key)
@@ -241,13 +242,13 @@ func (cm *CleanupManager) runCleanup() {
 				// V750: Also remove from SQLite
 				if stateDB != nil {
 					if err := stateDB.DeletePlaybackState(path); err != nil {
-						cm.logger.Printf("[Cleanup] WARNING: delete playback state for %s failed: %v", filepath.Base(path), err)
+						cm.logger.Warn(fmt.Sprintf("[Cleanup] WARNING: delete playback state for %s failed: %v", filepath.Base(path), err), "file", filepath.Base(path), "err", err)
 					}
 				}
 				// F1 backstop: terminate any pump still registered for this path, otherwise it
 				// keeps its master slot and keeps fetching until the reader idle timeout.
 				if terminateOrphanPump(path) {
-					cm.logger.Printf("[Cleanup] Force-terminated orphan pump for zombie path: %s", filepath.Base(path))
+					cm.logger.Info(fmt.Sprintf("[Cleanup] Force-terminated orphan pump for zombie path: %s", filepath.Base(path)), "file", filepath.Base(path))
 				}
 			}
 			return true
@@ -265,7 +266,7 @@ func (cm *CleanupManager) runCleanup() {
 			// V750: Also remove from SQLite
 			if stateDB != nil {
 				if err := stateDB.DeletePlaybackState(path); err != nil {
-					cm.logger.Printf("[Cleanup] WARNING: delete playback state for %s failed: %v", filepath.Base(path), err)
+					cm.logger.Warn(fmt.Sprintf("[Cleanup] WARNING: delete playback state for %s failed: %v", filepath.Base(path), err), "file", filepath.Base(path), "err", err)
 				}
 			}
 		}
@@ -275,16 +276,14 @@ func (cm *CleanupManager) runCleanup() {
 	// V750: Cleanup stale playback states from SQLite (>4h old)
 	if stateDB != nil {
 		if n, err := stateDB.CleanupPlaybackStates(4 * time.Hour); err == nil && n > 0 {
-			cm.logger.Printf("[V750] Cleaned up %d stale playback states from DB", n)
+			cm.logger.Info(fmt.Sprintf("[V750] Cleaned up %d stale playback states from DB", n), "n", n)
 		}
 	}
 
 	// Log only if something was cleaned
 	if stats.DeletedHashesRemoved > 0 || stats.OffsetsRemoved > 0 || stats.ActivitiesRemoved > 0 ||
 		stats.InodeMapPruned > 0 || stats.PlaybackRegistryPruned > 0 || stats.MetadataPruned > 0 || stats.HashesRemoved > 0 {
-		cm.logger.Printf("Cleanup: hashes=%d offsets=%d acts=%d inodes=%d registry=%d meta=%d",
-			stats.DeletedHashesRemoved, stats.OffsetsRemoved, stats.ActivitiesRemoved,
-			stats.InodeMapPruned, stats.PlaybackRegistryPruned, stats.MetadataPruned)
+		cm.logger.Info(fmt.Sprintf("Cleanup: hashes=%d offsets=%d acts=%d inodes=%d registry=%d meta=%d", stats.DeletedHashesRemoved, stats.OffsetsRemoved, stats.ActivitiesRemoved, stats.InodeMapPruned, stats.PlaybackRegistryPruned, stats.MetadataPruned), "deleted_hashes_removed", stats.DeletedHashesRemoved, "offsets_removed", stats.OffsetsRemoved, "activities_removed", stats.ActivitiesRemoved, "inode_map_pruned", stats.InodeMapPruned, "playback_registry_pruned", stats.PlaybackRegistryPruned, "metadata_pruned", stats.MetadataPruned)
 	}
 }
 

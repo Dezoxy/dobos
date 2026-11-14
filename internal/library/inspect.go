@@ -2,6 +2,7 @@ package library
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -122,7 +123,7 @@ func (m *Manager) knownTorrentHashes(ctx context.Context) (map[string]bool, bool
 	if err != nil {
 		// Logged because this fails the whole request: without it the caller sees
 		// only "cannot establish ownership" and the cause is invisible.
-		m.cfg.Logger.Printf("[LibraryAPI] WARNING: cannot list torrents: %v", err)
+		m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot list torrents: %v", err), "err", err)
 		return nil, false
 	}
 	known := make(map[string]bool, len(torrents))

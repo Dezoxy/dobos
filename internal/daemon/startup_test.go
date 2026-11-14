@@ -1,8 +1,9 @@
 package daemon
 
 import (
+	"flodni/internal/flog"
 	"io"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,7 +24,7 @@ const (
 
 func pruneEnv(t *testing.T) (*StartupCacheBuilder, *metadb.DB) {
 	t.Helper()
-	db, err := metadb.New(filepath.Join(t.TempDir(), "state.db"), discardLogger{})
+	db, err := metadb.New(filepath.Join(t.TempDir(), "state.db"), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +39,7 @@ func pruneEnv(t *testing.T) (*StartupCacheBuilder, *metadb.DB) {
 			t.Fatal(err)
 		}
 	}
-	b := NewStartupCacheBuilder(t.TempDir(), cache.NewLRUCache(1<<20, time.Hour), log.New(io.Discard, "", 0))
+	b := NewStartupCacheBuilder(t.TempDir(), cache.NewLRUCache(1<<20, time.Hour), flog.NewText(io.Discard))
 	b.foundHashes[inLibHash] = true
 	return b, db
 }
@@ -104,7 +105,7 @@ func TestSkippedStubStillLandsInFoundHashes(t *testing.T) {
 	}
 	mc := cache.NewLRUCache(1<<20, time.Hour)
 	mc.Put(path, &vfs.Metadata{URL: "http://engine/stream?link=" + inLibHash + "&index=1&play"}, 100)
-	b := NewStartupCacheBuilder(dir, mc, log.New(io.Discard, "", 0))
+	b := NewStartupCacheBuilder(dir, mc, flog.NewText(io.Discard))
 
 	b.processDirectory(dir, false)
 
@@ -201,7 +202,7 @@ func unstoredEnv(t *testing.T, stored map[string]bool, hashes ...string) (*Start
 	libraryUnstored.Store(nil)
 	t.Cleanup(func() { libraryUnstored.Store(nil) })
 	var out strings.Builder
-	b := NewStartupCacheBuilder(t.TempDir(), cache.NewLRUCache(1<<20, time.Hour), log.New(&out, "", 0))
+	b := NewStartupCacheBuilder(t.TempDir(), cache.NewLRUCache(1<<20, time.Hour), flog.NewText(&out))
 	for _, h := range hashes {
 		b.foundHashes[h] = true
 	}
@@ -282,13 +283,13 @@ func TestUnstoredGaugeIsAbsentUntilCountedThenExported(t *testing.T) {
 // pruneInodeEnv registers two files in the inode map; the builder's walk found one.
 func pruneInodeEnv(t *testing.T) (*StartupCacheBuilder, *vfs.InodeMap) {
 	t.Helper()
-	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), &vfsLogger{log.New(io.Discard, "", 0)})
+	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), flog.NewText(io.Discard))
 	prev := globalInodeMap
 	globalInodeMap = im
 	t.Cleanup(func() { globalInodeMap = prev })
 	im.AddFile("/lib/movies/a.mkv", inLibHash, 1)
 	im.AddFile("/lib/movies/b.mkv", orphHash, 1)
-	b := NewStartupCacheBuilder(t.TempDir(), cache.NewLRUCache(1<<20, time.Hour), log.New(io.Discard, "", 0))
+	b := NewStartupCacheBuilder(t.TempDir(), cache.NewLRUCache(1<<20, time.Hour), flog.NewText(io.Discard))
 	b.foundFiles["/lib/movies/a.mkv"] = true
 	b.foundHashes[inLibHash] = true
 	return b, im
@@ -333,6 +334,57 @@ func TestPruneInodesDropsTheGhostAfterAWholeWalk(t *testing.T) {
 	}
 }
 
+// A movies or tv directory that exists and holds no stubs (a mount that did not come
+// up) must not make the walk count as whole: the other directory's stubs would then
+// keep the prune from sparing the rows of every torrent filed in the empty one.
+func TestWalkLibraryNeedsStubsInBothDirectories(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		movies, tv bool // which directory holds a stub
+		noTVDir    bool
+		wantWalked bool
+		wantWhole  bool
+	}{
+		{"both hold stubs", true, true, false, true, true},
+		{"movies empty", false, true, false, true, false},
+		{"tv empty", true, false, false, true, false},
+		{"tv missing", true, false, true, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			mc := cache.NewLRUCache(1<<20, time.Hour)
+			for _, d := range []struct {
+				dir  string
+				has  bool
+				skip bool
+			}{{"movies", tc.movies, false}, {"tv", tc.tv, tc.noTVDir}} {
+				if d.skip {
+					continue
+				}
+				dir := filepath.Join(root, d.dir)
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if !d.has {
+					continue
+				}
+				path := filepath.Join(dir, "Title_"+d.dir+".mkv")
+				if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				mc.Put(path, &vfs.Metadata{URL: "http://engine/stream?link=" + inLibHash + "&index=1&play"}, 100)
+			}
+			b := NewStartupCacheBuilder(root, mc, flog.NewText(io.Discard))
+
+			walked, whole := b.walkLibrary()
+
+			if walked != tc.wantWalked || whole != tc.wantWhole {
+				t.Fatalf("walked=%v whole=%v, want %v %v", walked, whole, tc.wantWalked, tc.wantWhole)
+			}
+		})
+	}
+}
+
 // writeStub writes a line-format stub declaring the given size.
 func writeStub(t *testing.T, path, hash string, size int64) {
 	t.Helper()
@@ -357,7 +409,7 @@ func TestOutOfRangeStubIsCountedAndThePrunesStillRun(t *testing.T) {
 	writeStub(t, filepath.Join(movies, "Good_2000_1080p_cafe.mkv"), inLibHash, 1<<30)
 	writeStub(t, filepath.Join(movies, "Tiny_2001_1080p_cafe.mkv"), invalidHash, 1024)
 	var logs strings.Builder
-	b.logger = log.New(&logs, "", 0)
+	b.logger = flog.NewText(&logs)
 
 	b.processDirectory(movies, false)
 

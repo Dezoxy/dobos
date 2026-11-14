@@ -31,8 +31,8 @@ type refuseCounts struct{ refused, lifted, expired, afterRefusal int64 }
 
 func refuseSnapshot() refuseCounts {
 	return refuseCounts{
-		unconfirmedRefusedReads.Load(), unconfirmedHolds[rbHoldLifted].Load(),
-		unconfirmedHolds[rbHoldRefused].Load(), unconfirmedConfirmedAfterRefusal.Load(),
+		app.unconfirmedRefusedReads.Load(), app.unconfirmedHolds[rbHoldLifted].Load(),
+		app.unconfirmedHolds[rbHoldRefused].Load(), app.unconfirmedConfirmedAfterRefusal.Load(),
 	}
 }
 

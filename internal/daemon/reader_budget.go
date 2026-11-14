@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -27,12 +28,18 @@ import (
 //
 // The Prometheus counter is what the reader took past the windows, whichever path
 // served it: outside the exempt windows every such byte is swarm cost, even when it
-// was filled earlier. With the pump on, the engine fill happened through the pump or a
-// prefetch, which is not attributed to the reader (not built; revisited after
-// Reliability step 6). The log line splits the same bytes by the read path that
-// answered, for debugging: swarm_bytes waited for the engine (srcFetchBlock, which can
-// answer from pieces it already holds), cache_bytes came from the read-ahead cache
-// (srcRACacheHit). Neither is a count of bytes downloaded.
+// was filled earlier. The pump and the prefetches fill ahead of the reader. Their fills
+// are attributed to the session of the file in a second tally (noteFillAttributed),
+// always counted and exported; it moves the margin, and so when refusal starts, only
+// with attribute_fills_to_reader on. The log line splits the served bytes by the read
+// path that answered, for debugging: swarm_bytes waited for the engine (srcFetchBlock,
+// which can answer from pieces it already holds), cache_bytes came from the read-ahead
+// cache (srcRACacheHit). Neither is a count of bytes downloaded.
+//
+// Read-ahead overshoot: a miss inside the head window is never refused, and its
+// read-ahead can run past the window edge into the middle. noteReadaheadOvershoot
+// counts those bytes (always on); unconfirmed_readahead_clamp stops the read-ahead at
+// the edge (clampReadahead, opt-in).
 
 const readerBudgetPrefix = "[ReaderBudget] "
 
@@ -75,11 +82,23 @@ var (
 	unconfirmedReadHold = 15 * time.Second
 	unconfirmedHoldPoll = 100 * time.Millisecond
 
-	// Since process start, for /metrics/prometheus.
-	unconfirmedRefusedReads          atomic.Int64
-	unconfirmedHolds                 [2]atomic.Int64 // by rbHoldLifted, rbHoldRefused
-	unconfirmedConfirmedAfterRefusal atomic.Int64    // sessions, once each
+	// The opt-in switches of the follow-ups, read at every call. Vars so tests can flip
+	// them.
+	unconfirmedReadaheadClamp = func() bool {
+		c := gc()
+		return c != nil && c.UnconfirmedReadaheadClamp
+	}
+	attributeFillsToReader = func() bool {
+		c := gc()
+		return c != nil && c.AttributeFillsToReader
+	}
 )
+
+// The reader budget counters live on App (app.go): readaheadOvershootBytes is what the
+// engine was asked to fetch as read-ahead past the head window edge for a read that
+// started inside the window, on a file with no confirmed playback; attributedFillBytes is
+// what the pump and the prefetches filled past the windows for a file with a session and
+// no confirmed playback; the unconfirmed* counters count refusals and holds.
 
 // Indexes into unconfirmedHolds.
 const (
@@ -108,9 +127,8 @@ const (
 // flodni_playback_webhook_match_rule_total, indexed by the constants above.
 var webhookRuleNames = [numWebhookRules]string{"basename", "path_map", "imdb", "fuzzy", "none"}
 
-// playbackWebhookRules counts play and resume webhooks by the rule that resolved them,
-// since process start.
-var playbackWebhookRules [numWebhookRules]atomic.Int64
+// App.playbackWebhookRules counts play and resume webhooks by the rule that resolved
+// them, since process start.
 
 func countPlaybackWebhook(matched bool) {
 	if matched {
@@ -162,7 +180,13 @@ func (s *TTFFSession) countUnconfirmed(src ttffSource, n int, off int64) {
 	} else {
 		s.unconfirmedCache.Add(out)
 	}
-	if s.overMarginAt.Load() == 0 && s.unconfirmedSwarm.Load()+s.unconfirmedCache.Load() >= unconfirmedMargin() &&
+	s.checkOverMargin()
+}
+
+// checkOverMargin logs the session once when its tally reaches the margin. Called after
+// every addition to the tally.
+func (s *TTFFSession) checkOverMargin() {
+	if s.overMarginAt.Load() == 0 && s.budgetTally() >= unconfirmedMargin() &&
 		s.overMarginAt.CompareAndSwap(0, time.Now().UnixNano()) {
 		s.logReaderBudget("over_margin", nil, 0)
 		// A read that passed the closed check can cross after the close resolved.
@@ -172,11 +196,101 @@ func (s *TTFFSession) countUnconfirmed(src ttffSource, n int, off int64) {
 	}
 }
 
+// budgetTally is what the margin is compared with: the bytes the reader took past the
+// windows. With attribute_fills_to_reader on, the bytes the pump and the prefetches
+// filled for it count too, as the larger of the two figures, not their sum: a filled
+// byte the reader then reads is one byte of cost, seen from both ends.
+func (s *TTFFSession) budgetTally() int64 {
+	t := s.unconfirmedSwarm.Load() + s.unconfirmedCache.Load()
+	if attributeFillsToReader() {
+		t = max(t, s.unconfirmedFill.Load())
+	}
+	return t
+}
+
+// budgetSince is what the session has taken past its windows since the last confirmation:
+// the served bytes since their floor, or with attribute_fills_to_reader on the fills since
+// theirs if that is more. Each figure has its own floor, so the switch can be flipped while
+// sessions are open without one tally being measured from the other's floor.
+func (s *TTFFSession) budgetSince() int64 {
+	d := s.unconfirmedSwarm.Load() + s.unconfirmedCache.Load() - s.budgetFloor.Load()
+	if attributeFillsToReader() {
+		d = max(d, s.unconfirmedFill.Load()-s.fillFloor.Load())
+	}
+	return d
+}
+
+// noteFillAttributed attributes a fill of [off, off+n) by the pump or a prefetch to the
+// session of path, when the file has a session and no confirmed playback and the bytes
+// lie past the windows. The windows are exempt, as for reads. Called after the fill
+// reached the read-ahead cache. Always counted; it changes the margin only with
+// attribute_fills_to_reader on.
+func noteFillAttributed(path string, off, n, size int64) {
+	v, ok := sessions.Load(path)
+	if !ok {
+		return
+	}
+	out := bytesOutsideWindows(off, n, size, warmup.FileSize, tailWindowLen(size))
+	if out == 0 || playbackConfirmed(path) {
+		return
+	}
+	s := v.(*TTFFSession)
+	app.attributedFillBytes.Add(out)
+	s.unconfirmedFill.Add(out)
+	// Phase a's over_margin line and its session count follow the margin, which fills move
+	// only with the switch on: with it off a pump fill must not log a reader that took
+	// nothing (at a margin of 0 any byte would).
+	if attributeFillsToReader() {
+		s.checkOverMargin()
+	}
+}
+
+// readaheadWindowStart reports whether a read starting at off lies inside the head or
+// tail window of a file of this size.
+func readaheadWindowStart(off, size int64) bool {
+	return bytesOutsideWindows(off, 1, size, warmup.FileSize, tailWindowLen(size)) == 0
+}
+
+// readaheadOvershoot is how many bytes of a fetch [off, off+fetchSize) lie past the
+// windows beyond what the read itself asked for [off, off+target): the read-ahead the
+// budget never saw. Zero unless the read started inside a window.
+func readaheadOvershoot(off, target, fetchSize, size int64) int64 {
+	if !readaheadWindowStart(off, size) {
+		return 0
+	}
+	head, tail := warmup.FileSize, tailWindowLen(size)
+	return max(bytesOutsideWindows(off, fetchSize, size, head, tail)-bytesOutsideWindows(off, target, size, head, tail), 0)
+}
+
+// noteReadaheadOvershoot counts the overshoot of one fetch the engine was asked for, on
+// a file with no confirmed playback. Always on; it only counts. The size is what was
+// asked of the engine, not what it has downloaded.
+func noteReadaheadOvershoot(path string, off, target, fetchSize, size int64) {
+	if over := readaheadOvershoot(off, target, fetchSize, size); over > 0 && !playbackConfirmed(path) {
+		app.readaheadOvershootBytes.Add(over)
+	}
+}
+
+// clampReadahead returns the last byte a read-ahead fetch may reach. With
+// unconfirmed_readahead_clamp on, a read that starts inside the head window of a file
+// with no confirmed playback is read ahead only to the window edge, and never short of
+// the bytes the read itself asked for (end). Otherwise it returns fetchEnd as it is.
+func clampReadahead(path string, off, end, fetchEnd, size int64) int64 {
+	if !unconfirmedReadaheadClamp() {
+		return fetchEnd
+	}
+	head := min(warmup.FileSize, size)
+	if off >= head || fetchEnd < head || playbackConfirmed(path) {
+		return fetchEnd
+	}
+	return min(fetchEnd, max(end, head-1))
+}
+
 // pastMargin reports whether the session has taken at least the margin past its windows
-// since the last confirmation (the tally less budgetFloor). With margin 0 that holds from
+// since the last confirmation (budgetSince). With margin 0 that holds from
 // the start.
 func (s *TTFFSession) pastMargin() bool {
-	return s.unconfirmedSwarm.Load()+s.unconfirmedCache.Load()-s.budgetFloor.Load() >= unconfirmedMargin()
+	return s.budgetSince() >= unconfirmedMargin()
 }
 
 // overUnconfirmedMargin reports whether this session has taken at least the margin past
@@ -316,19 +430,19 @@ func (h *MkvHandle) budgetGate(ctx context.Context, off int64, n int) syscall.Er
 		}
 		if s.closed.Load() {
 			if h.budgetHold.expire() {
-				unconfirmedHolds[rbHoldRefused].Add(1)
+				app.unconfirmedHolds[rbHoldRefused].Add(1)
 			}
 			return s.refuse(off, time.Since(start))
 		}
 		if !refusalEnforced() || !s.blocks(off, int64(n), h.size) {
 			if h.budgetHold.lift() {
-				unconfirmedHolds[rbHoldLifted].Add(1)
+				app.unconfirmedHolds[rbHoldLifted].Add(1)
 			}
 			return 0
 		}
 		if !time.Now().Before(deadline) {
 			if h.budgetHold.expire() {
-				unconfirmedHolds[rbHoldRefused].Add(1)
+				app.unconfirmedHolds[rbHoldRefused].Add(1)
 			}
 			return s.refuse(off, time.Since(start))
 		}
@@ -339,7 +453,7 @@ func (h *MkvHandle) budgetGate(ctx context.Context, off int64, n int) syscall.Er
 // first refusal of a session writes the "refused" line.
 func (s *TTFFSession) refuse(off int64, held time.Duration) syscall.Errno {
 	s.lastReadAt.Store(time.Now().UnixNano())
-	unconfirmedRefusedReads.Add(1)
+	app.unconfirmedRefusedReads.Add(1)
 	if s.refusedReads.Add(1) == 1 {
 		s.logReaderBudget("refused", &off, held.Milliseconds())
 	}
@@ -360,8 +474,9 @@ func noteConfirmedLate(path string) {
 	// Before the early returns: a refusal needs the fresh start whether or not the
 	// session ever crossed in phase a's sense.
 	s.budgetFloor.Store(s.unconfirmedSwarm.Load() + s.unconfirmedCache.Load())
+	s.fillFloor.Store(s.unconfirmedFill.Load())
 	if s.refusedReads.Load() > 0 && s.confirmedAfterRefusal.CompareAndSwap(false, true) {
-		unconfirmedConfirmedAfterRefusal.Add(1)
+		app.unconfirmedConfirmedAfterRefusal.Add(1)
 	}
 	if s.overMarginAt.Load() == 0 || s.closed.Load() || s.budgetResolved.Load() {
 		return
@@ -433,6 +548,9 @@ type readerBudgetRecord struct {
 	HeldMS *int64 `json:"held_ms,omitempty"`
 	// confirmed_late event: reads the gate refused before the confirmation.
 	RefusedReads *int64 `json:"refused_reads,omitempty"`
+	// Bytes the pump and the prefetches filled past the windows for the session; omitted
+	// at 0. They count toward the margin only with attribute_fills_to_reader on.
+	FillBytes int64 `json:"fill_bytes,omitempty"`
 }
 
 // logReaderBudget writes one line with no path or file name: the hash and file index
@@ -442,7 +560,7 @@ type readerBudgetRecord struct {
 func (s *TTFFSession) logReaderBudget(event string, off *int64, heldMS int64) {
 	rec := readerBudgetRecord{
 		Event: event, Hash: s.hash, FileIndex: s.fileIndex, Size: s.size,
-		SwarmBytes: s.unconfirmedSwarm.Load(), CacheBytes: s.unconfirmedCache.Load(),
+		SwarmBytes: s.unconfirmedSwarm.Load(), CacheBytes: s.unconfirmedCache.Load(), FillBytes: s.unconfirmedFill.Load(),
 	}
 	if event == "confirmed_late" {
 		late := max((s.confirmedLateAt.Load()-s.overMarginAt.Load())/int64(time.Millisecond), 0)
@@ -463,8 +581,8 @@ func (s *TTFFSession) logReaderBudget(event string, off *int64, heldMS int64) {
 	}
 	line, err := json.Marshal(rec)
 	if err != nil {
-		logger.Printf("WARNING: reader budget line for %s not written: %v", s.hash, err)
+		logger.Warn(fmt.Sprintf("WARNING: reader budget line for %s not written: %v", s.hash, err), "hash", s.hash, "err", err)
 		return
 	}
-	logger.Printf("%s%s", readerBudgetPrefix, line)
+	logger.Info(fmt.Sprintf("%s%s", readerBudgetPrefix, line))
 }
