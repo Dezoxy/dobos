@@ -194,6 +194,7 @@ func TestShowNameRoundTripsFromEpisodePath(t *testing.T) {
 	for path, want := range map[string]string{
 		"/tv/The_Last_of_Us (2023)/Season.02/The_Last_of_Us_S02E10_11111111.mkv": "The Last of Us",
 		"/tv/Severance/Season.01/Severance_S01E02_11111111.mkv":                  "Severance",
+
 		"/tv/Show/Season 1/x.mkv": "Show",
 		"/tv/Show/Specials/x.mkv": "",
 		"/Season.01/x.mkv":        "",
