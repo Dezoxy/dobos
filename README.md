@@ -439,7 +439,7 @@ goes to stdout only. A session still open at shutdown is closed then, with
 the same rules: one younger than 25 s is never condemned as a dead swarm.
 
 ```text
-[GoProxy] 2026/11/12 09:02:10 [Session] {"path":"/mnt/flodni-real/tv/Example/Example.S01E01_0123abcd.mkv","hash":"0123456789abcdef0123456789abcdef01234567","size":31461601,"opened_at":"2026-11-12T09:00:05Z","closed_at":"2026-11-12T09:02:10Z","bytes_served":31461601,"first_byte_ms":12,"reads":241,"failed_reads":0,"outcome":"served","file_index":1,"bytes_fetch_block":135393,"bytes_racache_hit":31326208,"bytes_warmup_head":0,"bytes_warmup_tail":0,"swarm_served":true,"duration_ms":125000,"failure_reason":null,"reopens":0,"stalls":0,"max_stall_ms":0,"confirmed":false}
+[GoProxy] 2026/11/12 09:02:10 [Session] {"path":"/mnt/flodni-real/tv/Example/Example.S01E01_0123abcd.mkv","hash":"0123456789abcdef0123456789abcdef01234567","size":31461601,"opened_at":"2026-11-12T09:00:05Z","closed_at":"2026-11-12T09:02:10Z","bytes_served":31461601,"first_byte_ms":12,"reads":241,"failed_reads":0,"outcome":"served","file_index":1,"bytes_fetch_block":135393,"bytes_racache_hit":31326208,"bytes_warmup_head":0,"bytes_warmup_tail":0,"swarm_served":true,"duration_ms":125000,"failure_reason":null,"reopens":0,"stalls":0,"max_stall_ms":0,"confirmed":false,"id":7,"resumed_from":0}
 ```
 
 Everything after `[Session] ` is one JSON object on one line, the same
@@ -471,6 +471,7 @@ and `[DeadSwarm]` lines are unchanged, and their wording is not a contract.
 | `reopens` | number | Times a read on an open handle woke a torrent the engine had closed as idle. The wake at open does not count. |
 | `stalls`, `max_stall_ms` | number | Served reads that took over one second, and the slowest one in milliseconds. Failed reads are not counted. |
 | `confirmed` | boolean | A play webhook confirmed the file while the session was open, or it was confirmed when the session started. Sticky: a later stop webhook does not clear it. |
+| `id`, `resumed_from` | number | A number for the session, unique within one daemon run (it restarts at 1), and the `id` of the session this one continues; 0 for a session that began with an open. Follow `resumed_from` to stitch a paused playback back together. |
 | `outcome` | string | `served`: 1 MiB or more, or over 64 KiB with a read past 8 MiB or in the tail window. `probe`: fewer bytes, a scan. `unserved`: no bytes. `dead_swarm`: the session counted as a failure in the readability record, whatever it served; it never appears when the state database is off. The thresholds may change. |
 
 - The four byte fields name the path that answered each read, not where
@@ -480,14 +481,18 @@ and `[DeadSwarm]` lines are unchanged, and their wording is not a contract.
   says the swarm delivered.
 - `served` means the reader got bytes, not that the swarm sent them.
 - A session is per file, not per open or per playback. Opens that overlap
-  share one. After a session closes, reads on a handle that is still open
-  are not counted until the file is opened again. A playback that pauses
-  for more than a minute (30 s once the session is older than 30 minutes)
-  is cut short in this record, and one whose session ended when another
-  handle closed before the first byte shows as `unserved`.
+  share one. A playback that pauses for more than a minute (30 s once the
+  session is older than 30 minutes) closes its session; the first read
+  after that, on the same handle, opens a new one with `resumed_from` set,
+  so a paused playback is one session per stretch of reads. Each session
+  gets its own verdict: a resumed session that fails is judged on its own
+  reads and, like any session, only counts as `dead_swarm` once it has
+  lasted 25 s. A scan's handle that releases closes its session and leaves
+  nothing to resume. A session that ended when another handle closed before
+  the first byte shows as `unserved`, and its next read starts a resumed
+  session.
 - `reopens`, `stalls` and `max_stall_ms` are lower bounds: a play with long
-  gaps spans several sessions, and reads on a handle after its session
-  closed are not counted. The process-wide counters
+  gaps spans several sessions, one per pause. The process-wide counters
   `flodni_torrent_reopens_total` and `flodni_read_stalls_total` have no
   such gap.
 - The `confirmed` label of the three process-wide counters is per torrent: a
@@ -659,12 +664,12 @@ switch off it never refuses or slows a read.
   `flodni_unconfirmed_read_holds_total{result="lifted|refused"}` and
   `flodni_unconfirmed_read_confirmed_after_refusal_total`.
 
-Limits: reads on a handle after its session closed and sessions open at
-shutdown are not counted; reads the kernel page cache answers never reach
-Flodni; a fuzzy webhook match or a state restored at start can mark a file
-confirmed that is being scanned. A confirmation also outlives the playback:
-it stays until a stop webhook, or until 15 minutes after the last handle of
-the file closes, and a scan in that window is not counted.
+Limits: sessions open at shutdown are not counted; reads the kernel page
+cache answers never reach Flodni; a fuzzy webhook match or a state
+restored at start can mark a file confirmed that is being scanned. A
+confirmation also outlives the playback: it stays until a stop webhook, or
+until 15 minutes after the last handle of the file closes, and a scan in
+that window is not counted.
 
 ## Warmup cache eviction
 
@@ -782,6 +787,35 @@ What Flodni does in each case:
   marked evicted.
 - **Full.** Failed creates and writes are logged, nothing false is recorded,
   and a fill reports that the file was evicted.
+
+## Filing and naming
+
+`POST /api/library/add` names what it writes from the request, not from the
+release. These rules apply to new adds only: a stub already on disk is never
+renamed and its registry row is never re-keyed, and stubs are found by the
+`link=` hash in their content, not by name.
+
+- **Specials.** A pack file named `S00E01` is filed as season 0, under
+  `Season.00` (the folder Plex reads as Specials), never as the requested
+  season's episode 1. A single-episode add does not take a special's file for
+  the requested episode either.
+- **Samples.** A video file is skipped when "sample" is a word in its name or
+  in the folder directly above it (not the release's root folder) and it is
+  under 50 MiB, even when no larger file names the same episode. Each skip is
+  logged (`ignored sample`). An explicit `file_index` still files the file it
+  names. A single-episode add whose torrent does not name the episode takes
+  the largest file that names no episode at all, never one named for another
+  episode or a special.
+- **Movie year.** The year in a movie's stub name is the request's
+  `release_date` year. A number in the title (`Blade Runner 2049`,
+  `Dune (2021)`) is part of the title and is not read as a second year. A title
+  with no ASCII letter or digit is named with the first eight hash characters
+  instead of an empty base with a leading underscore.
+- **Episode key.** The registry key folds Latin letters with diacritics to
+  their base letters (`Élite` gives `elite_s01e01`; before, the accented letter
+  vanished and `Lite` shared the key). A show whose rows were registered under
+  the old form keeps them: an add finds the row by the old key when the new one
+  has none, and replaces it in place.
 
 ## Removing a title
 
