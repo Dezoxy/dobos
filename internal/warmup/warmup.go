@@ -844,9 +844,18 @@ func (d *DiskWarmupCache) GetAvailableRange(hash string, fileID int) int64 {
 		// Only the entry that was seen: a writer may have stored a newer one since.
 		if hadEntry {
 			d.sizeCache.CompareAndDelete(path, cached)
+			hadEntry = false // gone now: the stat below must not swap an entry that is not there
 		}
-		d.missing.Store(path, time.Now())
-		return 0
+		// A writer may create the file after the stat above and clear the negative cache
+		// before this entry lands, which would hide the new file for missingTTL. Record
+		// the miss first, then look again: either the writer's clear comes after this
+		// entry, or the second stat sees its file.
+		seen := time.Now()
+		d.missing.Store(path, seen)
+		if fi, err = os.Stat(path); err != nil {
+			return 0
+		}
+		d.missing.CompareAndDelete(path, seen)
 	}
 
 	if fi.Size() > FileSize+(16*1024*1024) {
