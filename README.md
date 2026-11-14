@@ -635,8 +635,15 @@ are off by default.
 The quota counts allocated blocks, not apparent sizes: a sparse file (a tail
 written in pieces, a head with holes) counts what it holds on disk, as the
 start-up walk, the eviction walk, writes and removals all do. Where a platform
-reports no block count, the apparent size stands in. The window lengths and
-the coverage the cache serves still follow the logical length of the files.
+reports no block count for a non-empty file, its apparent size stands in. The
+cache keeps a ledger of what each file has contributed to the total, so a
+removal gives back exactly that, and every change to the total happens under
+one lock. Where a filesystem reports blocks late (ZFS within a transaction
+group), a write counts at least the bytes it wrote: the total never reads low
+because of the lag, and the next eviction walk corrects the rest. The window
+lengths and the coverage the cache serves still follow the logical length of
+the files. An eviction walk holds that lock while it reads the directory, and
+a head write waits for it; the daemon logs a walk that takes more than 50 ms.
 
 - **Played** means a playback confirmed by Plex's play webhook, never a
   scanner's read. A webhook marks at most one file: a movie by file name,
@@ -1125,8 +1132,10 @@ to be stable; buckets and help text are not.
   a session closed and reads with no session, so it differs from the
   `[Session]` lines.
 - `flodni_warmup_cache_bytes` is a running total, resynced from the disk on
-  each eviction walk. It can drift in between; the known causes are in
-  `docs/ideas.md`.
+  each eviction walk. Writes and removals through the cache keep it in step
+  (counted in allocated blocks, see the eviction section); it can still
+  differ from the disk by files changed behind the cache's back, until the
+  next walk.
 - `flodni_warmup_files` reads the cache's in-memory index. A head removed
   behind the cache's back shows until the next lookup of it, a tail until
   the next restart. Warm bytes are `flodni_warmup_cache_bytes`. The series is a count of files, not of

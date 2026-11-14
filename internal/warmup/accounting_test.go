@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"os"
+	"runtime"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -63,9 +65,11 @@ func TestSparseTailCountsItsAllocatedBlocks(t *testing.T) {
 	if fi.Size() < fileSize-tailStart-1<<10 {
 		t.Fatalf("test setup: tail file is %d bytes, want the window length", fi.Size())
 	}
-	alloc := requireSparse(t, path, fi.Size())
-	if got := tailTotal(d); got != alloc {
-		t.Fatalf("total = %d, want the allocated size %d (apparent %d)", got, alloc, fi.Size())
+	requireSparse(t, path, fi.Size())
+	// Counted at least at the bytes written, and nowhere near the apparent size: the
+	// allocated blocks are never compared with a second stat, which may lag the first.
+	if got := tailTotal(d); got < 64<<10 || got >= fi.Size()/2 {
+		t.Fatalf("total = %d, want at least the 64 KiB written and well below the apparent %d", got, fi.Size())
 	}
 	d.RemoveHash("h")
 	if got := tailTotal(d); got != 0 {
@@ -129,7 +133,9 @@ func TestDropResidueHoldsTailMu(t *testing.T) {
 		t.Fatal(err)
 	}
 	fi, _ := os.Stat(path)
-	atomic.StoreInt64(&d.totalSize, allocatedBytes(fi))
+	d.tailMu.Lock()
+	d.credit(path, allocatedBytes(fi))
+	d.tailMu.Unlock()
 	if !blocked(t, d, func() { d.dropResidue(path) }) {
 		t.Fatal("dropResidue unlinked and subtracted without tailMu")
 	}
@@ -148,7 +154,9 @@ func corruptHead(t *testing.T, d *DiskWarmupCache) string {
 		t.Fatal(err)
 	}
 	fi, _ := os.Stat(path)
-	atomic.StoreInt64(&d.totalSize, allocatedBytes(fi))
+	d.tailMu.Lock()
+	d.credit(path, allocatedBytes(fi))
+	d.tailMu.Unlock()
 	return path
 }
 
@@ -194,5 +202,98 @@ func TestHeadCreateClosesTheHandleItReplaces(t *testing.T) {
 	}
 	if v, ok := d.handles.Load(path); !ok || v.(*cachedHandle) == old {
 		t.Fatal("the new handle is not the cached one")
+	}
+}
+
+// A filesystem whose st_blocks lags the write (ZFS within a txg) must not make the quota
+// count a fresh write as free: every credit is floored at the bytes known written.
+func TestLaggingBlocksDoNotUnderCount(t *testing.T) {
+	old := allocatedBytes
+	allocatedBytes = func(os.FileInfo) int64 { return 0 }
+	t.Cleanup(func() { allocatedBytes = old })
+
+	d := indexCache(t, t.TempDir())
+	const fileSize = 8 << 20
+	d.writeTail("h", 1, bytes.Repeat([]byte{1}, 256<<10), fileSize-1<<20, fileSize)
+	if got := tailTotal(d); got != 256<<10 {
+		t.Fatalf("tail total = %d, want the 256 KiB written", got)
+	}
+	d.processWrite("h", 2, bytes.Repeat([]byte{1}, 64<<10), 0)
+	if got := tailTotal(d); got != 256<<10+64<<10 {
+		t.Fatalf("total with a head = %d, want %d", got, 256<<10+64<<10)
+	}
+	d.RemoveHash("h")
+	if got := tailTotal(d); got != 0 {
+		t.Fatalf("total after removal = %d, want 0", got)
+	}
+}
+
+// RemoveHash is reachable from the engine API while the start-up walk runs: the walk
+// holds tailMu, or -race reports the ledger written by both.
+func TestStartupScanHoldsTailMuAgainstRemoveHash(t *testing.T) {
+	dir := t.TempDir()
+	d := indexCache(t, dir)
+	for i := 0; i < 200; i++ {
+		p := d.filePath("h"+string(rune('a'+i%26)), i)
+		if err := os.WriteFile(p, bytes.Repeat([]byte{1}, 8192), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				for c := 0; c < 26; c++ {
+					d.RemoveHash("h" + string(rune('a'+c)))
+				}
+			}
+		}
+	}()
+	if _, _, _, err := d.scanAtStart(false); err != nil {
+		t.Fatal(err)
+	}
+	close(stop)
+	wg.Wait()
+
+	if !blocked(t, d, func() { _, _, _, _ = d.scanAtStart(false) }) {
+		t.Fatal("the start-up scan ran without tailMu")
+	}
+}
+
+// An unlink that fails leaves the file and its bytes counted.
+func TestRemoveHashKeepsBytesOfAFileItCouldNotUnlink(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a directory the process cannot write to")
+	}
+	dir := t.TempDir()
+	d := indexCache(t, dir)
+	path := d.filePath("h", 1)
+	if err := os.WriteFile(path, bytes.Repeat([]byte{1}, 8192), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fi, _ := os.Stat(path)
+	d.tailMu.Lock()
+	d.credit(path, allocatedBytes(fi))
+	d.tailMu.Unlock()
+	before := tailTotal(d)
+
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	d.RemoveHash("h")
+	if got := tailTotal(d); got != before {
+		t.Fatalf("total = %d after a failed unlink, want %d", got, before)
+	}
+	_ = os.Chmod(dir, 0o755)
+	d.RemoveHash("h")
+	if got := tailTotal(d); got != 0 {
+		t.Fatalf("total after the real removal = %d, want 0", got)
 	}
 }

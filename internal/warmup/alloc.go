@@ -22,13 +22,9 @@ func (d *DiskWarmupCache) credit(path string, now int64) {
 	d.ledger[path] = now
 }
 
-// debit takes a file's contribution back out of totalSize: what the ledger holds, or
-// fallback (its allocated size on disk now) for a file the ledger has not seen. tailMu held.
-func (d *DiskWarmupCache) debit(path string, fallback int64) {
-	got, ok := d.ledger[path]
-	if !ok {
-		got = fallback
-	}
+// debit takes a file's contribution back out of totalSize: exactly what the ledger holds
+// for it, nothing for a file the ledger has not seen. tailMu held.
+func (d *DiskWarmupCache) debit(path string) {
+	atomic.AddInt64(&d.totalSize, -d.ledger[path])
 	delete(d.ledger, path)
-	atomic.AddInt64(&d.totalSize, -got)
 }

@@ -44,8 +44,9 @@ const TriggerRequest = "request"
 
 // IsPlayed, if set, reports whether a playback confirmed by the media server protects
 // the file now (a play inside the configured protection time). It runs under the
-// cache's quota lock, so it must read memory only and never block. Nil: nothing is
-// played, and eviction degenerates to oldest first.
+// cache's quota lock and tailMu, so it must read memory only, never block and never call
+// a cache writer (it would deadlock). Nil: nothing is played, and eviction degenerates
+// to oldest first.
 var IsPlayed func(FileKey) bool
 
 // OnEvicted, if set, receives the files one quota check evicted. It runs after the
@@ -163,6 +164,7 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 	d.tailMu.Lock()
 	defer d.tailMu.Unlock()
 
+	walkStart := time.Now()
 	entries, err := os.ReadDir(d.dir)
 	if err != nil {
 		// A vanished or unreadable directory proves nothing about the total: keep the
@@ -204,6 +206,10 @@ func (d *DiskWarmupCache) enforceQuotaLocked(needed int64, opts evictOpts) (evic
 
 	atomic.StoreInt64(&d.totalSize, diskTotal)
 	d.ledger = ledger
+	// tailMu is held for the whole walk, and a head write waits on it: say when it is slow.
+	if dur := time.Since(walkStart); dur > 50*time.Millisecond {
+		logf.Printf("[DiskWarmup] quota walk held tailMu for %v over %d files", dur.Round(time.Millisecond), len(ledger))
+	}
 	if diskTotal+needed <= quota {
 		return nil, true
 	}

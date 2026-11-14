@@ -422,11 +422,10 @@ func InitDiskWarmup(opts Options) {
 		}
 	}
 
-	total, dropped, residues, err := DiskWarmup.scanExisting(checkHeads)
+	total, dropped, residues, err := DiskWarmup.scanAtStart(checkHeads)
 	if err != nil {
 		logf.Printf("[DiskWarmup] WARNING: start-up walk of %s failed: %v: the cache total starts at 0", dir, err)
 	} else {
-		atomic.StoreInt64(&DiskWarmup.totalSize, total)
 		logf.Printf("[DiskWarmup] Initial size: %.1fGB (dropped %d stale cache files, %d residues)", float64(total)/(1<<30), dropped, residues)
 		if checkHeads {
 			// A directory with no head in it (a fresh disk's lost+found) has nothing to
@@ -515,8 +514,22 @@ func (d *DiskWarmupCache) scanExisting(checkHeads bool) (total int64, dropped, r
 	return total, dropped, residues, nil
 }
 
-// scanned counts a file found by the start-up walk and records it in the ledger. The
-// walk runs before any writer, so it needs no lock.
+// scanAtStart runs the start-up walk and stores its total, under tailMu: the cache is
+// already published and RemoveHash is reachable from the engine API during the walk, so
+// the ledger and the absolute total must not change underneath it. Nothing scanExisting
+// calls takes tailMu.
+func (d *DiskWarmupCache) scanAtStart(checkHeads bool) (total int64, dropped, residues int, err error) {
+	d.tailMu.Lock()
+	defer d.tailMu.Unlock()
+	total, dropped, residues, err = d.scanExisting(checkHeads)
+	if err == nil {
+		atomic.StoreInt64(&d.totalSize, total)
+	}
+	return total, dropped, residues, err
+}
+
+// scanned counts a file found by the start-up walk and records it in the ledger. tailMu
+// held (scanAtStart), as RemoveHash can run during the walk.
 func (d *DiskWarmupCache) scanned(path string, info os.FileInfo) int64 {
 	n := allocatedBytes(info)
 	if d.ledger == nil {
@@ -589,7 +602,7 @@ func (d *DiskWarmupCache) dropResidue(path string) {
 			filepath.Base(path), float64(fi.Size())/(1<<10))
 		// Written bytes were counted against the quota, so the drop gives them back
 		// instead of leaving the drift to the next full walk in enforceQuotaLocked.
-		d.debit(path, allocatedBytes(fi))
+		d.debit(path)
 	}
 	d.missing.Store(path, time.Now())
 }
@@ -817,9 +830,9 @@ func (d *DiskWarmupCache) writeHeadLocked(path string, off int64, data []byte) (
 	if currentSize <= prevSize {
 		currentSize = prevSize
 	}
-	if alloc, ok := fileAllocated(ch.f); ok {
-		d.credit(path, alloc)
-	}
+	// A head is dense, so it holds at least its length; st_blocks may lag the write.
+	alloc, _ := fileAllocated(ch.f)
+	d.credit(path, max(alloc, currentSize))
 
 	d.sizeCache.Store(path, sizeEntry{size: currentSize, updatedAt: time.Now()})
 
@@ -914,7 +927,7 @@ func (d *DiskWarmupCache) removeCorrupt(path string) {
 	d.closeHandle(path)
 	d.sizeCache.Delete(path)
 	if removed(path) {
-		d.debit(path, allocatedBytes(fi))
+		d.debit(path)
 	}
 	d.missing.Store(path, time.Now())
 }
@@ -1098,11 +1111,11 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 	if n <= 0 {
 		return
 	}
-	if alloc, ok := fileAllocated(ch.f); ok {
-		d.credit(path, alloc)
-	}
-	d.sizeCache.Store(path, sizeEntry{size: relOffset + int64(n), updatedAt: time.Now()})
 	tr.add(relOffset, relOffset+int64(n))
+	covered, _ := tr.snapshot()
+	alloc, _ := fileAllocated(ch.f)
+	d.credit(path, max(alloc, covered)) // st_blocks may lag: never below the bytes written
+	d.sizeCache.Store(path, sizeEntry{size: relOffset + int64(n), updatedAt: time.Now()})
 	if persistTails {
 		d.saveCoverage(ch.f, path, tailStart, tailLen, tr)
 	}
@@ -1161,14 +1174,12 @@ func (d *DiskWarmupCache) removeHashFiles(hash string) {
 		if strings.HasPrefix(name, prefix) && (strings.HasSuffix(name, warmupSuffix) || strings.HasSuffix(name, tailSuffix)) {
 			fullPath := filepath.Join(d.dir, name)
 
-			if fi, err := e.Info(); err == nil {
-				d.debit(fullPath, allocatedBytes(fi))
-			}
-
 			d.closeHandle(fullPath)
 			d.sizeCache.Delete(fullPath)
 			d.tailCoverage.Delete(fullPath)
-			removeFile(fullPath)
+			if removed(fullPath) {
+				d.debit(fullPath)
+			}
 			removeFile(fullPath + coverSuffix)
 		}
 	}
