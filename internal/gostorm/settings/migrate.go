@@ -92,7 +92,8 @@ func MigrateTorrents() {
 			if len(spec.DisplayName) > len(title) {
 				title = spec.DisplayName
 			}
-			log.TLogln("Migrate torrent", torr.Name, torr.Hash, torr.Size)
+			log.TLogln(migrateTorrentMsg, torr.Name, torr.Hash, torr.Size)
+			TorrentsMigrated.Add(1)
 			AddTorrent(&TorrentDB{
 				TorrentSpec: spec,
 				Title:       title,

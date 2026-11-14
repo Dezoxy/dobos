@@ -8,10 +8,18 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"flodni/internal/atomicfile"
 )
+
+// ParseFailed is true when the latest LoadConfig found a config file it could not parse
+// and fell back to the defaults. The startup report reads it.
+var ParseFailed atomic.Bool
+
+// parseFailedFmt is the log line for that case; operators grep for "Failed to parse".
+const parseFailedFmt = "[Config] WARNING: Failed to parse %s: %v"
 
 // Config holds all configurable parameters for the FUSE proxy
 type Config struct {
@@ -324,8 +332,10 @@ func LoadConfig() Config {
 		// V138: Support comments in JSON by stripping them before unmarshaling
 		cleanData := stripJSONComments(data)
 		if err := json.Unmarshal(cleanData, &cfg); err != nil {
-			log.Printf("[Config] WARNING: Failed to parse %s: %v", cfg.ConfigPath, err)
+			ParseFailed.Store(true)
+			log.Printf(parseFailedFmt, cfg.ConfigPath, err)
 		} else {
+			ParseFailed.Store(false)
 			log.Printf("[Config] Loaded settings from %s", cfg.ConfigPath)
 			cfg.fileAPIToken = cfg.APIToken
 			// Backward compat: if gostorm_url was not present in config, fall back to legacy torrserver_url key
