@@ -338,3 +338,17 @@ func TestWebhookRuleSeriesRenderAtZero(t *testing.T) {
 		}
 	}
 }
+
+func TestPathMapRelativePathCannotLeaveTheTarget(t *testing.T) {
+	root := t.TempDir()
+	lib := filepath.Join(root, "lib")
+	pmLink(t, root, "/outside/x.mkv", pmStub) // a symlink beside, not under, the mapped folder
+	pmLink(t, root, "/lib/in.mkv", pmStub)
+	m := map[string]string{"/": lib}
+	if got := pathMapStubNames([]string{"../outside/x.mkv"}, m); len(got) != 0 {
+		t.Fatalf("a relative path resolved outside the target: %v", got)
+	}
+	if got := pathMapStubNames([]string{"/in.mkv"}, m); len(got) != 1 {
+		t.Fatalf("an absolute path under the root prefix did not resolve: %v", got)
+	}
+}

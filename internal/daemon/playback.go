@@ -244,16 +244,19 @@ func pathMapStubNames(files []string, pathMap map[string]string) []string {
 	var names []string
 	logged := false
 	for _, f := range files {
+		if !filepath.IsAbs(f) {
+			continue // the media server reports absolute paths; a relative one could climb out
+		}
 		f = filepath.Clean(f)
-		best, mapped := "", ""
+		best, mapped, root := "", "", ""
 		for p, target := range pathMap { // prefixes are cleaned at load: no trailing slash
 			if len(p) < len(best) || (p != "/" && f != p && !strings.HasPrefix(f, p+"/")) {
 				continue
 			}
-			best, mapped = p, filepath.Join(target, strings.TrimPrefix(f, p))
+			best, mapped, root = p, filepath.Join(target, strings.TrimPrefix(f, p)), target
 		}
-		if mapped == "" {
-			continue
+		if mapped == "" || (mapped != root && !strings.HasPrefix(mapped, strings.TrimSuffix(root, "/")+"/")) {
+			continue // never look outside the mapped folder
 		}
 		fi, err := os.Lstat(mapped)
 		var dest string
