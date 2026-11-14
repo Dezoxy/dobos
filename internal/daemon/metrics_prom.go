@@ -178,13 +178,14 @@ func collectWarmupProm(w *promtext.Writer) {
 		promSample(st.WriteQueueDrops))
 	add := addWarmer.Stats()
 	w.Counter("flodni_warm_fills_total",
-		"Warm fills by trigger and outcome. trigger=mount: per-file records written when reads through the mount completed a file's windows (outcome=warmed when the engine holds a swarm delivery stamp, cached when it does not; needs the state database and index mode). trigger=add: attempts of warm on add (warm_on_add), one per file attempt; trigger=catchup: attempts of catch-up for files already in the library (warm_catchup_per_hour), which never evicts, so a full cache counts no_room; every outcome of both triggers is present from the start; a pause, a shutdown and a removal count nothing.",
+		"Warm fills by trigger and outcome. trigger=mount: per-file records written when reads through the mount completed a file's windows (outcome=warmed when the engine holds a swarm delivery stamp, cached when it does not; needs the state database and index mode). trigger=add: attempts of warm on add (warm_on_add), one per file attempt; trigger=catchup: attempts of catch-up for files already in the library (warm_catchup_per_hour), which never evicts, so a full cache counts no_room; trigger=next: fills of the next episode during a playback (warm_next_episode), which never evicts and does not pause for a playback; every outcome of these triggers is present from the start; a pause, a shutdown and a removal count nothing.",
 		append([]promtext.Sample{
 			promSample(warmFillsMountWarmed.Load(), lbl("trigger", "mount"), lbl("outcome", "warmed")),
 			promSample(warmFillsMountCached.Load(), lbl("trigger", "mount"), lbl("outcome", "cached")),
 		}, addWarmFillSamples(add)...)...)
 	collectAddWarmProm(w, add)
 	collectCatchupProm(w, catchupFiles)
+	collectWarmNextProm(w, warmNext)
 }
 
 // collectReadabilityProm writes the library by readability. The numbers come from the

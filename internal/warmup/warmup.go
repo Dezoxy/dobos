@@ -309,6 +309,7 @@ type DiskWarmupCache struct {
 	tailQueueOnce sync.Once
 	removals      atomic.Int64 // bumped by every removal; a waiter older than one drops its block
 	warmupStarts  sync.Map     // path -> time.Time (STARTING timestamp, for duration histogram)
+	lastRead      sync.Map     // FileKey -> *atomic.Int64 (unix nanoseconds of the last cache hit); kept only with the "read" eviction order
 	writeCh       chan warmupWrite
 }
 
@@ -983,6 +984,9 @@ func (d *DiskWarmupCache) ReadAt(hash string, fileID int, buf []byte, off int64)
 	}
 
 	n, err := ch.f.ReadAt(buf, off)
+	if n > 0 {
+		d.noteRead(hash, fileID)
+	}
 	return n, err
 }
 
@@ -1112,6 +1116,9 @@ func (d *DiskWarmupCache) ReadTail(hash string, fileID int, buf []byte, absolute
 	}
 
 	n, err := ch.f.ReadAt(buf, relOffset)
+	if n > 0 {
+		d.noteRead(hash, fileID)
+	}
 	return n, err
 }
 
@@ -1146,6 +1153,7 @@ func (d *DiskWarmupCache) removeHashFiles(hash string) {
 			d.tailCoverage.Delete(fullPath)
 			removeFile(fullPath)
 			removeFile(fullPath + coverSuffix)
+			d.lastRead.Delete(splitCacheName(strings.TrimSuffix(strings.TrimSuffix(name, tailSuffix), warmupSuffix)))
 		}
 	}
 }
