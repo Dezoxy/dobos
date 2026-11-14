@@ -2,10 +2,13 @@ package library
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"flodni/internal/gostorm/torr/utils"
+	"flodni/internal/metadb"
 
 	"github.com/anacrolix/torrent/bencode"
 	"github.com/anacrolix/torrent/metainfo"
@@ -147,5 +150,101 @@ func TestDefaultTrackersAreInGoStormBuiltinList(t *testing.T) {
 		if !builtin[tr] {
 			t.Errorf("%s is not in gostorm's built-in tracker list", tr)
 		}
+	}
+}
+
+// recEngine records every call the library makes into the engine, so a test can say a
+// path made none. It also takes a .torrent upload, which is engine contact too.
+type recEngine struct {
+	replaceEngine
+	cmu   sync.Mutex
+	calls []string
+}
+
+func (r *recEngine) rec(name string) {
+	r.cmu.Lock()
+	r.calls = append(r.calls, name)
+	r.cmu.Unlock()
+}
+
+func (r *recEngine) seen() []string {
+	r.cmu.Lock()
+	defer r.cmu.Unlock()
+	return append([]string(nil), r.calls...)
+}
+
+func (r *recEngine) AddTorrent(ctx context.Context, magnet, title string) (string, error) {
+	r.rec("AddTorrent")
+	return r.replaceEngine.AddTorrent(ctx, magnet, title)
+}
+func (r *recEngine) GetTorrentInfo(ctx context.Context, hash string, wait int) (*TorrentStats, error) {
+	r.rec("GetTorrentInfo")
+	return r.replaceEngine.GetTorrentInfo(ctx, hash, wait)
+}
+func (r *recEngine) RemoveTorrent(ctx context.Context, hash string) error {
+	r.rec("RemoveTorrent")
+	return r.replaceEngine.RemoveTorrent(ctx, hash)
+}
+func (r *recEngine) ListTorrents(ctx context.Context) ([]TorrentStats, error) {
+	r.rec("ListTorrents")
+	return r.replaceEngine.ListTorrents(ctx)
+}
+func (r *recEngine) ReadFileHead(ctx context.Context, hash string, id int, n int64) error {
+	r.rec("ReadFileHead")
+	return r.replaceEngine.ReadFileHead(ctx, hash, id, n)
+}
+func (r *recEngine) UploadTorrent(context.Context, []byte, string) (string, error) {
+	r.rec("UploadTorrent")
+	return "", nil
+}
+
+// An add the replace policy refuses never reaches the engine: no upload, no AddTorrent,
+// no metadata wait, no read. A private torrent is therefore not announced anywhere,
+// whether the caller sent its .torrent or a magnet (hard rule 3).
+func TestRefusedAddMakesNoEngineCall(t *testing.T) {
+	private := torrentFile(t, true)
+	src, err := ParseTorrentFile(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name   string
+		policy string
+		score  int
+		file   []byte
+		magnet string
+	}{
+		{"never, private .torrent", "never", 9, private, ""},
+		{"never, magnet", "never", 9, nil, "magnet:?xt=urn:btih:" + src.Hash + "&tr=http%3A%2F%2Fseeder.example%3A6969%2Fannounce"},
+		{"if-better with no score, private .torrent", "if-better", 0, private, ""},
+		{"if-better with a lower score, magnet", "if-better", 2, nil, "magnet:?xt=urn:btih:" + src.Hash},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			eng := &recEngine{}
+			eng.files = []FileStat{{ID: 1, Path: "Show.S01E01.mkv", Length: 1 << 20}}
+			reg := &memRegistry{rows: map[string]metadb.EpisodeEntry{}}
+			tv := t.TempDir()
+			m := New(Config{TVDir: tv, GoStorm: eng, Registry: reg, GoStormURL: "http://engine"})
+			oldStub := filepath.Join(tv, "Show", "Season.01", EpisodeFilename("Show", 1, 1, oldHash[:8]))
+			if err := WriteStub(oldStub, m.streamURL(oldHash, 1), 1000, "magnet:?xt=urn:btih:"+oldHash, ""); err != nil {
+				t.Fatal(err)
+			}
+			key := EpisodeKey("Show", 1, 1)
+			reg.rows[key] = metadb.EpisodeEntry{EpisodeKey: key, Hash: oldHash, FilePath: oldStub, QualityScore: 5}
+
+			resp, err := m.Add(context.Background(), AddRequest{
+				Type: "tv", Title: "Show", Season: 1, Episode: 1, Hash: src.Hash, Magnet: c.magnet,
+				TorrentFile: c.file, Replace: c.policy, QualityScore: c.score, MetadataWait: 1,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.Decision != DecisionKept || len(resp.Files) != 0 {
+				t.Fatalf("response = %+v, want kept with no files", resp)
+			}
+			if calls := eng.seen(); len(calls) != 0 {
+				t.Fatalf("a refused add called the engine: %v", calls)
+			}
+		})
 	}
 }
