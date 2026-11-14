@@ -248,11 +248,12 @@ func TestCloseSessionOutcome(t *testing.T) {
 // The new session fields: stalls and the slowest one come from the stall tracking,
 // reopens from the read path, and confirmed is sticky.
 func TestSessionRecordKeepaliveFields(t *testing.T) {
+	newTestApp(t)
 	resetKeepaliveState(t)
 	s := &TTFFSession{path: "/m/k.mkv", size: 100, hash: kaHashA}
 	s.openedAt.Store(time.Now().UnixNano())
 	sessions.Store(s.path, s)
-	playbackRegistry.Store(s.path, &PlaybackState{Path: s.path, Hash: kaHashA})
+	app.playbackRegistry.Store(s.path, &PlaybackState{Path: s.path, Hash: kaHashA})
 
 	s.recordRead(srcFetchBlock, 2500*time.Millisecond, 4096, 0)
 	s.recordRead(srcFetchBlock, 1500*time.Millisecond, 4096, 4096)
@@ -264,7 +265,7 @@ func TestSessionRecordKeepaliveFields(t *testing.T) {
 
 	// A webhook confirms the path while the session is open: the flag sticks, also
 	// after a stop webhook clears the state.
-	ps, _ := playbackRegistry.Load(s.path)
+	ps, _ := app.playbackRegistry.Load(s.path)
 	ps.(*PlaybackState).SetHealthy(true)
 	noteConfirmedLate(s.path)
 	ps.(*PlaybackState).IsHealthy = false
@@ -276,8 +277,9 @@ func TestSessionRecordKeepaliveFields(t *testing.T) {
 
 // A session registered for a path that is already confirmed starts confirmed.
 func TestSessionConfirmedAtRegister(t *testing.T) {
+	newTestApp(t)
 	resetKeepaliveState(t)
-	playbackRegistry.Store("/m/c.mkv", &PlaybackState{Path: "/m/c.mkv", Hash: kaHashA, IsHealthy: true})
+	app.playbackRegistry.Store("/m/c.mkv", &PlaybackState{Path: "/m/c.mkv", Hash: kaHashA, IsHealthy: true})
 	ttffRegister("/m/c.mkv", 100, kaHashA, 0, false, false)
 	ttffRegister("/m/u.mkv", 100, kaHashB, 0, false, false)
 	c, _ := sessions.Load("/m/c.mkv")

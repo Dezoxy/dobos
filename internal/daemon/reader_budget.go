@@ -92,19 +92,13 @@ var (
 		c := gc()
 		return c != nil && c.AttributeFillsToReader
 	}
-
-	// Since process start, for /metrics/prometheus. What the engine was asked to fetch as
-	// read-ahead past the head window edge for a read that started inside the window, on
-	// a file with no confirmed playback; and what the pump and the prefetches filled past
-	// the windows for a file with a session and no confirmed playback.
-	readaheadOvershootBytes atomic.Int64
-	attributedFillBytes     atomic.Int64
-
-	// Since process start, for /metrics/prometheus.
-	unconfirmedRefusedReads          atomic.Int64
-	unconfirmedHolds                 [2]atomic.Int64 // by rbHoldLifted, rbHoldRefused
-	unconfirmedConfirmedAfterRefusal atomic.Int64    // sessions, once each
 )
+
+// The reader budget counters live on App (app.go): readaheadOvershootBytes is what the
+// engine was asked to fetch as read-ahead past the head window edge for a read that
+// started inside the window, on a file with no confirmed playback; attributedFillBytes is
+// what the pump and the prefetches filled past the windows for a file with a session and
+// no confirmed playback; the unconfirmed* counters count refusals and holds.
 
 // Indexes into unconfirmedHolds.
 const (
@@ -133,9 +127,8 @@ const (
 // flodni_playback_webhook_match_rule_total, indexed by the constants above.
 var webhookRuleNames = [numWebhookRules]string{"basename", "path_map", "imdb", "fuzzy", "none"}
 
-// playbackWebhookRules counts play and resume webhooks by the rule that resolved them,
-// since process start.
-var playbackWebhookRules [numWebhookRules]atomic.Int64
+// App.playbackWebhookRules counts play and resume webhooks by the rule that resolved
+// them, since process start.
 
 func countPlaybackWebhook(matched bool) {
 	if matched {
@@ -242,7 +235,7 @@ func noteFillAttributed(path string, off, n, size int64) {
 		return
 	}
 	s := v.(*TTFFSession)
-	attributedFillBytes.Add(out)
+	app.attributedFillBytes.Add(out)
 	s.unconfirmedFill.Add(out)
 	// Phase a's over_margin line and its session count follow the margin, which fills move
 	// only with the switch on: with it off a pump fill must not log a reader that took
@@ -274,7 +267,7 @@ func readaheadOvershoot(off, target, fetchSize, size int64) int64 {
 // asked of the engine, not what it has downloaded.
 func noteReadaheadOvershoot(path string, off, target, fetchSize, size int64) {
 	if over := readaheadOvershoot(off, target, fetchSize, size); over > 0 && !playbackConfirmed(path) {
-		readaheadOvershootBytes.Add(over)
+		app.readaheadOvershootBytes.Add(over)
 	}
 }
 
@@ -437,19 +430,19 @@ func (h *MkvHandle) budgetGate(ctx context.Context, off int64, n int) syscall.Er
 		}
 		if s.closed.Load() {
 			if h.budgetHold.expire() {
-				unconfirmedHolds[rbHoldRefused].Add(1)
+				app.unconfirmedHolds[rbHoldRefused].Add(1)
 			}
 			return s.refuse(off, time.Since(start))
 		}
 		if !refusalEnforced() || !s.blocks(off, int64(n), h.size) {
 			if h.budgetHold.lift() {
-				unconfirmedHolds[rbHoldLifted].Add(1)
+				app.unconfirmedHolds[rbHoldLifted].Add(1)
 			}
 			return 0
 		}
 		if !time.Now().Before(deadline) {
 			if h.budgetHold.expire() {
-				unconfirmedHolds[rbHoldRefused].Add(1)
+				app.unconfirmedHolds[rbHoldRefused].Add(1)
 			}
 			return s.refuse(off, time.Since(start))
 		}
@@ -460,7 +453,7 @@ func (h *MkvHandle) budgetGate(ctx context.Context, off int64, n int) syscall.Er
 // first refusal of a session writes the "refused" line.
 func (s *TTFFSession) refuse(off int64, held time.Duration) syscall.Errno {
 	s.lastReadAt.Store(time.Now().UnixNano())
-	unconfirmedRefusedReads.Add(1)
+	app.unconfirmedRefusedReads.Add(1)
 	if s.refusedReads.Add(1) == 1 {
 		s.logReaderBudget("refused", &off, held.Milliseconds())
 	}
@@ -483,7 +476,7 @@ func noteConfirmedLate(path string) {
 	s.budgetFloor.Store(s.unconfirmedSwarm.Load() + s.unconfirmedCache.Load())
 	s.fillFloor.Store(s.unconfirmedFill.Load())
 	if s.refusedReads.Load() > 0 && s.confirmedAfterRefusal.CompareAndSwap(false, true) {
-		unconfirmedConfirmedAfterRefusal.Add(1)
+		app.unconfirmedConfirmedAfterRefusal.Add(1)
 	}
 	if s.overMarginAt.Load() == 0 || s.closed.Load() || s.budgetResolved.Load() {
 		return

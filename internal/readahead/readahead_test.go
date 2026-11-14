@@ -322,3 +322,26 @@ func TestConcurrentPutGet(t *testing.T) {
 		t.Fatalf("negative accounting: %d", total)
 	}
 }
+
+func TestEvictionsCountsPutDrops(t *testing.T) {
+	const budget = 4 * testBase
+	c := newTestCache(t, budget)
+	c.SwitchContext("a")
+	for i := int64(0); i < 4; i++ {
+		c.Put("a", i*testBase, (i+1)*testBase-1, pattern(testBase, byte(i)))
+	}
+	if got := c.Evictions(); got != 0 {
+		t.Fatalf("under budget: evictions = %d, want 0", got)
+	}
+	for i := int64(4); i < 10; i++ {
+		c.Put("a", i*testBase, (i+1)*testBase-1, pattern(testBase, byte(i)))
+	}
+	if got := c.Evictions(); got != 6 {
+		t.Fatalf("after 6 puts over budget: evictions = %d, want 6", got)
+	}
+	// An overwrite is not an eviction.
+	c.Put("a", 9*testBase, 10*testBase-1, pattern(testBase, 99))
+	if got := c.Evictions(); got != 6 {
+		t.Fatalf("overwrite changed evictions to %d", got)
+	}
+}

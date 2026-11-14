@@ -110,7 +110,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		targetYear := payload.Metadata.Year
 
 		logger.Debug(fmt.Sprintf("[DEBUG] Webhook for '%s' / '%s' (%d). Current registry:", targetTitle, seriesTitle, targetYear), "target_title", targetTitle, "series_title", seriesTitle, "target_year", targetYear)
-		playbackRegistry.Range(func(key, value interface{}) bool {
+		app.playbackRegistry.Range(func(key, value interface{}) bool {
 			logger.Info(fmt.Sprintf("  - Registered: %s", key.(string)))
 			return true
 		})
@@ -159,7 +159,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 				var bootPath string
 				var bootState *PlaybackState
 				bootCount := 0
-				playbackRegistry.Range(func(key, value interface{}) bool {
+				app.playbackRegistry.Range(func(key, value interface{}) bool {
 					path := key.(string)
 					state := value.(*PlaybackState)
 					if strings.Contains(path, sectionDir) && state.GetImdbID() == "" {
@@ -183,7 +183,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			var bestState *PlaybackState
 			bestLevel := 0 // higher = better match
 
-			playbackRegistry.Range(func(key, value interface{}) bool {
+			app.playbackRegistry.Range(func(key, value interface{}) bool {
 				path := key.(string)
 				filename := strings.ToLower(filepath.Base(path))
 				level := 0
@@ -240,7 +240,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		if exactMatch == "" || exactState == nil {
 			matchRule = ruleNone
 		}
-		playbackWebhookRules[matchRule].Add(1)
+		app.playbackWebhookRules[matchRule].Add(1)
 		if exactMatch != "" && exactState != nil {
 			wasPlaying := exactState.GetStatus()
 			exactState.SetHealthy(true)
@@ -317,7 +317,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		// Pass 2: Fuzzy matches only if no exact match.
 		if stopMatch == "" {
 			bestLevel := 0
-			playbackRegistry.Range(func(key, value interface{}) bool {
+			app.playbackRegistry.Range(func(key, value interface{}) bool {
 				path := key.(string)
 				filename := strings.ToLower(filepath.Base(path))
 				level := 0
@@ -377,7 +377,7 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 		imdbUnique := false
 		if stopMatch != "" && !matchByBasename && !stopMatchFromFuzzy && stopImdbID != "" {
 			n := 0
-			playbackRegistry.Range(func(_, v interface{}) bool {
+			app.playbackRegistry.Range(func(_, v interface{}) bool {
 				ps, ok := v.(*PlaybackState)
 				if !ok || ps == nil {
 					return true
@@ -404,12 +404,12 @@ func handlePlexWebhook(w http.ResponseWriter, r *http.Request) {
 			invalidateConfirmed()       // the keep-alive releases the torrent at once
 			logger.Info(fmt.Sprintf("[PLEX] STOP applied for: %s (Event: %s)", filepath.Base(stopMatch), payload.Event), "file", filepath.Base(stopMatch), "event", payload.Event)
 
-			if val, ok := activePumps.Load(stopMatch); ok {
+			if val, ok := app.activePumps.Load(stopMatch); ok {
 				ps := val.(*NativePumpState)
 				if ps.cancel != nil {
 					ps.cancel()
 				}
-				activePumps.Delete(stopMatch)
+				app.activePumps.Delete(stopMatch)
 				logger.Info(fmt.Sprintf("[PLEX] STOP: force-terminated pump for %s", filepath.Base(stopMatch)), "file", filepath.Base(stopMatch))
 			}
 

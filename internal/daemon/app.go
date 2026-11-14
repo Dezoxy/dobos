@@ -1,0 +1,43 @@
+package daemon
+
+import (
+	"sync"
+	"sync/atomic"
+)
+
+// App holds the process-wide read-path state that the FUSE handle, the pump, the
+// webhook handler and the cleanup manager share. One instance is created in Run()
+// and published as app before any goroutine starts; tests install a fresh one with
+// newTestApp so they stop sharing state.
+type App struct {
+	activeHandles      sync.Map // key: *MkvHandle, value: bool
+	inFlightPrefetches sync.Map // key: "path:offset", value: bool
+	// inFlightFetches dedups the sync FetchBlock fallback: concurrent misses in the same chunk
+	// share one fetch instead of each running FetchBlock independently.
+	inFlightFetches  sync.Map // key: "path:chunkAlignedOffset", value: *fetchFlight
+	activePumps      sync.Map // Map[string]*NativePumpState: one pump per file path
+	pumpTimers       sync.Map // key: path, value: *time.Timer
+	priorityTimers   sync.Map // key: path, value: *time.Timer
+	playbackRegistry sync.Map // path -> *PlaybackState
+
+	// controlToken is the bearer token the control server enforces, fixed at start-up.
+	// Empty means the port is open. Never read gc().APIToken to decide that. It is read
+	// once in Run() and shared by the auth middleware and the confirm gate (apiTokenSet).
+	controlToken string
+
+	// startup collects the startup stages and emits the one [Startup] report.
+	startup *startupReporter
+
+	// Reader budget counters, since process start, for /metrics/prometheus.
+	readaheadOvershootBytes          atomic.Int64
+	attributedFillBytes              atomic.Int64
+	unconfirmedRefusedReads          atomic.Int64
+	unconfirmedHolds                 [2]atomic.Int64 // by rbHoldLifted, rbHoldRefused
+	unconfirmedConfirmedAfterRefusal atomic.Int64    // sessions, once each
+	playbackWebhookRules             [numWebhookRules]atomic.Int64
+}
+
+func newApp() *App { return &App{startup: &startupReporter{}} }
+
+// app is set once in Run() before any goroutine starts and never reassigned there.
+var app *App

@@ -54,13 +54,13 @@ func TestFileFactsConfirmedNeedsAnOpenConfirmedSession(t *testing.T) {
 	const path = "/mnt/tv/Show/Show.S01E01.mkv"
 	k := warmup.FileKey{Hash: "ddeeff", FileIdx: 2}
 	ps := &PlaybackState{Path: path, OpenedAt: time.Now()}
-	playbackRegistry.Store(path, ps)
+	app.playbackRegistry.Store(path, ps)
 	tailFillTargets.Store(path, tailFillTarget{hash: "DDEEFF", fileID: 2, size: 1})
 	h := &MkvHandle{path: path}
 	t.Cleanup(func() {
-		playbackRegistry.Delete(path)
+		app.playbackRegistry.Delete(path)
 		tailFillTargets.Delete(path)
-		activeHandles.Delete(h)
+		app.activeHandles.Delete(h)
 	})
 
 	if libraryFileFacts(k.Hash, k.FileIdx).Confirmed {
@@ -72,7 +72,7 @@ func TestFileFactsConfirmedNeedsAnOpenConfirmedSession(t *testing.T) {
 	if libraryFileFacts(k.Hash, k.FileIdx).Confirmed {
 		t.Fatal("confirmed with no open handle (a state restored at start)")
 	}
-	activeHandles.Store(h, true)
+	app.activeHandles.Store(h, true)
 	if !libraryFileFacts(k.Hash, k.FileIdx).Confirmed {
 		t.Fatal("an open, confirmed session is not reported")
 	}

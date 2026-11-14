@@ -44,6 +44,9 @@ type Cache struct {
 	currentSessionID int64
 	isEvicting       int32 // atomic flag prevents concurrent global evictions
 
+	// evictions counts chunks Put dropped to stay under budget; only rises.
+	evictions atomic.Int64
+
 	pieceLens sync.Map // path → int64 adaptive chunk size (aligned to piece boundary)
 }
 
@@ -382,6 +385,7 @@ func (c *Cache) Put(p string, start, end int64, d []byte) {
 			shard.total -= evictedSize
 			delete(shard.buffers, v)
 			newUsed = atomic.AddInt64(&c.used, -evictedSize)
+			c.evictions.Add(1)
 			c.recycle(old.data)
 		}
 	}
@@ -502,3 +506,7 @@ func (c *Cache) triggerGlobalEviction(activePath string, activeSessionID int64) 
 		s.mu.Unlock()
 	}
 }
+
+// Evictions returns how many chunks Put has dropped to stay under budget since the cache was
+// built. Chunks removed by the stale sweep are not counted. Lock-free.
+func (c *Cache) Evictions() int64 { return c.evictions.Load() }
