@@ -135,6 +135,7 @@ func collectProm(w *promtext.Writer) {
 	collectReadabilityProm(w)
 	collectUnstoredProm(w)
 	collectSwarmProm(w)
+	collectScrapeProm(w)
 	collectReadAheadProm(w)
 	collectStubIndexProm(w)
 

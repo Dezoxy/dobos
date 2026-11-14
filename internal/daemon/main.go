@@ -423,6 +423,12 @@ func Run() {
 
 	startWebhookStatus(webhookStatus, backgroundStopChan)
 	startSwarmSnapshot(engineSwarmSource, backgroundStopChan, logger)
+	if net, err := torr.ScrapeNetwork(); err != nil {
+		// Fail closed: with a proxy that cannot be used, a scrape would leave from the real address.
+		logger.Printf("[Scrape] tracker scrape not started: %v", err)
+	} else {
+		startTrackerScraper(gc(), storedScrapeTargets, torr.ScrapeReady, net, backgroundStopChan, logger)
+	}
 
 	finishGlobalInodeMapInit(logger)
 
@@ -548,6 +554,8 @@ func Run() {
 		healthStore = stateDB
 	}
 	mux.HandleFunc("/api/torrents/health", newTorrentsHealthHandler(healthStore, fileStates.WarmSnapshot, logger))
+	mux.HandleFunc("/api/torrents/scrape", handleScrapeTrigger)
+	mux.HandleFunc("/api/torrents/scrape/status", handleScrapeStatus)
 	mux.HandleFunc("/api/health", newHealthChecks().handler)
 	mux.HandleFunc("/api/warmup/evict", newWarmupEvictHandler(evictWarmupTo))
 

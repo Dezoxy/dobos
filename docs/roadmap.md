@@ -400,8 +400,8 @@ others are designed, not built.
 
 The owner moved every entry of [ideas.md](ideas.md) here on 2026-11-14.
 Waves 1 to 3 are built in that order; steps 22 to 25 are gated and wait for
-the measurement they name. Nothing in this section is built yet: every step is
-designed, not built (hard rule 5).
+the measurement they name. Apart from step 26, nothing in this section is
+built: every other step is designed, not built (hard rule 5).
 
 **Wave 1 (being built now)**
 
@@ -589,6 +589,16 @@ designed, not built (hard rule 5).
     timeout; set `FLODNI_STALL_DUMP=<n>` for the dump and
     `FLODNI_STALL_POKE=1` for the wake experiment (`tests/e2e` passes them
     through as `E2E_STALL_DUMP` and `E2E_STALL_POKE`). Designed, not built.
+26. **Tracker scrape in `/api/torrents/health`.** Finished: a periodic and
+    on-demand scrape of each stored torrent's own trackers (BEP 48 over HTTP,
+    BEP 15 over UDP) in `internal/scrape`, one worker per tracker host with
+    its own pacing and backoff, reported per torrent as `scrape` plus a
+    top-level `scrape_pass`, `POST /api/torrents/scrape` and
+    `GET /api/torrents/scrape/status`, settings `tracker_scrape_hours`,
+    `tracker_scrape_batch` and `tracker_scrape_pace_ms`, and four metrics. A
+    private torrent is asked at its own trackers only; no log, field or metric
+    holds an announce URL. Experimental in the README until a consumer runs
+    against it; tested against local fake trackers only.
 
 The vendored engine stays as it is apart from fixes, and advisories for
 `anacrolix/torrent` are watched.

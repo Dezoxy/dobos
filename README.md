@@ -405,8 +405,8 @@ set; those keep their per-torrent meaning.
 
 ### Swarm signal (experimental)
 
-Each torrent object also carries a `swarm` key, always present and always the
-last key. It is **experimental**, outside the contract sentence above and the
+Each torrent object also carries a `swarm` key, always present, followed only
+by `scrape` (below). It is **experimental**, outside the contract sentence above and the
 stable-names promise, like `files`. It is `null` for a torrent the engine does
 not have open: Flodni never wakes a closed torrent to fill it, and a torrent
 with no record is not listed here at all.
@@ -427,6 +427,102 @@ with no record is not listed here at all.
   snapshot.
 - Not a verdict: zero peers on an awake torrent is a fact about now, not a
   dead swarm. Tested against a fake engine only; not run against a real swarm.
+
+### Tracker scrape (experimental)
+
+**Experimental** until a consumer has run against it, outside the contract
+sentence above like `files` and `swarm`. Flodni asks each stored torrent's own
+trackers how many seeders and leechers they know and reports the best answer
+per torrent. Built and tested against local fake trackers (HTTP and UDP), not
+against a real tracker.
+
+- **Which trackers.** The announce list of the torrent's stored record, as it
+  is. A private torrent (BEP 27), and one whose metadata is not known yet and
+  so might be, is asked at its own trackers only: every tier of its record
+  that holds a host of the public lists Flodni adds on its own account
+  (matched by lower-case host, so a rotated-out entry, another path, scheme or
+  case still matches) is dropped whole, and there is no DHT, PEX or public
+  fallback in this path. Residual gap: a record saved before the retracker
+  gate keeps no record of where a tier came from, so a legacy tier in which no
+  entry's host is in any current list cannot be told apart from the torrent's
+  own. HTTP trackers are scraped at the BEP 48 URL (the last
+  path segment `announce` becomes `scrape`; a tracker without one is skipped
+  and counted), UDP trackers per BEP 15. Other schemes are skipped.
+- **Passes.** A pass scrapes every stored torrent once. Hashes of one tracker
+  go together: `tracker_scrape_batch` per HTTP request (default 100, 1 to 200;
+  UDP keeps its 70 per packet). Each tracker host has its own worker, with its
+  own timeout (10 s per request) and backoff: at least `tracker_scrape_pace_ms`
+  (default 1000, 100 to 60000) between two requests to one host, doubling after
+  each failed request (30 s, up to 6 hours or the interval), at least the
+  tracker's own `min_request_interval` or failure reason interval, and after
+  three failures in a row the host's remaining torrents of that pass get an
+  error. A slow or failing host never delays another host. A block longer than
+  2 minutes (a long backoff, or a tracker's long minimum interval) is never
+  waited out inside a pass: the host's remaining torrents end that pass with
+  `host backing off`, and the next pass serves the torrents tried longest ago
+  first. A pass therefore ends in minutes, not hours.
+  **Network.** HTTP scrapes use the engine's tracker proxy and user agent when
+  one is configured; with a proxy configured UDP trackers are not scraped
+  (UDP cannot go through it; logged as `udp skipped: proxy`), and an invalid
+  proxy setting stops the scrape from starting. Before the torrent store is
+  open (the first seconds after start) a pass is refused, `POST` answers 503.
+  Answers over 512 KiB, nesting beyond 6 levels and redirects are refused.
+- **Schedule.** `tracker_scrape_hours` (default 24, 0 to 8760) is the interval
+  between scheduled passes, each start varying by up to 10 %, and each host
+  waiting a random part of interval/48 (at most 10 minutes) so hosts do not
+  start together. **0 turns the schedule off**; the on-demand route still
+  works. The settings are read at start-up. Results are in memory: after a
+  restart a torrent shows `scrape: null` until the next pass reaches it.
+- **On demand.** `POST /api/torrents/scrape` (all torrents) or
+  `?hash=<40 hex>` (one) starts a pass and answers 202 at once with
+  `{"run_id": N, "started_at": ...}`. While a pass runs a second POST answers
+  409 with the running `run_id`; an unknown hash is 404. Both routes need the
+  bearer token when `api_token` is set. A manual pass has no start jitter but
+  keeps the pacing and backoff.
+- **Status.** `GET /api/torrents/scrape/status` returns the latest pass:
+  `run_id`, `trigger` (`schedule` or `manual`), `scope` (`all` or `one`),
+  `state` (`running` or `done`), `started_at`, `finished_at` (null while
+  running), `torrents`, `ok`, `errors`, `skipped` (counts of torrents:
+  answered, ended in an error, nothing to scrape), and `previous` with the
+  finished pass before it (or null).
+- **Health.** Each torrent object has `scrape`, null until a pass has reached
+  it:
+
+| Field | Meaning |
+|---|---|
+| `seeders`, `leechers` | The most seeders among the trackers that **answered with a count** (the leechers of that answer): 0 if every tracker that answered said 0; **null, never 0, when no tracker gave a count** (all failed, or all omitted the hash). For HTTP only a hash present in the tracker's `files` is a count (0 included); an omitted hash is "not known to this tracker" and is not counted. UDP answers a fixed triple per hash, so its 0 stays 0, and on a 0 tie an HTTP answer wins over a UDP one. |
+| `answered`, `failed`, `unscrapable`, `unknown` | Integer facts about the torrent's trackers in that pass: gave a count; failed, timed out or were skipped as `host backing off`; cannot be scraped (`wss://` or another scheme, no BEP 48 scrape URL, UDP behind a proxy); answered over HTTP and omitted the hash. Flodni reports the facts and **the verdict is the caller's**: a 0 with `failed` above 0 is a weaker signal than a 0 with `failed` 0, and a 0 with `answered` 1 of several trackers is weaker than a 0 from all of them. |
+| `source` | `http` or `udp`: the answer the numbers came from (a UDP 0 may mean unknown, so a consumer can weight it lower); null when there are no numbers. |
+| `scraped_at` | RFC 3339 UTC time the entry was written. |
+| `error` | Set only when no tracker gave a count, else `null`: the first failure as the host (`scheme://host:port`) and a failure class (`timeout`, `connection failed`, `http status N`, `tracker: <its reason>`, `malformed response`, `response too large`, `host backing off`, `internal error`, ...), or `unknown_to_tracker` when the trackers that answered all omitted the hash. Never a URL. |
+| `run_id` | The pass that wrote the entry. |
+
+  The response also has a top-level `scrape_pass` with the `run_id` and
+  `finished_at` of the last finished pass over all torrents (null before the
+  first; a one-torrent pass or one cut short by a shutdown does not count).
+  If one tracker of a torrent answered and another failed, the answer is used
+  and there is no error; `failed` says so. A torrent a pass did not reach (a
+  one-torrent pass, a shutdown, a torrent added during the pass, no scrapeable
+  tracker) keeps its
+  previous entry with its old `run_id`; nothing writes an empty or zero entry.
+  Entries of torrents that are no longer stored are dropped at the next full
+  pass.
+- **Secrets.** Announce URLs carry a passkey. No log line, health field,
+  status field or metric holds an announce or scrape URL, a path or a query;
+  they name the host only, and text a tracker sends back has every token of
+  the announce URL (case-insensitively, longest first, and the first and last
+  8 characters of a long one) replaced by `***` and is cut to 80 characters.
+- **Metrics.** `flodni_tracker_scrapes_total{result}` (`ok`, `error`,
+  `skipped`, counted per torrent and tracker; a hash a tracker omitted
+  counts as `error`), `flodni_torrents_by_seeders{bucket}`
+  (`0`, `1-2`, `3+`, torrents with numbers only),
+  `flodni_tracker_scrape_pass_running` (0 or 1) and
+  `flodni_tracker_scrape_last_pass_finished_timestamp_seconds` (absent before
+  the first full pass).
+- Not covered: a tracker that answers 0 for a torrent it does not know reads
+  as 0 seeders (BEP 48 gives no way to tell them apart), trackers behind
+  redirects or authentication other than the URL, IPv6 literals in UDP
+  trackers are untested.
 
 ## Session log
 
@@ -1309,6 +1405,10 @@ scraper on the same host or Docker network.
 | `flodni_readability_torrents` | gauge | `state` | Library torrents by readability: `failed` has a failure streak, `ok` has none and a read served by the swarm, `never_read` is the rest (no record, or a streak reset by a metainfo without a read). Not exported when the state database is off. |
 | `flodni_library_torrents_unstored` | gauge | none | Library torrents with no stored engine record holding metainfo, counted once at startup after the library walk and not refreshed. Not exported until counted. See "A stub the engine does not store". |
 | `flodni_stub_index_mismatch_total` | counter | none | Library paths whose stub file index differs from the file an open resolved by size and name, once per path per process. Non-zero means a stale stub. See "A stub whose file index is stale". |
+| `flodni_tracker_scrapes_total` | counter | `result` | Experimental. Tracker scrapes per torrent and tracker: `ok` (answered), `error` (the request failed or the answer left the torrent out), `skipped` (no BEP 48 scrape URL or an unsupported scheme). All values present from 0 once the scraper runs. See Tracker scrape. |
+| `flodni_torrents_by_seeders` | gauge | `bucket` | Experimental. Torrents by the seeders of their latest scrape answer: `0`, `1-2`, `3+`. A torrent with an error entry is in none. |
+| `flodni_tracker_scrape_pass_running` | gauge | none | Experimental. 1 while a scrape pass runs. |
+| `flodni_tracker_scrape_last_pass_finished_timestamp_seconds` | gauge | none | Experimental. Unix time the last finished full pass ended; absent before the first. |
 | `flodni_readahead_cache_bytes` | gauge | none | Bytes in the read-ahead cache. |
 | `flodni_readahead_cache_active_bytes` | gauge | none | The part that is not stale. |
 | `flodni_readahead_cache_entries` | gauge | none | Entries in the cache. |
