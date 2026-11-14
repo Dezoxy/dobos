@@ -2,10 +2,13 @@ package library
 
 import (
 	"context"
+	"encoding/base32"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -207,6 +210,9 @@ func TestPartlyAllowedPackWritesTheAllowedEpisodes(t *testing.T) {
 	if len(*e.added) != 1 || len((*e.added)[0].files) != 1 {
 		t.Fatalf("OnAdded = %+v: only the written episode may be announced", *e.added)
 	}
+	if n := countOf(e.eng.seen(), "RemoveTorrent"); n != 0 {
+		t.Fatalf("RemoveTorrent calls = %d: the old release still has a kept episode, its torrent must stay", n)
+	}
 	if reads := countOf(e.eng.seen(), "ReadFileHead"); reads != 1 {
 		t.Fatalf("reads = %d, want one gate read for the episode that replaces", reads)
 	}
@@ -373,4 +379,91 @@ func TestSampledReadChoosesOnlyAmongTheReplacingEpisodes(t *testing.T) {
 	if !reflect.DeepEqual(got, []int{11, 13}) {
 		t.Fatalf("read file ids = %v, want [11 13]: only replacing episodes may be sampled", got)
 	}
+}
+
+// With no prior row, two adds of different releases of one episode, both never: the
+// episode lock lets exactly one write; the other finds its row and is kept.
+func TestConcurrentNeverAddsWithNoPriorWriteExactlyOne(t *testing.T) {
+	for range 20 {
+		e := newPolicyEnv(t, nil)
+		var wg sync.WaitGroup
+		res := make([]*AddResponse, 2)
+		errs := make([]error, 2)
+		for i, h := range []string{newHash, charOtherHash} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				res[i], errs[i] = e.m.Add(context.Background(), AddRequest{
+					Type: "tv", Title: "Show", Hash: h, Season: 1, Episode: 1, Replace: "never", MetadataWait: 1})
+			}()
+		}
+		wg.Wait()
+		if errs[0] != nil || errs[1] != nil {
+			t.Fatalf("errors: %v, %v", errs[0], errs[1])
+		}
+		added, kept := 0, 0
+		for _, r := range res {
+			switch r.Decision {
+			case DecisionAdded:
+				added++
+			case DecisionKept:
+				kept++
+			}
+		}
+		if added != 1 || kept != 1 {
+			t.Fatalf("decisions %q and %q, want one added and one kept", res[0].Decision, res[1].Decision)
+		}
+		if got := mkvs(t, e.tv); len(got) != 1 {
+			t.Fatalf("stubs = %v, want exactly one", got)
+		}
+	}
+}
+
+// A registry row whose stub is gone holds no release: never does not keep it.
+func TestStaleRegistryRowCountsAsNoPrior(t *testing.T) {
+	e := newPolicyEnv(t, map[int]int{1: 5})
+	if err := os.Remove(e.oldStub[1]); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := e.add(1, "never", 0)
+	if err != nil || resp.Decision != DecisionAdded || len(resp.Files) != 1 {
+		t.Fatalf("resp = %+v, %v", resp, err)
+	}
+	if len(resp.Replaced) != 0 {
+		t.Fatalf("replaced = %+v, want none: there was no stub", resp.Replaced)
+	}
+}
+
+// A base32 request names the release by its hex hash for the stub name: a dry run of a
+// release already filed is already_present, not a replacement of its own stub.
+func TestBase32DryRunOfAFiledReleaseIsAlreadyPresent(t *testing.T) {
+	e := newPolicyEnv(t, nil)
+	if _, err := e.add(1, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	b32 := base32.StdEncoding.EncodeToString(mustHex(t, newHash))
+	resp, err := e.m.Add(context.Background(), AddRequest{
+		Type: "tv", Title: "Show", Hash: strings.ToLower(b32), Season: 1, Episode: 1, Replace: "never", DryRun: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Decision != DecisionAlreadyPresent {
+		t.Fatalf("decision = %q, want already_present: %+v", resp.Decision, resp)
+	}
+	// A base32 dry run of a release not yet filed plans the hex-tagged stub.
+	e2 := newPolicyEnv(t, nil)
+	resp, err = e2.m.Add(context.Background(), AddRequest{
+		Type: "tv", Title: "Show", Hash: strings.ToLower(b32), Season: 1, Episode: 1, DryRun: true})
+	if err != nil || resp.Decision != DecisionAdded || len(resp.Files) != 1 || resp.Files[0].Path != e2.newStub(1) {
+		t.Fatalf("resp = %+v, %v", resp, err)
+	}
+}
+
+func mustHex(t *testing.T, h string) []byte {
+	t.Helper()
+	b, err := hex.DecodeString(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

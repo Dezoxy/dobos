@@ -175,7 +175,7 @@ proposal.
 | Case | Result |
 |---|---|
 | Add of a release already filed | 200 `already_present`, as today |
-| Add refused by `replace` | 200 with `"decision": "kept"`; `files` is empty; nothing written, no engine contact |
+| Add refused by `replace` | 200 with `"decision": "kept"`; `files` is empty; nothing written; a single episode makes no engine contact, a pack has already fetched its metadata |
 | Replacement delivers no data | 422, as today; existing files kept |
 | Confirm of an unknown `(hash, index)` | 404 |
 | Confirm repeated | 200, state unchanged except the played time |
@@ -228,8 +228,10 @@ An empty `files` therefore always means "nothing filed by this request".
 Positive:
 
 - A caller can refuse, preview and confirm without scraping logs.
-- `never` and `if-better` refusals contact no swarm, so they cannot leak a
-  private torrent's tracker contact.
+- `never` and `if-better` refusals of a single episode contact no swarm, so
+  they cannot leak a private torrent's tracker contact. A pack fetches its
+  metadata once before its per-episode verdicts, even if every episode is then
+  refused; that path is the add's own and changes nothing in peer discovery.
 - No second API to maintain; existing callers are untouched.
 
 Negative / accepted trade-offs:
@@ -246,8 +248,10 @@ Negative / accepted trade-offs:
 
 - **Private torrents.** `add` starts a torrent and keeps today's magnet and
   tracker handling. `dry_run` starts nothing: no engine call, so no announce
-  at all, private or public. A refused add (`never`, `if-better`, `kept`)
-  makes no engine call either. Tests below pin both with a recording fake.
+  at all, private or public. A refused single-episode add (`never`,
+  `if-better`, `kept`) makes no engine call either; a pack fetches its metadata
+  before its verdicts, so a refused pack has already contacted the engine (the
+  add's own handling, unchanged). Tests below pin both with a recording fake.
 - **Concurrent adds.** Two adds for the same episode with different policies
   race on the registry key today and are serialised by the per-episode lock
   (`hashLocks`, `showLocks`). The policy check must run under that lock.

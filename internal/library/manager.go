@@ -442,7 +442,8 @@ func (m *Manager) add(ctx context.Context, req AddRequest) (*AddResponse, error)
 
 	// A single episode is decided here, under its lock and before the engine is
 	// contacted: a refused add costs no metadata wait and touches no swarm (a private
-	// torrent is not announced). A pack's episodes are only known after metadata.
+	// torrent is not announced). A pack's episodes are only known after metadata, so a
+	// pack fetches it once before its verdicts, even when every episode is then refused.
 	if kind == "tv" && req.Episode > 0 && req.Replace != ReplaceAlways {
 		key, err := m.episodeKey(req.Title, req.Season, req.Episode)
 		if err != nil {
@@ -531,7 +532,8 @@ func (m *Manager) add(ctx context.Context, req AddRequest) (*AddResponse, error)
 	}
 	if len(res.files) == 0 && len(res.skipped) > 0 {
 		// Every episode of the pack was refused: nothing was written, so nothing is
-		// announced and the torrent goes unless another stub uses it.
+		// announced and the torrent goes unless another stub uses it. The metadata fetch
+		// already happened: only a single episode is refused before any engine contact.
 		dropped[hash] = true
 		m.cfg.Logger.Printf("[LibraryAPI] Kept %s: every episode of %s refused by replace=%s", req.Title, hash[:8], req.Replace)
 		return &AddResponse{Hash: hash, Title: req.Title, Type: kind, Files: []AddedFile{},
@@ -947,6 +949,15 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 		if ok && prev != nil {
 			p.entry, p.hadEntry = *prev, true
 		}
+		// The policy read and this one must agree: the row about to be replaced is
+		// judged again, so a change between them cannot turn into a replacement the
+		// policy refused.
+		if req.Replace != ReplaceAlways {
+			if v, verr := m.replaceVerdict(req.Replace, key, path, req.QualityScore); verr != nil || v.refused {
+				rollback()
+				return addResult{}, errf(http.StatusConflict, "the registry entry for %s changed during the add", key)
+			}
+		}
 		if _, err := os.Stat(path); err == nil {
 			p.hadStub = true
 		}
@@ -1002,13 +1013,17 @@ func (m *Manager) addEpisodes(ctx context.Context, req AddRequest, hash, magnet 
 			continue
 		}
 		old := ReplacedFile{Path: p.entry.FilePath, Hash: p.entry.Hash, FileIndex: readStub(p.entry.FilePath).FileIndex}
+		_, statErr := os.Stat(p.entry.FilePath)
+		stubWasThere := statErr == nil
 		if err := m.deleteStub(ctx, p.entry.FilePath); err != nil {
 			// Leaving it there keeps its torrent alive, which is the safe half of the
 			// failure, but it is a leak either way.
 			m.cfg.Logger.Printf("[LibraryAPI] WARNING: cannot remove the replaced stub %s: %v", p.entry.FilePath, err)
 			continue
 		}
-		replaced = append(replaced, old)
+		if stubWasThere { // a row whose stub was already gone replaced no file
+			replaced = append(replaced, old)
+		}
 		if p.entry.Hash != "" && p.entry.Hash != hash {
 			dropped[p.entry.Hash] = true
 		}
@@ -1038,6 +1053,10 @@ func (m *Manager) replaceVerdict(policy, key, path string, score int) (replaceDe
 	if !ok || prev == nil || prev.FilePath == "" || prev.FilePath == path {
 		return replaceDecision{}, nil
 	}
+	// A row whose stub is gone holds no release: there is nothing to keep or replace.
+	if _, serr := os.Stat(prev.FilePath); os.IsNotExist(serr) {
+		return replaceDecision{}, nil
+	}
 	switch policy {
 	case ReplaceNever:
 		return replaceDecision{refused: true, reason: "replace=never: the episode is already filed"}, nil
@@ -1060,6 +1079,18 @@ func (m *Manager) dryRun(req AddRequest, kind, hash string) (*AddResponse, error
 		DryRun: true, Readability: ReadabilityUnchecked, Decision: DecisionAdded}
 	if kind == "movie" {
 		resp.Files = append(resp.Files, AddedFile{Path: m.moviePath(req, hash), FileIndex: req.FileIndex})
+		return resp, nil
+	}
+	// A base32 spelling slices differently in alreadyPresent's stub name than the hex
+	// the engine reports, so a filed release can slip past it: look again by the hex
+	// spelling, for the preview only (the real add keeps v0.1.0's behaviour).
+	if existing, err := m.alreadyPresent(kind, canonicalHashKey(hash), req); err != nil {
+		return nil, err
+	} else if len(existing) > 0 {
+		for i := range existing {
+			existing[i].FusePath = ""
+		}
+		resp.Files, resp.AlreadyPresent, resp.Decision = existing, true, DecisionAlreadyPresent
 		return resp, nil
 	}
 	key, err := m.episodeKey(req.Title, req.Season, req.Episode)
@@ -1087,7 +1118,10 @@ func (m *Manager) dryRun(req AddRequest, kind, hash string) (*AddResponse, error
 }
 
 // singleEpisodePath is where a single-episode add of this release would write its stub.
+// The tag is the hex spelling, as the engine reports it, so a base32 request names the
+// stub the real add writes. Only the pre-engine check and the dry run use it.
 func (m *Manager) singleEpisodePath(req AddRequest, hash string) string {
+	hash = canonicalHashKey(hash)
 	return filepath.Join(m.cfg.TVDir, ShowFolderName(req.Title, req.FirstAirDate),
 		fmt.Sprintf("Season.%02d", req.Season),
 		EpisodeFilename(req.Title, req.Season, req.Episode, hash[:8]))
