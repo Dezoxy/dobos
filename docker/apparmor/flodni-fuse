@@ -27,7 +27,11 @@ profile flodni-fuse flags=(attach_disconnected,mediate_deleted) {
 
   # The one mount Flodni needs: fusermount3 mounting the FUSE view. The fstype
   # is "fuse" (go-fuse sets no subtype), "fuse.*" covers a subtype later.
-  mount fstype=fuse* -> /mnt/flodni-virtual/,
+  mount fstype=fuse options in (rw, nosuid, nodev) -> /mnt/flodni-virtual/,
+  mount fstype=fuse.* options in (rw, nosuid, nodev) -> /mnt/flodni-virtual/,
+  # Never a block-device FUSE or the FUSE control filesystem.
+  deny mount fstype=fuseblk,
+  deny mount fstype=fusectl,
 
   # fusermount3 -u / -uz on the same path (entrypoint and shutdown).
   # docker-default allows every umount; this allows one.
