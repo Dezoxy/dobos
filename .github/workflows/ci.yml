@@ -65,7 +65,7 @@ jobs:
       # private-torrent guards pin CLAUDE.md hard rule 3.
       - name: Engine private-torrent and request-server tests
         working-directory: internal/anacrolix-torrent
-        run: go test -race -count=1 -run 'Private|PeerRequestServer' .
+        run: go test -race -count=1 -run 'Private|PeerRequestServer|PeerWake' .
 
   workflow-lint:
     name: Workflow lint (actionlint, zizmor)

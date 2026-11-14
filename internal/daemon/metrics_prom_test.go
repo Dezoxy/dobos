@@ -76,6 +76,7 @@ func TestHandlePrometheus(t *testing.T) {
 		"flodni_unconfirmed_read_bytes_total", "flodni_unconfirmed_read_sessions_total",
 		"flodni_unconfirmed_read_refused_reads_total", "flodni_unconfirmed_read_holds_total",
 		"flodni_unconfirmed_read_confirmed_after_refusal_total",
+		"flodni_reader_budget_readahead_overshoot_bytes_total", "flodni_reader_budget_attributed_fill_bytes_total",
 		"flodni_playback_webhooks_received_total", "flodni_playback_webhook_match_rule_total", "flodni_warm_fills_total",
 		"flodni_playback_webhook_last_timestamp_seconds", "flodni_unconfirmed_read_last_session_timestamp_seconds", "flodni_warning",
 		"flodni_torrent_idle_closes_total", "flodni_torrent_reopens_total", "flodni_read_stalls_total",
@@ -83,7 +84,7 @@ func TestHandlePrometheus(t *testing.T) {
 		"flodni_wake_refused_total",
 		"flodni_warm_fill_bytes_total", "flodni_warm_cache_failures_total", "flodni_warm_queue_files", "flodni_warm_paused",
 		"flodni_stub_index_mismatch_total",
-		"flodni_engine_short_reads_total", "flodni_engine_short_read_repairs_total", "flodni_sessions_open",
+		"flodni_engine_short_reads_total", "flodni_engine_short_read_repairs_total", "flodni_engine_peer_redials_total", "flodni_sessions_open",
 		"go_goroutines", "go_memstats_heap_inuse_bytes", "go_memstats_sys_bytes", "go_gc_cycles_total",
 	} {
 		if !strings.Contains(body, "# TYPE "+fam+" ") {
@@ -119,6 +120,8 @@ func TestHandlePrometheus(t *testing.T) {
 		`flodni_unconfirmed_read_holds_total{result="lifted"}`,
 		`flodni_unconfirmed_read_holds_total{result="refused"}`,
 		`flodni_unconfirmed_read_confirmed_after_refusal_total`,
+		`flodni_reader_budget_readahead_overshoot_bytes_total`,
+		`flodni_reader_budget_attributed_fill_bytes_total`,
 		`flodni_playback_webhooks_received_total{matched="true"}`,
 		`flodni_playback_webhooks_received_total{matched="false"}`,
 		`flodni_playback_webhook_match_rule_total{rule="basename"}`,

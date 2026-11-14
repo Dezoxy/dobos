@@ -326,6 +326,51 @@ play is confirmed.
   through two idle windows and released by a stop webhook); the ceiling is
   unit-tested only.
 
+## Engine stall gaps
+
+Two gaps in the vendored engine could leave a reader waiting. Both are
+implemented and tested with stand-ins; neither was shown to remove a stall on
+a real swarm in this repository's end-to-end test, which no longer stalls at
+the places they were first seen (the stale cache priorities, now dropped).
+
+- **An idle peer is not woken by an order-only change (always on).** The
+  engine asks its peers to update their requests when a priority change alters
+  the set of pieces it wants, but not when the change only reorders them. A
+  peer with nothing in flight then sits idle until the next chunk, keepalive
+  or announce. The cache that sets the priorities (`torrstor`) now asks every
+  peer of the torrent to update its requests after a priority change it
+  makes, through the engine's existing public `AllowDataUpload` (Flodni never
+  disallows uploads, which a test pins by scanning the source for
+  `DisallowDataUpload`; so its only effect is that update). The engine itself
+  is not changed. The engine package pins both halves in `peer_wake_test.go`:
+  an order-only change wakes no peer, and `AllowDataUpload` wakes every one.
+  The wake fires only when a priority differs from what the cache set before
+  (a repeated identical set wakes nobody), and wakes within 20 ms of each
+  other are merged into one, run after the last of them. It wakes every peer,
+  including choked ones the engine's own wake would skip; the cost on a large
+  public swarm is not measured. It is a fix and has no switch.
+- **`redial_dropped_peer`** in `config.json` (default `false`, read when a
+  peer drops). The engine does not keep a dropped peer to redial, and floors a
+  tracker's announce interval at one minute, so a private torrent whose only
+  peer drops waits up to a minute to hear of it again. With the switch on, when
+  a connection that this torrent dialed from its own tracker drops, and
+  3 s later the torrent is private, still missing data and has no connected
+  peer, that address is added back to the same torrent once. Nothing else is
+  involved: no DHT, no PEX, no public tracker, no address from anywhere but
+  the dropped connection; connections from any other source (DHT, PEX,
+  incoming, hole-punch, direct) are never redialed, nor is a torrent that
+  is not private. A torrent is redialed at most once a minute, so a seeder that
+  drops again at once is not called in a loop (the engine's own dial limits
+  still apply). The 3 s and the 1 minute are constants. The series
+  `flodni_engine_peer_redials_total` counts the redials. The privacy cases are
+  pinned in `internal/gostorm/torr/redial_test.go`. Not covered: an incoming
+  connection that drops (its remote port is not a listening one), a peer
+  restored from the stored torrent record when a closed torrent wakes (the
+  engine tags those as direct, so the redial skips them, and the main
+  single-seeder case after a wake is therefore not covered), and two peers
+  dropping together (one address is redialed, not both). A redial the torrent
+  did not take (an address it already knows) is not counted.
+
 ## Readability record
 
 `GET /api/torrents/health` on the control port lists what Flodni has
@@ -660,8 +705,9 @@ switch off it never refuses or slows a read.
 - **The counter** `flodni_unconfirmed_read_bytes_total` is the bytes the
   reader took past the windows, whichever path served them. It is not bytes
   downloaded: with the pump on (the default), the engine fill happened
-  earlier through the pump or a prefetch, and attributing that fill to the
-  reader is not built; it is revisited after Reliability step 6.
+  earlier through the pump or a prefetch. What the pump and the prefetches
+  fill is counted separately, per session, and can be made part of the
+  margin (see "Fill attribution" below).
 - **`unconfirmed_read_margin_mb`** in `config.json` (default 64, 0 logs at the
   first byte past the windows; a negative or absurd value is replaced by 64).
   When a session's counted bytes reach the margin, one `[ReaderBudget]` line
@@ -742,7 +788,45 @@ switch off it never refuses or slows a read.
     16 MiB): a scan got 20 to 32 MiB before the refusal, the 20 MiB cut plus
     up to 12 MiB of read-ahead already in flight, and the engine pulled no
     more from the seeder afterwards (622 bytes in 16 s). With the pump on it
-    is not measured.
+    is not measured. The head-window part is counted and can be clamped, see
+    the next two bullets.
+  - **Read-ahead overshoot (counted always, clamp opt-in).** Implemented,
+    tested against the fake engine. A miss inside the head window is never
+    refused, and its read-ahead can run past the window edge into the middle.
+    `flodni_reader_budget_readahead_overshoot_bytes_total` counts the bytes
+    the engine was asked to fetch past the edge for such a read, on a file
+    with no confirmed playback: what was asked for, not what was downloaded,
+    and only for reads that started inside the head window (a miss in the
+    middle is the budget's own business). It only counts. Whether the number
+    is worth a clamp is for the owner to read off a few weeks of it.
+    **`unconfirmed_readahead_clamp`** in `config.json` (default `false`, read
+    at each read): when on, the read-ahead of a read that starts inside the
+    head window of a file with no confirmed playback stops at the window edge,
+    and never short of the bytes the read itself asked for. The next read,
+    at the edge, is an ordinary miss for the budget to judge. The cost is
+    a smaller read-ahead there: a play that is not yet confirmed fetches the
+    bytes past the edge one request later. It changes no refusal and works
+    with `refuse_unconfirmed_reads` on or off. With it on the counter stays
+    at 0. A file with a confirmed playback is never clamped or counted. Not
+    measured on a real swarm, and not part of `make e2e`.
+  - **Fill attribution (counted always, margin opt-in).** Implemented,
+    tested against the fake engine. The pump and the prefetches (the two
+    warm-landing fetches and the two predictive ones) fill the read-ahead
+    cache ahead of the reader, and until now only the bytes the reader
+    later read counted toward its margin. Each such fill past the two windows,
+    for a file that has a session and no confirmed playback, is now added to
+    the session's fill tally and to
+    `flodni_reader_budget_attributed_fill_bytes_total`; the `[ReaderBudget]`
+    lines carry it as `fill_bytes` when it is not 0. That counting changes
+    nothing and is always on. **`attribute_fills_to_reader`** in `config.json`
+    (default `false`, read at each call) makes the margin compare the larger
+    of the served tally and the fill tally, not their sum, since a filled
+    byte the reader then reads is one byte of cost seen from both ends. It is
+    off by default because it moves when the margin is crossed: sooner for a
+    reader with a pump or a prefetch running, so refusal starts sooner, and
+    `over_margin` is logged sooner. The fill is attributed to the session of
+    the file, not to one handle: two readers of one file share it. The
+    read-ahead of a miss (the overshoot above) is not part of it.
   - **Limits, check before turning it on.** A webhook later than 15 s, lost,
     or matched to the wrong file breaks that play shortly after the margin
     (a resume on a recently played file with a lost webhook is refused too:
@@ -1562,6 +1646,8 @@ scraper on the same host or Docker network.
 | `flodni_unconfirmed_read_refused_reads_total` | counter | none | Reads the reader budget refused with EIO. Moves only with `refuse_unconfirmed_reads` on. See Reader budget. |
 | `flodni_unconfirmed_read_holds_total` | counter | `result` | Holds of a refused handle, when they end: `lifted` by a confirmation (or the switch going off), `refused` when the time ran out. Moves only with `refuse_unconfirmed_reads` on. |
 | `flodni_unconfirmed_read_confirmed_after_refusal_total` | counter | none | Sessions with a refused read that a webhook then confirmed, once each (plays the budget would have broken). Moves only with `refuse_unconfirmed_reads` on. |
+| `flodni_reader_budget_readahead_overshoot_bytes_total` | counter | none | Bytes the engine was asked to fetch as read-ahead past the head window edge, for a read that started inside the window of a file with no confirmed playback. Asked for, not downloaded. Stays 0 with `unconfirmed_readahead_clamp` on. See Reader budget. |
+| `flodni_reader_budget_attributed_fill_bytes_total` | counter | none | Bytes the pump and the prefetches filled past the head and tail windows of a file with a session and no confirmed playback. Count toward the margin only with `attribute_fills_to_reader` on. |
 | `flodni_warmup_cold_reopen_total` | counter | `previously_played` | Confirmed plays that opened cold on a file quota eviction had removed, `true` or `false` by whether it had been played before. |
 | `flodni_warmup_unverified_drops_total` | counter | none | Warmup blocks, head or tail, never written because their pieces did not verify in time. |
 | `flodni_warmup_write_queue_drops_total` | counter | none | Head chunks dropped because the warmup write queue was full. |
@@ -1581,6 +1667,7 @@ scraper on the same host or Docker network.
 | `flodni_fetch_dedup_total` | counter | none | Concurrent fetches of one chunk that shared a single fetch. |
 | `flodni_engine_short_reads_total` | counter | `path` | Engine reads that ended short and were reported as success: `stream` (the sequential reader) or `fetch` (the stateless block fetch behind the FUSE fallback). 0 from start. |
 | `flodni_engine_short_read_repairs_total` | counter | `result` | Outcome of the stream reader's refill loop, per read that needed it: `repaired` after a reconnect, `unfilled` when a gap stayed. |
+| `flodni_engine_peer_redials_total` | counter | none | Peers the opt-in redial (`redial_dropped_peer`) added back to a private torrent after its only connected peer dropped. 0 with the switch off. See Engine stall gaps. |
 | `flodni_sessions_open` | gauge | none | Sessions open now, the length of the `open` list of `/api/sessions`. |
 | `go_goroutines` | gauge | none | Goroutines that currently exist. |
 | `go_memstats_heap_inuse_bytes` | gauge | none | Bytes in in-use heap spans. |

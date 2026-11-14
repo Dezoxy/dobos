@@ -279,6 +279,8 @@ func Run() {
 	// Keep-alive (phase b): the engine asks before it closes an idle torrent. The
 	// predicate reads the playback state only and never calls into the engine.
 	torr.HoldExpiry = keepaliveHold
+	// Redial of a dropped only peer (opt-in, off by default): the engine asks when a peer drops.
+	torr.RedialDroppedPeer = func() bool { return gc().RedialDroppedPeer }
 	go func() {
 		logger.Println("Starting Embedded GoStorm Engine...")
 		server.Start() // Starts Web Server on 8090 and Engine
