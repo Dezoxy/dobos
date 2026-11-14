@@ -7,6 +7,7 @@ import (
 	"flodni/internal/library"
 	"flodni/internal/promtext"
 	"flodni/internal/warmup"
+	"fmt"
 	"sync"
 	"sync/atomic"
 
@@ -143,12 +144,10 @@ func noteStubIndexMismatch(path, hash string, stubIdx, resolvedIdx int, unverifi
 	}
 	stubIndexMismatches.total.Add(1)
 	if unverified {
-		logger.Printf("WARNING: stub index: %s names file %d of %s, which has another length than the stub, and no file has the stub's length; the stub is stale and the open fails with EIO (remove it from the library and add it again)",
-			path, stubIdx, hash)
+		logger.Warn(fmt.Sprintf("WARNING: stub index: %s names file %d of %s, which has another length than the stub, and no file has the stub's length; the stub is stale and the open fails with EIO (remove it from the library and add it again)", path, stubIdx, hash), "path", path, "stub_idx", stubIdx, "hash", hash)
 		return
 	}
-	logger.Printf("WARNING: stub index: %s names file %d of %s but resolves to file %d; the stub is stale (remove it from the library and add it again)",
-		path, stubIdx, hash, resolvedIdx)
+	logger.Warn(fmt.Sprintf("WARNING: stub index: %s names file %d of %s but resolves to file %d; the stub is stale (remove it from the library and add it again)", path, stubIdx, hash, resolvedIdx), "path", path, "stub_idx", stubIdx, "hash", hash, "resolved_idx", resolvedIdx)
 }
 
 func collectStubIndexProm(w *promtext.Writer) {

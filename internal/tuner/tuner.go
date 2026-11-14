@@ -2,8 +2,8 @@ package tuner
 
 import (
 	"context"
+	"flodni/internal/flog"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -29,7 +29,7 @@ var (
 )
 
 func Start(ctx context.Context) {
-	log.Printf("[Tuner] Discovery boost starting... (Stats: 5s)")
+	flog.Std.Info("[Tuner] Discovery boost starting... (Stats: 5s)")
 	ticker := time.NewTicker(sampleInterval)
 	defer ticker.Stop()
 
@@ -82,11 +82,9 @@ func runCycle() {
 	}
 	lastAnnounceAt = now
 	active.Torrent.AnnounceTracked(func(peers, errs, total int, failures []string) {
-		log.Printf("[Tuner] DiscoveryBoost: announce completed peers=%d errs=%d total=%d failures=%s",
-			peers, errs, total, summarizeFailures(failures))
+		flog.Std.Info(fmt.Sprintf("[Tuner] DiscoveryBoost: announce completed peers=%d errs=%d total=%d failures=%s", peers, errs, total, summarizeFailures(failures)), "peers", peers, "errs", errs, "total", total)
 	})
-	log.Printf("[Tuner] DiscoveryBoost: weak swarm (seeds=%d speed=%.1fMB/s threshold=%.1fMB/s) -> tracker re-announce triggered",
-		st.ConnectedSeeders, speedMBs, fileSizeGB*weakSwarmRatio)
+	flog.Std.Info(fmt.Sprintf("[Tuner] DiscoveryBoost: weak swarm (seeds=%d speed=%.1fMB/s threshold=%.1fMB/s) -> tracker re-announce triggered", st.ConnectedSeeders, speedMBs, fileSizeGB*weakSwarmRatio), "connected_seeders", st.ConnectedSeeders)
 }
 
 func pickActive(active []*torr.Torrent) *torr.Torrent {

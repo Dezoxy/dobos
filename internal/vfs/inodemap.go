@@ -196,7 +196,7 @@ func (im *InodeMap) loadFromDB() error {
 		}
 	}
 
-	im.logger.Printf("InodeMap: Loaded %d files, %d dirs from StateDB", totalFiles, totalDirs)
+	im.logger.Info(fmt.Sprintf("InodeMap: Loaded %d files, %d dirs from StateDB", totalFiles, totalDirs), "total_files", totalFiles, "total_dirs", totalDirs)
 	return nil
 }
 
@@ -205,7 +205,7 @@ func (im *InodeMap) loadFromJSON() error {
 	data, err := os.ReadFile(im.savePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			im.logger.Printf("InodeMap: No existing map at %s, starting fresh", im.savePath)
+			im.logger.Info(fmt.Sprintf("InodeMap: No existing map at %s, starting fresh", im.savePath), "save_path", im.savePath)
 			return nil
 		}
 		return fmt.Errorf("read inode map: %w", err)
@@ -270,8 +270,7 @@ func (im *InodeMap) loadFromJSON() error {
 			}
 		}
 
-		im.logger.Printf("InodeMap: Loaded V2 format - %d files, %d dirs from %s",
-			totalFiles, totalDirs, im.savePath)
+		im.logger.Info(fmt.Sprintf("InodeMap: Loaded V2 format - %d files, %d dirs from %s", totalFiles, totalDirs, im.savePath), "total_files", totalFiles, "total_dirs", totalDirs, "save_path", im.savePath)
 		return nil
 	}
 
@@ -296,8 +295,7 @@ func (im *InodeMap) loadFromJSON() error {
 				totalDirs++
 			}
 		}
-		im.logger.Printf("InodeMap: Loaded V1 format - %d files, %d dirs from %s (will save as V2)",
-			totalFiles, totalDirs, im.savePath)
+		im.logger.Info(fmt.Sprintf("InodeMap: Loaded V1 format - %d files, %d dirs from %s (will save as V2)", totalFiles, totalDirs, im.savePath), "total_files", totalFiles, "total_dirs", totalDirs, "save_path", im.savePath)
 		im.setDirty(true)
 	}
 
@@ -392,7 +390,7 @@ func (im *InodeMap) saveToDB() error {
 	}
 
 	im.setDirty(false)
-	im.logger.Printf("InodeMap: Saved %d files, %d dirs to StateDB", fileCount, dirCount)
+	im.logger.Info(fmt.Sprintf("InodeMap: Saved %d files, %d dirs to StateDB", fileCount, dirCount), "file_count", fileCount, "dir_count", dirCount)
 	return nil
 }
 
@@ -466,7 +464,7 @@ func (im *InodeMap) saveToJSON() error {
 	}
 
 	im.setDirty(false)
-	im.logger.Printf("InodeMap: Saved %d files, %d dirs to %s", len(mergedFiles), len(mergedDirs), im.savePath)
+	im.logger.Info(fmt.Sprintf("InodeMap: Saved %d files, %d dirs to %s", len(mergedFiles), len(mergedDirs), im.savePath), "save_path", im.savePath)
 	return nil
 }
 
@@ -479,13 +477,13 @@ func (im *InodeMap) StartBackgroundSaver() {
 			case <-ticker.C:
 				if im.IsDirty() {
 					if err := im.SaveToDisk(); err != nil {
-						im.logger.Printf("InodeMap: save failed: %v", err)
+						im.logger.Info(fmt.Sprintf("InodeMap: save failed: %v", err), "err", err)
 					}
 				}
 			case <-im.stopChan:
 				if im.IsDirty() {
 					if err := im.SaveToDisk(); err != nil {
-						im.logger.Printf("InodeMap: save failed: %v", err)
+						im.logger.Info(fmt.Sprintf("InodeMap: save failed: %v", err), "err", err)
 					}
 				}
 				return
@@ -499,7 +497,7 @@ func (im *InodeMap) Stop() {
 		close(im.stopChan)
 		if im.IsDirty() {
 			if err := im.SaveToDisk(); err != nil {
-				im.logger.Printf("InodeMap: save failed: %v", err)
+				im.logger.Info(fmt.Sprintf("InodeMap: save failed: %v", err), "err", err)
 			}
 		}
 	})
@@ -679,15 +677,15 @@ func (im *InodeMap) PruneMissing(foundFiles map[string]bool) int {
 	if im.db != nil && len(toRemove) > 0 {
 		pruned, err := im.db.PruneMissing(foundFiles)
 		if err != nil {
-			im.logger.Printf("InodeMap: Warning - failed to prune from DB: %v", err)
+			im.logger.Warn(fmt.Sprintf("InodeMap: Warning - failed to prune from DB: %v", err), "err", err)
 		} else if pruned > 0 {
-			im.logger.Printf("InodeMap GC: Pruned %d entries from StateDB", pruned)
+			im.logger.Info(fmt.Sprintf("InodeMap GC: Pruned %d entries from StateDB", pruned), "pruned", pruned)
 		}
 	}
 
 	if len(toRemove) > 0 {
 		im.setDirty(true)
-		im.logger.Printf("InodeMap GC: Pruned %d ghost entries from memory", len(toRemove))
+		im.logger.Info(fmt.Sprintf("InodeMap GC: Pruned %d ghost entries from memory", len(toRemove)))
 	}
 	return len(toRemove)
 }

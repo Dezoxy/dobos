@@ -3,7 +3,7 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
-	"log"
+	"flodni/internal/flog"
 	"reflect"
 	"sort"
 	"strings"
@@ -18,7 +18,7 @@ func captureSessionLog(t *testing.T) *bytes.Buffer {
 	prev := logger
 	t.Cleanup(func() { logger = prev })
 	var buf bytes.Buffer
-	logger = log.New(&buf, "", 0)
+	logger = flog.NewText(&buf)
 	return &buf
 }
 

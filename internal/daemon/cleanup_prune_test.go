@@ -1,8 +1,8 @@
 package daemon
 
 import (
+	"flodni/internal/flog"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,13 +14,13 @@ import (
 
 func cleanupInodeEnv(t *testing.T, root string) (*CleanupManager, *vfs.InodeMap) {
 	t.Helper()
-	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), &vfsLogger{log.New(io.Discard, "", 0)})
+	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), &vfsLogger{flog.NewText(io.Discard)})
 	prev := globalInodeMap
 	globalInodeMap = im
 	t.Cleanup(func() { globalInodeMap = prev })
 	im.AddFile(filepath.Join(root, "movies", "a.mkv"), inLibHash, 1)
 	im.AddFile(filepath.Join(root, "movies", "ghost.mkv"), orphHash, 1)
-	cm := NewCleanupManager(log.New(io.Discard, "", 0), cache.NewLRUCache(1<<20, time.Hour), nil)
+	cm := NewCleanupManager(flog.NewText(io.Discard), cache.NewLRUCache(1<<20, time.Hour), nil)
 	return cm, im
 }
 

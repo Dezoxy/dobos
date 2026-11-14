@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log"
+	"flodni/internal/flog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1021,7 +1021,7 @@ func TestDropTorrentIfUnusedChecksReferencesByLink(t *testing.T) {
 func TestFindByHashSkipsAMalformedStubAndLogsOnce(t *testing.T) {
 	e := newCharEnv(t)
 	var buf bytes.Buffer
-	e.m.cfg.Logger = log.New(&buf, "", 0)
+	e.m.cfg.Logger = flog.NewText(&buf)
 	good := e.legacyStub(t, filepath.Join(e.movies, "Good_2000_1080p_55555555.mkv"), charPackHash)
 	for _, name := range []string{"Bad1_2000_1080p_55555555.mkv", "Bad2_2000_1080p_55555555.mkv"} {
 		if err := os.WriteFile(filepath.Join(e.movies, name), []byte("{ not json"), 0o644); err != nil {

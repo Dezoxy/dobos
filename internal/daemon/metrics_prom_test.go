@@ -2,11 +2,11 @@ package daemon
 
 import (
 	"errors"
+	"flodni/internal/flog"
 	"flodni/internal/gostorm/native"
 	"flodni/internal/promtext"
 	"flodni/internal/warmup"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -206,7 +206,7 @@ func (failingStore) ResetMetadataFailures(string) error              { return ni
 func (failingStore) RecordNotStored(string, string, time.Time) error { return nil }
 
 func TestVerdictCountedWhenTheStoreFails(t *testing.T) {
-	rec := newReachabilityRecorder(failingStore{}, log.New(io.Discard, "", 0))
+	rec := newReachabilityRecorder(failingStore{}, flog.NewText(io.Discard))
 	key := [2]string{failReasonNoPeers, failSourceMount}
 	before := deadSwarmVerdictCounts()[key]
 	rec(native.Outcome{Hash: rHash, Kind: native.OutcomeFailed, Reason: failReasonNoPeers, Source: failSourceMount})

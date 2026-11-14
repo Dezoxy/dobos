@@ -44,7 +44,7 @@ func onLibraryAdded(hash string, files []library.AddedFile) {
 	}
 	if c.WarmupDir == "" {
 		warnWarmOnAddNoDir.Do(func() {
-			logger.Printf("WARNING: warm_on_add is set but warmup_dir is not: the windows have no index cache to live in, so nothing is warmed on add")
+			logger.Warn("WARNING: warm_on_add is set but warmup_dir is not: the windows have no index cache to live in, so nothing is warmed on add")
 		})
 		return
 	}
@@ -106,7 +106,7 @@ func addWarmerDeps(x *fileStateIndex, stop <-chan struct{}) warmer.Deps {
 				return
 			}
 			if err := db.RecordSwarmRead(hash, at); err != nil {
-				logger.Printf("WARNING: warm on add: cannot stamp the swarm read of %s: %v", hash, err)
+				logger.Warn(fmt.Sprintf("WARNING: warm on add: cannot stamp the swarm read of %s: %v", hash, err), "hash", hash, "err", err)
 			}
 		},
 		Classify: classifyFailure,
@@ -117,7 +117,7 @@ func addWarmerDeps(x *fileStateIndex, stop <-chan struct{}) warmer.Deps {
 			}
 			x.ForgetHash(hash)
 		},
-		Log:  func(line string) { logger.Print(line) },
+		Log:  func(line string) { logger.Info(fmt.Sprint(line)) },
 		Stop: stop,
 	}
 }

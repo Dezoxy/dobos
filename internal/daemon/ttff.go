@@ -337,8 +337,7 @@ func (s *TTFFSession) reportSwarmVerdict() bool {
 		time.Since(time.Unix(0, opened)) < sessionVerdictFloor {
 		return false
 	}
-	logger.Printf("[DeadSwarm] session of %s ended after %s with a failed read and nothing served",
-		filepath.Base(s.path), time.Since(time.Unix(0, s.openedAt.Load())).Round(time.Second))
+	logger.Info(fmt.Sprintf("[DeadSwarm] session of %s ended after %s with a failed read and nothing served", filepath.Base(s.path), time.Since(time.Unix(0, s.openedAt.Load())).Round(time.Second)), "file", filepath.Base(s.path))
 	reason := failReasonUnknown
 	if r := s.failReason.Load(); r != nil {
 		reason = *r
@@ -386,11 +385,7 @@ func (s *TTFFSession) closeSession() {
 				}
 			}
 		}
-		logger.Printf("[TTFF] path=%s head=%d tail=%d header=%s deepread=%s seek=%d stalls=%d bytes=%d",
-			filepath.Base(s.path),
-			boolToInt(s.warmupHeadReady.Load()), boolToInt(s.warmupTailReady.Load()),
-			durOrDash(s.firstDataAt.Load(), opened), durOrDash(s.firstDeepReadAt.Load(), opened),
-			s.seekCount.Load(), s.stallCount.Load(), s.bytesRead.Load())
+		logger.Info(fmt.Sprintf("[TTFF] path=%s head=%d tail=%d header=%s deepread=%s seek=%d stalls=%d bytes=%d", filepath.Base(s.path), boolToInt(s.warmupHeadReady.Load()), boolToInt(s.warmupTailReady.Load()), durOrDash(s.firstDataAt.Load(), opened), durOrDash(s.firstDeepReadAt.Load(), opened), s.seekCount.Load(), s.stallCount.Load(), s.bytesRead.Load()), "file", filepath.Base(s.path))
 	})
 }
 
@@ -557,7 +552,7 @@ func closeAllSessions() {
 		return true
 	})
 	if n > 0 {
-		logger.Printf("[Sessions] closed %d open session(s) at shutdown", n)
+		logger.Info(fmt.Sprintf("[Sessions] closed %d open session(s) at shutdown", n), "n", n)
 	}
 }
 
@@ -602,7 +597,7 @@ func ttffTiming(getenv func(string) string) (idle, tick time.Duration, notes []s
 func ttffCleanupLoop() {
 	idleClose, tickEvery, notes := ttffTiming(os.Getenv)
 	for _, n := range notes {
-		logger.Printf("[Sessions] %s", n)
+		logger.Info(fmt.Sprintf("[Sessions] %s", n), "n", n)
 	}
 	ticker := time.NewTicker(tickEvery)
 	defer ticker.Stop()

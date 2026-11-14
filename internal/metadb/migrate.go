@@ -27,7 +27,7 @@ func (d *DB) MigrateFromJSON(stateDir string) error {
 
 	if !needsInodes && !needsCaches && !needsEpisodes {
 		if d.logger != nil {
-			d.logger.Printf("[StateDB] Migration already completed (all JSON files renamed)")
+			d.logger.Info("[StateDB] Migration already completed (all JSON files renamed)")
 		}
 		return nil
 	}
@@ -85,14 +85,14 @@ func (d *DB) MigrateFromJSON(stateDir string) error {
 		if fileExists(p) {
 			if err := os.Rename(p, p+".migrated"); err != nil {
 				if d.logger != nil {
-					d.logger.Printf("[StateDB] Warning: failed to rename %s: %v", p, err)
+					d.logger.Warn(fmt.Sprintf("[StateDB] Warning: failed to rename %s: %v", p, err), "p", p, "err", err)
 				}
 			}
 		}
 	}
 
 	if d.logger != nil {
-		d.logger.Printf("[StateDB] Migration complete: %d inodes, %d caches, %d episodes", inodeCount, cacheCount, epCount)
+		d.logger.Info(fmt.Sprintf("[StateDB] Migration complete: %d inodes, %d caches, %d episodes", inodeCount, cacheCount, epCount), "inode_count", inodeCount, "cache_count", cacheCount, "ep_count", epCount)
 	}
 	return nil
 }
@@ -188,7 +188,7 @@ func (d *DB) insertInodesV1(data InodeMapDataV1) (int, error) {
 	}
 
 	if d.logger != nil {
-		d.logger.Printf("[StateDB] Migrated inode_map.json (V1 format)")
+		d.logger.Info("[StateDB] Migrated inode_map.json (V1 format)")
 	}
 	return count, nil
 }
@@ -239,7 +239,7 @@ func (d *DB) insertInodesV2(data InodeMapDataV2) (int, error) {
 	}
 
 	if d.logger != nil {
-		d.logger.Printf("[StateDB] Migrated inode_map.json (V2 format)")
+		d.logger.Info("[StateDB] Migrated inode_map.json (V2 format)")
 	}
 	return count, nil
 }

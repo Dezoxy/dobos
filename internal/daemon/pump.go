@@ -5,6 +5,7 @@ import (
 	"flodni/internal/gostorm/torr"
 	torrstor "flodni/internal/gostorm/torr/storage/torrstor"
 	"flodni/internal/warmup"
+	"fmt"
 	"path/filepath"
 	"sync/atomic"
 	"time"
@@ -110,8 +111,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 		scanLimit := scanSlotLimit(cap(masterDataSemaphore), anyHealthyPlayback)
 		if len(masterDataSemaphore) >= scanLimit {
 			canTakeSlot = false
-			logger.Printf("[StrategicReserve] Denying pump slot to background scan (Saturation: %d/%d, healthyPlayback=%v): %s",
-				len(masterDataSemaphore), gc().MasterConcurrencyLimit, anyHealthyPlayback, filepath.Base(h.path))
+			logger.Info(fmt.Sprintf("[StrategicReserve] Denying pump slot to background scan (Saturation: %d/%d, healthyPlayback=%v): %s", len(masterDataSemaphore), gc().MasterConcurrencyLimit, anyHealthyPlayback, filepath.Base(h.path)), "any_healthy_playback", anyHealthyPlayback, "file", filepath.Base(h.path))
 		}
 	}
 
@@ -140,7 +140,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 				atomic.StoreInt64(&h.lastOff, curPos)
 			}
 		}
-		logger.Printf("[V264] Attached to existing pump (Refs: %d, primary=%v): %s", newRefs, h.isPrimaryHandle.Load(), filepath.Base(h.path))
+		logger.Info(fmt.Sprintf("[V264] Attached to existing pump (Refs: %d, primary=%v): %s", newRefs, h.isPrimaryHandle.Load(), filepath.Base(h.path)), "new_refs", newRefs, "file", filepath.Base(h.path))
 		pumpCreationMu.Unlock()
 		return
 	}
@@ -203,7 +203,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 		globalOpenTracker.Inc(h.hash, h.path)
 		pumpCreationMu.Unlock() // SUCCESS: Shared state registered, global lock released
 
-		logger.Printf("[V264] Native Pump Started (Slot Acquired): %s", filepath.Base(h.path))
+		logger.Info(fmt.Sprintf("[V264] Native Pump Started (Slot Acquired): %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 
 		// Seed h.lastOff from the persisted resume position (V750 playback_states.last_seek_off)
 		// before any of the anchoring logic below runs, so a cold pump-start (h.lastOff still -1,
@@ -229,7 +229,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 			if !seeded && stateDB != nil {
 				if rec, err := stateDB.LoadPlaybackStateByPath(h.path); err == nil && rec != nil && rec.LastSeekOff > 0 {
 					if h.seedResumeAnchor(nil, rec.LastSeekOff) {
-						logger.Printf("[ResumeAnchor] Seeded pump start from DB: %.1fMB", float64(rec.LastSeekOff)/(1<<20))
+						logger.Info(fmt.Sprintf("[ResumeAnchor] Seeded pump start from DB: %.1fMB", float64(rec.LastSeekOff)/(1<<20)))
 					}
 				}
 			}
@@ -246,7 +246,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 				skipOffset := diskOffset - safetyMargin
 				if skipOffset > resumeOffset {
 					resumeOffset = skipOffset
-					logger.Printf("[DiskWarmup] PUMP SKIP: Starting from %.1fMB to bridge SSD handover", float64(resumeOffset)/(1<<20))
+					logger.Info(fmt.Sprintf("[DiskWarmup] PUMP SKIP: Starting from %.1fMB to bridge SSD handover", float64(resumeOffset)/(1<<20)))
 				}
 			}
 		}
@@ -256,8 +256,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 			chunkSize := raCache.ChunkSize(h.path)
 			if resumeOffset > playerOff+chunkSize*2 {
 				aligned := (playerOff / chunkSize) * chunkSize
-				logger.Printf("[V700] Pump anchored to player: %.1fMB (MaxCached was %.1fMB)",
-					float64(aligned)/(1<<20), float64(resumeOffset)/(1<<20))
+				logger.Info(fmt.Sprintf("[V700] Pump anchored to player: %.1fMB (MaxCached was %.1fMB)", float64(aligned)/(1<<20), float64(resumeOffset)/(1<<20)))
 				resumeOffset = aligned
 			}
 		} else if playerOff < 0 && resumeOffset > 0 {
@@ -268,8 +267,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 				warmupCoverage = warmup.DiskWarmup.GetAvailableRange(h.hash, h.fileID)
 			}
 			if warmupCoverage == 0 || resumeOffset >= warmup.FileSize {
-				logger.Printf("[V700] New handle: reset stale MaxCachedOffset %.1fMB → 0",
-					float64(resumeOffset)/(1<<20))
+				logger.Info(fmt.Sprintf("[V700] New handle: reset stale MaxCachedOffset %.1fMB → 0", float64(resumeOffset)/(1<<20)))
 				resumeOffset = 0
 			}
 		}
@@ -279,8 +277,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 			chunkSize := raCache.ChunkSize(h.path)
 			if raV310 := atomic.LoadInt64(&h.lastOff); raV310 > 0 && resumeOffset+chunkSize < raV310 {
 				pumpStartV310 := (raV310 / chunkSize) * chunkSize
-				logger.Printf("[V310] Resume anchor: pump start → %dMB (player at %dMB)",
-					pumpStartV310/(1024*1024), raV310/(1024*1024))
+				logger.Info(fmt.Sprintf("[V310] Resume anchor: pump start → %dMB (player at %dMB)", pumpStartV310/(1024*1024), raV310/(1024*1024)))
 				resumeOffset = pumpStartV310
 			}
 		}
@@ -296,7 +293,7 @@ func (h *MkvHandle) startNativePump(finalHash string, fileIdx int) {
 		})
 	default:
 		// If slots are full, it will fall back to per-request slots in Read
-		logger.Printf("[MasterSemaphore] Limit reached, %s will use Fallback mode", filepath.Base(h.path))
+		logger.Info(fmt.Sprintf("[MasterSemaphore] Limit reached, %s will use Fallback mode", filepath.Base(h.path)), "file", filepath.Base(h.path))
 	}
 }
 
@@ -318,7 +315,7 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 	}()
 
 	if pumpReader == nil {
-		logger.Printf("[Pump] reader is nil at startup for %s", filepath.Base(h.path))
+		logger.Info(fmt.Sprintf("[Pump] reader is nil at startup for %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 		return
 	}
 
@@ -329,9 +326,9 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 			h.hash = hash
 			h.fileID = fileID
 			h.mu.Unlock()
-			logger.Printf("[Pump] Late resolution success: %s", hash[:8])
+			logger.Info(fmt.Sprintf("[Pump] Late resolution success: %s", hash[:8]), "hash", hash[:8])
 		} else {
-			logger.Printf("[Pump] Warning: hash empty for %s, warmup disabled", filepath.Base(h.path))
+			logger.Warn(fmt.Sprintf("[Pump] Warning: hash empty for %s, warmup disabled", filepath.Base(h.path)), "file", filepath.Base(h.path))
 		}
 	}
 	defer func() {
@@ -356,13 +353,13 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 		}
 
 		if pumpExitedHealthy {
-			logger.Printf("[V306] WARNING: pump goroutine exited during healthy playback for %s — priority preserved via IsHealthy", filepath.Base(h.path))
+			logger.Warn(fmt.Sprintf("[V306] WARNING: pump goroutine exited during healthy playback for %s — priority preserved via IsHealthy", filepath.Base(h.path)), "file", filepath.Base(h.path))
 		}
 
 		// The master slot is released by the defer installed at the top of nativePump.
 		_ = pumpReader.Close() // read-only reader
 		h.mu.Unlock()
-		logger.Printf("[V239] Native Pump Goroutine Ended: %s", filepath.Base(h.path))
+		logger.Info(fmt.Sprintf("[V239] Native Pump Goroutine Ended: %s", filepath.Base(h.path)), "file", filepath.Base(h.path))
 	}()
 
 	// V752: starvation watchdog state — sliding 10s window + last revival time.
@@ -428,7 +425,7 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 		}
 
 		if time.Since(lastAct) > timeoutLimit {
-			logger.Printf("[V262] Idle timeout (%v) for %s - yielding slot", timeoutLimit, filepath.Base(h.path))
+			logger.Info(fmt.Sprintf("[V262] Idle timeout (%v) for %s - yielding slot", timeoutLimit, filepath.Base(h.path)), "timeout_limit", timeoutLimit, "file", filepath.Base(h.path))
 			return
 		}
 
@@ -461,9 +458,7 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 			if jumpTo < 0 {
 				jumpTo = 0
 			}
-			logger.Printf("[V284] Pump jump: %dMB → %dMB (player at %dMB, gap %dMB)",
-				offset/(1024*1024), jumpTo/(1024*1024), playerOff/(1024*1024),
-				(playerOff-offset)/(1024*1024))
+			logger.Info(fmt.Sprintf("[V284] Pump jump: %dMB → %dMB (player at %dMB, gap %dMB)", offset/(1024*1024), jumpTo/(1024*1024), playerOff/(1024*1024), (playerOff-offset)/(1024*1024)))
 			offset = jumpTo
 			pumpedBytes = 0                 // reset grace period so throttle doesn't fire immediately
 			watchSamples = watchSamples[:0] // V752: fresh window after jump — rates across a jump are meaningless
@@ -475,9 +470,7 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 			if jumpTo < 0 {
 				jumpTo = 0
 			}
-			logger.Printf("[V754] Pump re-anchor (stranded ahead): %dMB → %dMB (player at %dMB, lead %dMB)",
-				offset/(1024*1024), jumpTo/(1024*1024), playerOff/(1024*1024),
-				(offset-playerOff)/(1024*1024))
+			logger.Info(fmt.Sprintf("[V754] Pump re-anchor (stranded ahead): %dMB → %dMB (player at %dMB, lead %dMB)", offset/(1024*1024), jumpTo/(1024*1024), playerOff/(1024*1024), (offset-playerOff)/(1024*1024)))
 			offset = jumpTo
 			pumpedBytes = 0
 			watchSamples = watchSamples[:0]
@@ -508,8 +501,7 @@ func (h *MkvHandle) nativePump(ctx context.Context, pumpReader streamReader, sta
 						torrstor.ResetShield()
 						lastRevival = now
 						watchSamples = watchSamples[:0]
-						logger.Printf("[StarvationWatchdog] Revival: pump %dMB vs player %dMB (rates %.1f/%.1f MB/s) — interrupt+shield reset",
-							offset/(1<<20), playerOff/(1<<20), pumpRate/(1<<20), playerRate/(1<<20))
+						logger.Info(fmt.Sprintf("[StarvationWatchdog] Revival: pump %dMB vs player %dMB (rates %.1f/%.1f MB/s) — interrupt+shield reset", offset/(1<<20), playerOff/(1<<20), pumpRate/(1<<20), playerRate/(1<<20)))
 					}
 				}
 			}
@@ -734,8 +726,7 @@ func (h *MkvHandle) promoteIfStreaming(prevOff, off int64, readLen int) {
 		return
 	}
 	if becomePrimary(h) {
-		logger.Printf("[V284] Handle promoted to primary after %d sequential reads at %dMB: %s",
-			h.seqAdvances.Load(), off/(1024*1024), filepath.Base(h.path))
+		logger.Info(fmt.Sprintf("[V284] Handle promoted to primary after %d sequential reads at %dMB: %s", h.seqAdvances.Load(), off/(1024*1024), filepath.Base(h.path)), "file", filepath.Base(h.path))
 	}
 }
 
@@ -910,8 +901,7 @@ func (h *MkvHandle) seedResumeAnchor(ps *PlaybackState, lastSeekOff int64) bool 
 	anchor, zeroed := resumeAnchorFromPersisted(lastSeekOff, h.size)
 	if anchor > 0 {
 		atomic.StoreInt64(&h.lastOff, anchor)
-		logger.Printf("[ResumeAnchor] Seeding pump start from persisted resume position: %.1fMB",
-			float64(anchor)/(1<<20))
+		logger.Info(fmt.Sprintf("[ResumeAnchor] Seeding pump start from persisted resume position: %.1fMB", float64(anchor)/(1<<20)))
 		return true
 	}
 	if zeroed {
@@ -926,10 +916,9 @@ func (h *MkvHandle) seedResumeAnchor(ps *PlaybackState, lastSeekOff int64) bool 
 		}
 		if stateDB != nil {
 			if err := stateDB.UpdatePlaybackSeekOff(h.path, 0); err != nil {
-				logger.Printf("[ResumeAnchor] Failed to zero poisoned last_seek_off for %s: %v", filepath.Base(h.path), err)
+				logger.Info(fmt.Sprintf("[ResumeAnchor] Failed to zero poisoned last_seek_off for %s: %v", filepath.Base(h.path), err), "file", filepath.Base(h.path), "err", err)
 			} else {
-				logger.Printf("[ResumeAnchor] Zeroed poisoned last_seek_off (%.1fMB in tail zone) for %s",
-					float64(lastSeekOff)/(1<<20), filepath.Base(h.path))
+				logger.Info(fmt.Sprintf("[ResumeAnchor] Zeroed poisoned last_seek_off (%.1fMB in tail zone) for %s", float64(lastSeekOff)/(1<<20), filepath.Base(h.path)), "file", filepath.Base(h.path))
 			}
 		}
 	}

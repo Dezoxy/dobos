@@ -3,8 +3,8 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	"flodni/internal/flog"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -40,7 +40,7 @@ func readabilityEnv(t *testing.T, peers int, live bool) *metadb.DB {
 	t.Cleanup(func() {
 		native.ReachabilityOutcome, sessionActivePeers, torrentLive, logger = prevOutcome, prevPeers, prevLive, prevLogger
 	})
-	logger = log.New(io.Discard, "", 0)
+	logger = flog.NewText(io.Discard)
 	native.ReachabilityOutcome = newReachabilityRecorder(db, logger)
 	sessionActivePeers = func(string) int { return peers }
 	torrentLive = func(string) bool { return live }
@@ -212,7 +212,7 @@ func getHealth(h http.HandlerFunc, method, target string) *httptest.ResponseReco
 }
 
 func TestTorrentsHealthHandler(t *testing.T) {
-	quiet := log.New(io.Discard, "", 0)
+	quiet := flog.NewText(io.Discard)
 	store := &fakeLister{rows: []metadb.Readability{
 		{Hash: "aa", FailCount: 2, FirstFail: 1_700_000_000, LastFail: 1_700_003_600,
 			LastReason: "no_peers", LastSource: "mount", LastSwarmRead: 0},
@@ -285,7 +285,7 @@ func fileSnapshot(m map[string][]fileHealth) func() map[string][]fileHealth {
 // array, times are RFC 3339 or null, and a torrent with file rows but no failure row
 // is listed with a zero count.
 func TestTorrentsHealthFilesArray(t *testing.T) {
-	quiet := log.New(io.Discard, "", 0)
+	quiet := flog.NewText(io.Discard)
 	store := &fakeLister{rows: []metadb.Readability{
 		{Hash: "aa", FailCount: 2, FirstFail: 1_700_000_000, LastFail: 1_700_003_600, LastReason: "no_peers", LastSource: "mount"},
 		{Hash: "bb", FailCount: 0, LastSwarmRead: 1_700_007_200},
@@ -347,7 +347,7 @@ func TestTorrentsHealthFilesArray(t *testing.T) {
 
 // A failure filter keeps its per-torrent meaning: files-only torrents are not listed.
 func TestTorrentsHealthFilterIgnoresFilesOnlyTorrents(t *testing.T) {
-	quiet := log.New(io.Discard, "", 0)
+	quiet := flog.NewText(io.Discard)
 	store := &fakeLister{rows: []metadb.Readability{{Hash: "aa", FailCount: 2}}}
 	files := map[string][]fileHealth{"cc": {{FileIndex: 0, Readability: "unknown", Cache: "cached"}}}
 	h := newTorrentsHealthHandler(store, fileSnapshot(files), quiet)

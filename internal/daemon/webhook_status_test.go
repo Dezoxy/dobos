@@ -3,8 +3,8 @@ package daemon
 import (
 	"bytes"
 	"encoding/json"
+	"flodni/internal/flog"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -152,7 +152,7 @@ func TestMarkStampsAreThrottledToOneWritePerHourPerMark(t *testing.T) {
 
 func TestMarksSurviveAReopenedDatabaseAndAFutureStampIsClamped(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.db")
-	db, err := metadb.New(path, log.Default())
+	db, err := metadb.New(path, flog.Std)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestMarksSurviveAReopenedDatabaseAndAFutureStampIsClamped(t *testing.T) {
 	m.waitPersist()
 	_ = db.Close()
 
-	db, err = metadb.New(path, log.Default())
+	db, err = metadb.New(path, flog.Std)
 	if err != nil {
 		t.Fatal(err)
 	}

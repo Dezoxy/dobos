@@ -3,7 +3,8 @@ package warmup
 import (
 	"encoding/json"
 	"errors"
-	"log"
+	"flodni/internal/flog"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -313,7 +314,7 @@ type DiskWarmupCache struct {
 }
 
 // InitDiskWarmup creates the global warmup cache if UseDisk is enabled.
-var logf = log.New(os.Stdout, "[DiskWarmup] ", log.LstdFlags)
+var logf = flog.New(os.Stdout, "DiskWarmup", true)
 
 // removeFile deletes a cache or coverage file. A file that stays behind is no
 // longer counted by the size accounting, so a failure is logged.
@@ -326,7 +327,7 @@ func removeFile(path string) {
 func removed(path string) bool {
 	err := os.Remove(path)
 	if err != nil && !os.IsNotExist(err) {
-		logf.Printf("[DiskWarmup] remove %s failed: %v", filepath.Base(path), err)
+		logf.Info(fmt.Sprintf("[DiskWarmup] remove %s failed: %v", filepath.Base(path), err), "file", filepath.Base(path), "err", err)
 		return false
 	}
 	return true
@@ -336,7 +337,7 @@ func removed(path string) bool {
 func writeMarker(path string) {
 	f, err := os.Create(path)
 	if err != nil {
-		logf.Printf("[DiskWarmup] WARNING: cannot write %s: %v", filepath.Base(path), err)
+		logf.Warn(fmt.Sprintf("[DiskWarmup] WARNING: cannot write %s: %v", filepath.Base(path), err), "file", filepath.Base(path), "err", err)
 		return
 	}
 	_ = f.Close() // an empty marker file
@@ -383,7 +384,7 @@ func InitDiskWarmup(opts Options) {
 	}
 	if dir == "" || dir == "/" {
 		if opts.Dir != "" {
-			logf.Printf("[DiskWarmup] WARNING: warmup_dir %q is not usable: no cache", dir)
+			logf.Warn(fmt.Sprintf("[DiskWarmup] WARNING: warmup_dir %q is not usable: no cache", dir), "dir", dir)
 		}
 		return
 	}
@@ -392,11 +393,11 @@ func InitDiskWarmup(opts Options) {
 	_, statErr := os.Stat(dir)
 	existed := statErr == nil
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		logf.Printf("[DiskWarmup] WARNING: warmup_dir %q cannot be created: %v: no cache", dir, err)
+		logf.Warn(fmt.Sprintf("[DiskWarmup] WARNING: warmup_dir %q cannot be created: %v: no cache", dir, err), "dir", dir, "err", err)
 		return
 	}
 	if existed && onParentFilesystem(dir) {
-		logf.Printf("[DiskWarmup] WARNING: warmup_dir is not a separate mount (%s shares its parent's filesystem): fine for a plain directory, but an unmounted cache disk looks the same", dir)
+		logf.Warn(fmt.Sprintf("[DiskWarmup] WARNING: warmup_dir is not a separate mount (%s shares its parent's filesystem): fine for a plain directory, but an unmounted cache disk looks the same", dir), "dir", dir)
 	}
 
 	DiskWarmup = &DiskWarmupCache{
@@ -423,16 +424,15 @@ func InitDiskWarmup(opts Options) {
 
 	total, dropped, residues, err := DiskWarmup.scanExisting(checkHeads)
 	if err != nil {
-		logf.Printf("[DiskWarmup] WARNING: start-up walk of %s failed: %v: the cache total starts at 0", dir, err)
+		logf.Warn(fmt.Sprintf("[DiskWarmup] WARNING: start-up walk of %s failed: %v: the cache total starts at 0", dir, err), "dir", dir, "err", err)
 	} else {
 		atomic.StoreInt64(&DiskWarmup.totalSize, total)
-		logf.Printf("[DiskWarmup] Initial size: %.1fGB (dropped %d stale cache files, %d residues)", float64(total)/(1<<30), dropped, residues)
+		logf.Info(fmt.Sprintf("[DiskWarmup] Initial size: %.1fGB (dropped %d stale cache files, %d residues)", float64(total)/(1<<30), dropped, residues), "dropped", dropped, "residues", residues)
 		if checkHeads {
 			// A directory with no head in it (a fresh disk's lost+found) has nothing to
 			// warn about.
 			if DiskWarmup.headsChecked > 0 {
-				logf.Printf("[DiskWarmup] WARNING: %s was missing: checked %d heads for holes, dropped %d (the one-shot density check; never delete that file by hand)",
-					denseMarker, DiskWarmup.headsChecked, DiskWarmup.headsHoley)
+				logf.Warn(fmt.Sprintf("[DiskWarmup] WARNING: %s was missing: checked %d heads for holes, dropped %d (the one-shot density check; never delete that file by hand)", denseMarker, DiskWarmup.headsChecked, DiskWarmup.headsHoley), "dense_marker", denseMarker, "heads_checked", DiskWarmup.headsChecked, "heads_holey", DiskWarmup.headsHoley)
 			}
 			writeMarker(migrated)
 		}
@@ -441,8 +441,7 @@ func InitDiskWarmup(opts Options) {
 	go DiskWarmup.writeWorker()
 	go DiskWarmup.handleReaper()
 
-	logf.Printf("[DiskWarmup] Active — dir=%s quota=%dGB head=%dMB tail=%dMB persistent=%v",
-		dir, opts.QuotaGB, FileSize>>20, TailWarmupSize>>20, persistTails)
+	logf.Info(fmt.Sprintf("[DiskWarmup] Active — dir=%s quota=%dGB head=%dMB tail=%dMB persistent=%v", dir, opts.QuotaGB, FileSize>>20, TailWarmupSize>>20, persistTails), "dir", dir, "quota_g_b", opts.QuotaGB, "persist_tails", persistTails)
 }
 
 // scanExisting walks the cache at startup. A tail file stays only when persistTails is
@@ -484,12 +483,12 @@ func (d *DiskWarmupCache) scanExisting(checkHeads bool) (total int64, dropped, r
 			d.headsChecked++
 			holes, herr := headHasHoles(full)
 			if herr != nil {
-				logf.Printf("[DiskWarmup] head check of %s failed, kept: %v", name, herr)
+				logf.Info(fmt.Sprintf("[DiskWarmup] head check of %s failed, kept: %v", name, herr), "name", name, "herr", herr)
 			} else if holes {
 				if rerr := os.Remove(full); rerr != nil {
-					logf.Printf("[DiskWarmup] head %s has holes but could not be removed, kept: %v", name, rerr)
+					logf.Info(fmt.Sprintf("[DiskWarmup] head %s has holes but could not be removed, kept: %v", name, rerr), "name", name, "rerr", rerr)
 				} else {
-					logf.Printf("[DiskWarmup] dropped %s: it has holes", name)
+					logf.Info(fmt.Sprintf("[DiskWarmup] dropped %s: it has holes", name), "name", name)
 					d.headsHoley++
 					dropped++
 					continue
@@ -569,8 +568,7 @@ func (d *DiskWarmupCache) dropResidue(path string) {
 	}
 	d.sizeCache.Delete(path)
 	if os.Remove(path) == nil {
-		logf.Printf("[DiskWarmup] DROPPED %s (%.1fKB): incomplete head warmup below the ready floor",
-			filepath.Base(path), float64(fi.Size())/(1<<10))
+		logf.Info(fmt.Sprintf("[DiskWarmup] DROPPED %s (%.1fKB): incomplete head warmup below the ready floor", filepath.Base(path), float64(fi.Size())/(1<<10)), "file", filepath.Base(path))
 		// Written bytes were counted against the quota, so the drop gives them back
 		// instead of leaving the drift to the next full walk in enforceQuotaLocked.
 		atomic.AddInt64(&d.totalSize, -fi.Size())
@@ -597,7 +595,7 @@ func (d *DiskWarmupCache) getHandle(path string) (*cachedHandle, error) {
 		if f, err = openFile(path, os.O_RDONLY, 0); err == nil {
 			readOnly = true
 			if readOnlyLogged.CompareAndSwap(false, true) {
-				logf.Printf("[DiskWarmup] WARNING: the cache directory is read-only: serving reads, no new bytes will be cached")
+				logf.Warn("[DiskWarmup] WARNING: the cache directory is read-only: serving reads, no new bytes will be cached")
 			}
 		}
 	}
@@ -620,7 +618,7 @@ func (d *DiskWarmupCache) closeHandle(path string) {
 		ch := val.(*cachedHandle)
 		ch.closed.Store(true) // mark before Close so writeWorker can detect stale handle
 		if err := ch.f.Close(); err != nil {
-			logf.Printf("[DiskWarmup] close %s failed: %v", filepath.Base(path), err)
+			logf.Info(fmt.Sprintf("[DiskWarmup] close %s failed: %v", filepath.Base(path), err), "file", filepath.Base(path), "err", err)
 		}
 	}
 	// Aborted warmups (eviction, hash removal, idle close) never reach the
@@ -751,14 +749,14 @@ func (d *DiskWarmupCache) writeHeadLocked(path string, off int64, data []byte) (
 
 		f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
 		if err != nil {
-			logf.Printf("[DiskWarmup] Error creating file: %v", err)
+			logf.Info(fmt.Sprintf("[DiskWarmup] Error creating file: %v", err), "err", err)
 			return
 		}
 		newCh := &cachedHandle{f: f}
 		newCh.lastUsedNano.Store(time.Now().UnixNano())
 		d.handles.Store(path, newCh)
 		d.warmupStarts.Store(path, time.Now())
-		logf.Printf("[DiskWarmup] STARTING %s at offset %d", filepath.Base(path), off)
+		logf.Info(fmt.Sprintf("[DiskWarmup] STARTING %s at offset %d", filepath.Base(path), off), "file", filepath.Base(path), "off", off)
 		started = true
 	}
 
@@ -770,13 +768,13 @@ func (d *DiskWarmupCache) writeHeadLocked(path string, off int64, data []byte) (
 		return
 	}
 	if ch.closed.Load() {
-		logf.Printf("[DiskWarmup] Write skipped: handle closed for %s", filepath.Base(path))
+		logf.Info(fmt.Sprintf("[DiskWarmup] Write skipped: handle closed for %s", filepath.Base(path)), "file", filepath.Base(path))
 		return
 	}
 
 	n, err := ch.f.WriteAt(data, off)
 	if err != nil {
-		logf.Printf("[DiskWarmup] WriteAt error for %s: %v", filepath.Base(path), err)
+		logf.Info(fmt.Sprintf("[DiskWarmup] WriteAt error for %s: %v", filepath.Base(path), err), "file", filepath.Base(path), "err", err)
 		return
 	}
 
@@ -797,7 +795,7 @@ func (d *DiskWarmupCache) writeHeadLocked(path string, off int64, data []byte) (
 		if startVal, ok := d.warmupStarts.LoadAndDelete(path); ok {
 			recordWarmupDuration(time.Since(startVal.(time.Time)))
 		}
-		logf.Printf("[DiskWarmup] COMPLETED %s", filepath.Base(path))
+		logf.Info(fmt.Sprintf("[DiskWarmup] COMPLETED %s", filepath.Base(path)), "file", filepath.Base(path))
 		completed = true
 	}
 	return
@@ -826,8 +824,7 @@ func (d *DiskWarmupCache) GetAvailableRange(hash string, fileID int) int64 {
 		}
 		d.missing.Delete(path)
 		if fi, err := os.Stat(path); err == nil && fi.Size() > 0 {
-			logf.Printf("[DiskWarmup] Negative cache hid an existing warmup file (%.1fMB, %s) for %s",
-				float64(fi.Size())/(1<<20), since.Truncate(time.Second), filepath.Base(path))
+			logf.Info(fmt.Sprintf("[DiskWarmup] Negative cache hid an existing warmup file (%.1fMB, %s) for %s", float64(fi.Size())/(1<<20), since.Truncate(time.Second), filepath.Base(path)), "file", filepath.Base(path))
 		}
 	}
 
@@ -850,7 +847,7 @@ func (d *DiskWarmupCache) GetAvailableRange(hash string, fileID int) int64 {
 	}
 
 	if fi.Size() > FileSize+(16*1024*1024) {
-		logf.Printf("[DiskWarmup] CORRUPT CACHE detected (Size: %.1fMB > 128MB) for %s. Removing.", float64(fi.Size())/(1<<20), hash[:8])
+		logf.Info(fmt.Sprintf("[DiskWarmup] CORRUPT CACHE detected (Size: %.1fMB > 128MB) for %s. Removing.", float64(fi.Size())/(1<<20), hash[:8]), "hash", hash[:8])
 		d.closeHandle(path)
 		d.sizeCache.Delete(path)
 		removeFile(path)
@@ -1023,10 +1020,10 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 			oc := old.(*cachedHandle)
 			oc.closed.Store(true)
 			if err := oc.f.Close(); err != nil {
-				logf.Printf("[DiskWarmup] close replaced handle %s failed: %v", filepath.Base(path), err)
+				logf.Info(fmt.Sprintf("[DiskWarmup] close replaced handle %s failed: %v", filepath.Base(path), err), "file", filepath.Base(path), "err", err)
 			}
 		}
-		logf.Printf("[DiskWarmup] TAIL STARTING %s at relOffset %d", filepath.Base(path), relOffset)
+		logf.Info(fmt.Sprintf("[DiskWarmup] TAIL STARTING %s at relOffset %d", filepath.Base(path), relOffset), "file", filepath.Base(path), "rel_offset", relOffset)
 	}
 
 	ch, err := d.getHandle(path)
@@ -1037,7 +1034,7 @@ func (d *DiskWarmupCache) writeTail(hash string, fileID int, data []byte, absolu
 		return
 	}
 	if ch.closed.Load() {
-		logf.Printf("[DiskWarmup] Write skipped (tail): handle closed for %s", filepath.Base(path))
+		logf.Info(fmt.Sprintf("[DiskWarmup] Write skipped (tail): handle closed for %s", filepath.Base(path)), "file", filepath.Base(path))
 		return
 	}
 
@@ -1234,8 +1231,7 @@ func (d *DiskWarmupCache) EnsureTail(hash string, fileID int, fileSize int64) {
 			}
 			n, err := TailFetch(hash, fileID, tailStart+rel, buf[:end-rel])
 			if err != nil || n <= 0 {
-				logf.Printf("[DiskWarmup] Tail fill stopped at %.1f/%.1fMB for %s: %v",
-					float64(rel)/(1<<20), float64(tailLen)/(1<<20), filepath.Base(path), err)
+				logf.Info(fmt.Sprintf("[DiskWarmup] Tail fill stopped at %.1f/%.1fMB for %s: %v", float64(rel)/(1<<20), float64(tailLen)/(1<<20), filepath.Base(path), err), "file", filepath.Base(path), "err", err)
 				return
 			}
 			d.WriteTail(hash, fileID, buf[:n], tailStart+rel, fileSize)
@@ -1244,8 +1240,7 @@ func (d *DiskWarmupCache) EnsureTail(hash string, fileID int, fileSize int64) {
 			time.Sleep(tailFillPacing)
 		}
 		if d.TailReady(hash, fileID) {
-			logf.Printf("[DiskWarmup] TAIL COMPLETE %s (%.1fMB fetched in %s)",
-				filepath.Base(path), float64(fetched)/(1<<20), time.Since(started).Truncate(time.Second))
+			logf.Info(fmt.Sprintf("[DiskWarmup] TAIL COMPLETE %s (%.1fMB fetched in %s)", filepath.Base(path), float64(fetched)/(1<<20), time.Since(started).Truncate(time.Second)), "file", filepath.Base(path))
 		}
 	}()
 }
@@ -1299,7 +1294,7 @@ func (d *DiskWarmupCache) verified(hash string, fileID int, off int64, data []by
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				logf.Printf("[DiskWarmup] verify waiter panicked: %v", r)
+				logf.Info(fmt.Sprintf("[DiskWarmup] verify waiter panicked: %v", r), "r", r)
 			}
 			<-verifySlots
 			d.pendingVerify.Delete(key)
@@ -1446,7 +1441,7 @@ func (d *DiskWarmupCache) indexTailWorker() {
 func (d *DiskWarmupCache) fillIndexTail(job tailJob) {
 	defer func() {
 		if r := recover(); r != nil {
-			logf.Printf("[DiskWarmup] index tail fill panicked for %s: %v", filepath.Base(job.path), r)
+			logf.Info(fmt.Sprintf("[DiskWarmup] index tail fill panicked for %s: %v", filepath.Base(job.path), r), "file", filepath.Base(job.path), "r", r)
 		}
 	}()
 	if d.TailReady(job.hash, job.fileID) || TailFetch == nil {
@@ -1461,7 +1456,7 @@ func (d *DiskWarmupCache) fillIndexTail(job tailJob) {
 		for !RangeVerified(job.hash, job.fileID, tailStart, tailLen) {
 			if time.Now().After(deadline) {
 				atomic.AddInt64(&unverifiedDrops, 1)
-				logf.Printf("[DiskWarmup] Tail of %s did not verify in %s", filepath.Base(job.path), verifyWaitMax)
+				logf.Info(fmt.Sprintf("[DiskWarmup] Tail of %s did not verify in %s", filepath.Base(job.path), verifyWaitMax), "file", filepath.Base(job.path), "verify_wait_max", verifyWaitMax)
 				return
 			}
 			time.Sleep(verifyPollInterval)
@@ -1470,7 +1465,7 @@ func (d *DiskWarmupCache) fillIndexTail(job tailJob) {
 	buf := make([]byte, tailLen)
 	n, err := TailFetch(job.hash, job.fileID, tailStart, buf)
 	if err != nil || int64(n) != tailLen {
-		logf.Printf("[DiskWarmup] Tail fill of %s failed: %d/%d bytes, %v", filepath.Base(job.path), n, tailLen, err)
+		logf.Info(fmt.Sprintf("[DiskWarmup] Tail fill of %s failed: %d/%d bytes, %v", filepath.Base(job.path), n, tailLen, err), "file", filepath.Base(job.path), "n", n, "tail_len", tailLen, "err", err)
 		return
 	}
 	// Verified before and after the read: the bytes come from hashed pieces.
@@ -1480,6 +1475,6 @@ func (d *DiskWarmupCache) fillIndexTail(job tailJob) {
 	d.writeTail(job.hash, job.fileID, buf, tailStart, job.fileSize)
 	d.noteWrite(job.hash, job.fileID)
 	if d.TailReady(job.hash, job.fileID) {
-		logf.Printf("[DiskWarmup] TAIL COMPLETE %s (index, %.1fMB)", filepath.Base(job.path), float64(tailLen)/(1<<20))
+		logf.Info(fmt.Sprintf("[DiskWarmup] TAIL COMPLETE %s (index, %.1fMB)", filepath.Base(job.path), float64(tailLen)/(1<<20)), "file", filepath.Base(job.path))
 	}
 }

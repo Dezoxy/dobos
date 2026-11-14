@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"flodni/internal/flog"
 	"sort"
 	"strings"
 	"sync"
@@ -274,7 +275,7 @@ func newCatchup(w *warmer.Warmer, x *fileStateIndex, list func() ([]library.Item
 		},
 		now:   time.Now,
 		stop:  backgroundStopChan,
-		logf:  func(f string, v ...interface{}) { logger.Printf(f, v...) },
+		logf:  func(f string, v ...interface{}) { flog.Printf(logger, f, v...) },
 		gauge: catchupFiles,
 	}
 }

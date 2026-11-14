@@ -3,7 +3,7 @@ package daemon
 import (
 	"bytes"
 	"errors"
-	"log"
+	"flodni/internal/flog"
 	"strings"
 	"testing"
 
@@ -52,7 +52,7 @@ func captureLogs(t *testing.T) func() string {
 	t.Helper()
 	var buf bytes.Buffer
 	prev := logger
-	logger = log.New(&buf, "", 0)
+	logger = flog.NewText(&buf)
 	t.Cleanup(func() { logger = prev })
 	return buf.String
 }

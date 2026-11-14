@@ -1,7 +1,8 @@
 package daemon
 
 import (
-	"log"
+	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -94,7 +95,7 @@ type readabilityStore interface {
 // newReachabilityRecorder returns the native.ReachabilityOutcome hook that writes the
 // readability record. Only bytes from the swarm stamp a read; a metainfo taken from it
 // only ends the streak.
-func newReachabilityRecorder(store readabilityStore, logger *log.Logger) func(native.Outcome) {
+func newReachabilityRecorder(store readabilityStore, logger *slog.Logger) func(native.Outcome) {
 	return func(o native.Outcome) {
 		var err error
 		switch o.Kind {
@@ -113,13 +114,13 @@ func newReachabilityRecorder(store readabilityStore, logger *log.Logger) func(na
 			}
 			// Deliberately does not say why: the session layer that condemned
 			// already logged its own reason, with duration and outcome.
-			logger.Printf("[DeadSwarm] %s did not answer", short)
+			logger.Info(fmt.Sprintf("[DeadSwarm] %s did not answer", short), "short", short)
 			// Counted before the store call, so a database error does not hide a verdict.
 			countDeadSwarmVerdict(o.Reason, o.Source)
 			err = store.RecordMetadataFailure(o.Hash, o.Reason, o.Source, time.Now())
 		}
 		if err != nil {
-			logger.Printf("WARNING: reachability bookkeeping for %s: %v", o.Hash, err)
+			logger.Warn(fmt.Sprintf("WARNING: reachability bookkeeping for %s: %v", o.Hash, err), "hash", o.Hash, "err", err)
 		}
 	}
 }

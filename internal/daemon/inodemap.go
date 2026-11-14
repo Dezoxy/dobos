@@ -1,9 +1,10 @@
 package daemon
 
 import (
+	"flodni/internal/flog"
 	"flodni/internal/vfs"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -12,7 +13,7 @@ import (
 
 var globalInodeMap *vfs.InodeMap
 
-func InitGlobalInodeMap(stateDir string, logger *log.Logger) error {
+func InitGlobalInodeMap(stateDir string, logger *slog.Logger) error {
 	savePath := vfs.GetDefaultInodeMapPath(stateDir)
 	dir := filepath.Dir(savePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -25,16 +26,16 @@ func InitGlobalInodeMap(stateDir string, logger *log.Logger) error {
 // finishGlobalInodeMapInit loads the map and starts the saver. Split from
 // InitGlobalInodeMap so the load runs once, after StateDB had a chance to attach:
 // loading JSON first would report an empty map on every migrated install.
-func finishGlobalInodeMapInit(logger *log.Logger) {
+func finishGlobalInodeMapInit(logger *slog.Logger) {
 	if globalInodeMap == nil {
 		return
 	}
 	if !globalInodeMap.HasDB() {
 		if err := globalInodeMap.LoadFromDisk(); err != nil {
-			logger.Printf("WARNING: Failed to load inode map: %v (falling back to filename hash)", err)
+			logger.Warn(fmt.Sprintf("WARNING: Failed to load inode map: %v (falling back to filename hash)", err), "err", err)
 		}
 		files, dirs, _, _ := GetInodeMapStats()
-		logger.Printf("InodeMap: Initialized with %d files, %d dirs from %s", files, dirs, vfs.GetDefaultInodeMapPath(GetStateDir()))
+		logger.Info(fmt.Sprintf("InodeMap: Initialized with %d files, %d dirs from %s", files, dirs, vfs.GetDefaultInodeMapPath(GetStateDir())), "files", files, "dirs", dirs)
 	}
 	globalInodeMap.StartBackgroundSaver()
 }
@@ -84,8 +85,8 @@ func GetInodeMapStats() (files, dirs, hits, misses int64) {
 }
 
 // vfsLogger adapts *log.Logger to the vfs.Logger interface.
-type vfsLogger struct{ logger *log.Logger }
+type vfsLogger struct{ logger *slog.Logger }
 
 func (l *vfsLogger) Printf(format string, args ...interface{}) {
-	l.logger.Printf(format, args...)
+	flog.Printf(l.logger, format, args...)
 }

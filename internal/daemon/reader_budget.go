@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -463,8 +464,8 @@ func (s *TTFFSession) logReaderBudget(event string, off *int64, heldMS int64) {
 	}
 	line, err := json.Marshal(rec)
 	if err != nil {
-		logger.Printf("WARNING: reader budget line for %s not written: %v", s.hash, err)
+		logger.Warn(fmt.Sprintf("WARNING: reader budget line for %s not written: %v", s.hash, err), "hash", s.hash, "err", err)
 		return
 	}
-	logger.Printf("%s%s", readerBudgetPrefix, line)
+	logger.Info(fmt.Sprintf("%s%s", readerBudgetPrefix, line))
 }
