@@ -11,7 +11,7 @@ replace (
 
 require (
 	github.com/anacrolix/dht/v2 v2.24.0
-	github.com/anacrolix/missinggo/v2 v2.10.0
+	github.com/anacrolix/missinggo/v2 v2.11.0
 	github.com/anacrolix/publicip v0.3.1
 	github.com/anacrolix/torrent v1.55.0
 	github.com/cespare/xxhash/v2 v2.3.0
@@ -29,6 +29,7 @@ require (
 
 require (
 	github.com/RoaringBitmap/roaring v1.9.4 // indirect
+	github.com/RoaringBitmap/roaring/v2 v2.30.0 // indirect
 	github.com/ajwerner/btree v0.3.0 // indirect
 	github.com/alecthomas/atomic v0.1.0-alpha2 // indirect
 	github.com/anacrolix/chansync v0.8.0 // indirect
