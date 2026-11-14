@@ -62,7 +62,9 @@ type redialTarget interface {
 	ActivePeers() int
 	BytesMissing() int64
 	Closed() <-chan struct{}
-	AddPeer(addr torrent.PeerRemoteAddr)
+	// AddPeer returns how many peers the torrent took (0 for an address it already
+	// knows or refuses).
+	AddPeer(addr torrent.PeerRemoteAddr) int
 }
 
 // engineTorrent adapts an engine torrent. Every method but Hash and Closed takes the
@@ -81,8 +83,8 @@ func (e engineTorrent) BytesMissing() int64     { return e.t.BytesMissing() }
 func (e engineTorrent) Closed() <-chan struct{} { return e.t.Closed() }
 
 // AddPeer hands the address back to the torrent as what it was: a tracker's peer.
-func (e engineTorrent) AddPeer(addr torrent.PeerRemoteAddr) {
-	e.t.AddPeers([]torrent.PeerInfo{{Addr: addr, Source: torrent.PeerSourceTracker}})
+func (e engineTorrent) AddPeer(addr torrent.PeerRemoteAddr) int {
+	return e.t.AddPeers([]torrent.PeerInfo{{Addr: addr, Source: torrent.PeerSourceTracker}})
 }
 
 // onPeerConnClosed is the engine's PeerConnClosed callback. It runs inside the engine
@@ -118,6 +120,7 @@ func redialAfter(t redialTarget, addr torrent.PeerRemoteAddr, delay time.Duratio
 	select {
 	case <-timer.C:
 	case <-t.Closed():
+		forgetRedial(t.Hash())
 		return
 	}
 	if !t.Private() || t.ActivePeers() != 0 || t.BytesMissing() == 0 {
@@ -126,7 +129,9 @@ func redialAfter(t redialTarget, addr torrent.PeerRemoteAddr, delay time.Duratio
 	if !redialAllowed(t.Hash(), time.Now()) {
 		return
 	}
-	t.AddPeer(addr)
+	if t.AddPeer(addr) == 0 {
+		return
+	}
 	redials.Add(1)
 	log.TLogln("redial: re-added the only peer of a private torrent", t.Hash().HexString())
 }
@@ -136,9 +141,23 @@ func redialAfter(t redialTarget, addr torrent.PeerRemoteAddr, delay time.Duratio
 func redialAllowed(hash metainfo.Hash, now time.Time) bool {
 	redialMu.Lock()
 	defer redialMu.Unlock()
-	if last, ok := redialLast[hash]; ok && now.Sub(last) < redialMinGap {
+	// An entry older than the gap no longer limits anything: drop it, so the map holds
+	// only torrents redialed within the last minute.
+	for h, last := range redialLast {
+		if now.Sub(last) >= redialMinGap {
+			delete(redialLast, h)
+		}
+	}
+	if _, ok := redialLast[hash]; ok {
 		return false
 	}
 	redialLast[hash] = now
 	return true
+}
+
+// forgetRedial drops the limit entry of a torrent that closed.
+func forgetRedial(hash metainfo.Hash) {
+	redialMu.Lock()
+	delete(redialLast, hash)
+	redialMu.Unlock()
 }

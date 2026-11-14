@@ -213,7 +213,8 @@ type TTFFSession struct {
 	// from there, so a stopped play does not leave the next reader pre-spent.
 	// refusedReads is how many reads the gate refused; confirmedAfterRefusal makes the
 	// confirmed-after-refusal counter once per session.
-	budgetFloor           atomic.Int64
+	budgetFloor           atomic.Int64 // the served tally at that moment
+	fillFloor             atomic.Int64 // the fill tally at that moment; kept apart so a live toggle of attribute_fills_to_reader is safe
 	refusedReads          atomic.Int64
 	confirmedAfterRefusal atomic.Bool
 

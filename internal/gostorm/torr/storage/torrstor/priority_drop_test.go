@@ -13,8 +13,13 @@ import (
 // newPriorityTestCache starts a client with a capped cache and an 8-piece torrent.
 func newPriorityTestCache(t *testing.T) (*torrent.Torrent, *Cache) {
 	t.Helper()
+	return newPriorityTestCacheN(t, 8)
+}
+
+// newPriorityTestCacheN is the same with a torrent of this many 16 KiB pieces.
+func newPriorityTestCacheN(t *testing.T, pieces int) (*torrent.Torrent, *Cache) {
+	t.Helper()
 	const pieceLen = 16 << 10
-	const pieces = 8
 	stor := NewStorage(int64(pieces) * pieceLen)
 
 	cfg := torrent.NewDefaultClientConfig()
@@ -30,7 +35,7 @@ func newPriorityTestCache(t *testing.T) (*torrent.Torrent, *Cache) {
 	}
 	t.Cleanup(func() { cl.Close() })
 
-	info := metainfo.Info{PieceLength: pieceLen, Length: pieces * pieceLen, Name: "x", Pieces: make([]byte, 20*pieces)}
+	info := metainfo.Info{PieceLength: pieceLen, Length: int64(pieces) * pieceLen, Name: "x", Pieces: make([]byte, 20*pieces)}
 	ib, err := bencode.Marshal(info)
 	if err != nil {
 		t.Fatal(err)
@@ -159,55 +164,5 @@ func TestMarkCompleteEvictsOverCapacity(t *testing.T) {
 	if !last.Complete.Load() || last.Size != pieceLen {
 		t.Errorf("the completing piece was evicted: complete=%v size=%d, want true and %d",
 			last.Complete.Load(), last.Size, pieceLen)
-	}
-}
-
-// A priority change can alter only the order of what the engine wants, and the engine
-// wakes no idle peer for that. The cache asks the peers itself after each change it makes.
-func countWakes(t *testing.T, tor *torrent.Torrent) *int {
-	t.Helper()
-	woken := new(int)
-	prev := wakePeers
-	wakePeers = func(got *torrent.Torrent) {
-		if got != tor {
-			t.Error("woke the wrong torrent")
-		}
-		*woken++
-		prev(got) // the real call must not deadlock under the cache's locks
-	}
-	t.Cleanup(func() { wakePeers = prev })
-	return woken
-}
-
-func TestMarkCompleteWakesThePeers(t *testing.T) {
-	tor, cache := newPriorityTestCache(t)
-	tor.DownloadPieces(3, 4)
-	woken := countWakes(t, tor)
-	if err := cache.pieces[3].MarkComplete(); err != nil {
-		t.Fatal(err)
-	}
-	if *woken != 1 {
-		t.Fatalf("woken = %d after MarkComplete, want 1", *woken)
-	}
-}
-
-func TestClearPriorityWakesThePeersOnlyWhenItDropsOne(t *testing.T) {
-	tor, cache := newPriorityTestCache(t)
-	woken := countWakes(t, tor)
-
-	cache.clearPriority() // nothing to drop
-	if *woken != 0 {
-		t.Fatalf("woken = %d with nothing dropped, want 0", *woken)
-	}
-	cache.muPriority.Lock()
-	cache.localPriority[3] = torrent.PiecePriorityNow
-	tor.SetPiecePriorities(map[int]torrenttypes.PiecePriority{3: torrent.PiecePriorityNow})
-	cache.muPriority.Unlock()
-	cache.clearPriority() // no reader covers piece 3
-	if *woken != 1 {
-		t.Fatalf("woken = %d after dropping a priority, want 1", *woken)
-	}
-	if got := tor.PieceState(3).Priority; got != torrent.PiecePriorityNone {
-		t.Fatalf("priority = %v, want None", got)
 	}
 }

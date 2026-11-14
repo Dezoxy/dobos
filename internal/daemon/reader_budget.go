@@ -214,6 +214,18 @@ func (s *TTFFSession) budgetTally() int64 {
 	return t
 }
 
+// budgetSince is what the session has taken past its windows since the last confirmation:
+// the served bytes since their floor, or with attribute_fills_to_reader on the fills since
+// theirs if that is more. Each figure has its own floor, so the switch can be flipped while
+// sessions are open without one tally being measured from the other's floor.
+func (s *TTFFSession) budgetSince() int64 {
+	d := s.unconfirmedSwarm.Load() + s.unconfirmedCache.Load() - s.budgetFloor.Load()
+	if attributeFillsToReader() {
+		d = max(d, s.unconfirmedFill.Load()-s.fillFloor.Load())
+	}
+	return d
+}
+
 // noteFillAttributed attributes a fill of [off, off+n) by the pump or a prefetch to the
 // session of path, when the file has a session and no confirmed playback and the bytes
 // lie past the windows. The windows are exempt, as for reads. Called after the fill
@@ -231,7 +243,12 @@ func noteFillAttributed(path string, off, n, size int64) {
 	s := v.(*TTFFSession)
 	attributedFillBytes.Add(out)
 	s.unconfirmedFill.Add(out)
-	s.checkOverMargin()
+	// Phase a's over_margin line and its session count follow the margin, which fills move
+	// only with the switch on: with it off a pump fill must not log a reader that took
+	// nothing (at a margin of 0 any byte would).
+	if attributeFillsToReader() {
+		s.checkOverMargin()
+	}
 }
 
 // readaheadWindowStart reports whether a read starting at off lies inside the head or
@@ -276,10 +293,10 @@ func clampReadahead(path string, off, end, fetchEnd, size int64) int64 {
 }
 
 // pastMargin reports whether the session has taken at least the margin past its windows
-// since the last confirmation (the tally less budgetFloor). With margin 0 that holds from
+// since the last confirmation (budgetSince). With margin 0 that holds from
 // the start.
 func (s *TTFFSession) pastMargin() bool {
-	return s.budgetTally()-s.budgetFloor.Load() >= unconfirmedMargin()
+	return s.budgetSince() >= unconfirmedMargin()
 }
 
 // overUnconfirmedMargin reports whether this session has taken at least the margin past
@@ -462,7 +479,8 @@ func noteConfirmedLate(path string) {
 	s.confirmed.Store(true)
 	// Before the early returns: a refusal needs the fresh start whether or not the
 	// session ever crossed in phase a's sense.
-	s.budgetFloor.Store(s.budgetTally())
+	s.budgetFloor.Store(s.unconfirmedSwarm.Load() + s.unconfirmedCache.Load())
+	s.fillFloor.Store(s.unconfirmedFill.Load())
 	if s.refusedReads.Load() > 0 && s.confirmedAfterRefusal.CompareAndSwap(false, true) {
 		unconfirmedConfirmedAfterRefusal.Add(1)
 	}

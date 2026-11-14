@@ -223,3 +223,51 @@ func TestWarmLandingPrefetchIsAttributedToTheSession(t *testing.T) {
 		t.Fatal("no prefetch ran")
 	}
 }
+
+// With the switch off, fills are only counted: at a margin of 0 a pump fill past the window
+// must not log over_margin or make the session count as unconfirmed.
+func TestFillsDoNotCrossTheMarginWithTheSwitchOff(t *testing.T) {
+	s := budgetEnv(t, 0)
+	prev := attributeFillsToReader
+	attributeFillsToReader = func() bool { return false }
+	t.Cleanup(func() { attributeFillsToReader = prev })
+	buf := captureSessionLog(t)
+	_, u0, _ := rbCounts()
+
+	noteFillAttributed(s.path, 500*mb, 4*mb, s.size)
+	if s.overMarginAt.Load() != 0 || len(linesWith(buf, rbPrefix)) != 0 {
+		t.Fatalf("a fill logged over_margin with the switch off:\n%s", buf)
+	}
+	s.closeSession()
+	if _, u, _ := rbCounts(); u != u0 {
+		t.Fatalf("a fill-only session counted as unconfirmed (+%d)", u-u0)
+	}
+}
+
+// The served and fill tallies each count from their own floor, so flipping the switch while
+// a session is open does not measure one from the other's floor.
+func TestFloorsAreKeptApartAcrossALiveToggle(t *testing.T) {
+	s := budgetEnv(t, 8*mb)
+	prev := attributeFillsToReader
+	t.Cleanup(func() { attributeFillsToReader = prev })
+	attributeFillsToReader = func() bool { return false }
+
+	s.unconfirmedCache.Store(20 * mb)
+	noteFillAttributed(s.path, 500*mb, 4*mb, s.size) // 4 MiB of fills
+	confirmPlayback(s.path)
+	noteConfirmedLate(s.path) // floors: served 20 MiB, fill 4 MiB
+	playbackRegistry.Delete(s.path)
+
+	attributeFillsToReader = func() bool { return true }
+	if s.pastMargin() {
+		t.Fatal("pre-spent right after a confirmation")
+	}
+	noteFillAttributed(s.path, 504*mb, 4*mb, s.size)
+	if s.pastMargin() { // 4 MiB of fills since the floor, below 8
+		t.Fatalf("since = %d, want 4 MiB", s.budgetSince())
+	}
+	noteFillAttributed(s.path, 508*mb, 4*mb, s.size)
+	if !s.pastMargin() || s.budgetSince() != 8*mb {
+		t.Fatalf("since = %d, want 8 MiB", s.budgetSince())
+	}
+}

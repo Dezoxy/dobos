@@ -304,14 +304,17 @@ the places they were first seen (the stale cache priorities, now dropped).
   the set of pieces it wants, but not when the change only reorders them. A
   peer with nothing in flight then sits idle until the next chunk, keepalive
   or announce. The cache that sets the priorities (`torrstor`) now asks every
-  peer of the torrent to update its requests after each priority change it
+  peer of the torrent to update its requests after a priority change it
   makes, through the engine's existing public `AllowDataUpload` (Flodni never
-  disallows uploads, so its only effect is that update). The engine itself is
-  not changed. The engine package pins both halves in `peer_wake_test.go`: an
-  order-only change wakes no peer, and `AllowDataUpload` wakes every one. This
-  adds one wake call per priority change; the engine debounces the rebuild of
-  a peer that has requests in flight and was updated recently. It is a fix
-  and has no switch.
+  disallows uploads, which a test pins by scanning the source for
+  `DisallowDataUpload`; so its only effect is that update). The engine itself
+  is not changed. The engine package pins both halves in `peer_wake_test.go`:
+  an order-only change wakes no peer, and `AllowDataUpload` wakes every one.
+  The wake fires only when a priority differs from what the cache set before
+  (a repeated identical set wakes nobody), and wakes within 20 ms of each
+  other are merged into one, run after the last of them. It wakes every peer,
+  including choked ones the engine's own wake would skip; the cost on a large
+  public swarm is not measured. It is a fix and has no switch.
 - **`redial_dropped_peer`** in `config.json` (default `false`, read when a
   peer drops). The engine does not keep a dropped peer to redial, and floors a
   tracker's announce interval at one minute, so a private torrent whose only
@@ -327,8 +330,12 @@ the places they were first seen (the stale cache priorities, now dropped).
   still apply). The 3 s and the 1 minute are constants. The series
   `flodni_engine_peer_redials_total` counts the redials. The privacy cases are
   pinned in `internal/gostorm/torr/redial_test.go`. Not covered: an incoming
-  connection that drops (its remote port is not a listening one), and two
-  peers dropping together (one address is redialed, not both).
+  connection that drops (its remote port is not a listening one), a peer
+  restored from the stored torrent record when a closed torrent wakes (the
+  engine tags those as direct, so the redial skips them, and the main
+  single-seeder case after a wake is therefore not covered), and two peers
+  dropping together (one address is redialed, not both). A redial the torrent
+  did not take (an address it already knows) is not counted.
 
 ## Readability record
 

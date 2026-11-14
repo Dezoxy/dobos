@@ -21,9 +21,9 @@ type fakeRedial struct {
 	missing int64
 	closed  chan struct{}
 
-	mu    sync.Mutex
-	added []torrent.PeerRemoteAddr
-	srcs  int
+	mu     sync.Mutex
+	added  []torrent.PeerRemoteAddr
+	refuse bool // AddPeer takes nothing, as for an address the torrent already knows
 }
 
 func newFakeRedial() *fakeRedial {
@@ -35,10 +35,14 @@ func (f *fakeRedial) Private() bool           { return f.private }
 func (f *fakeRedial) ActivePeers() int        { return f.active }
 func (f *fakeRedial) BytesMissing() int64     { return f.missing }
 func (f *fakeRedial) Closed() <-chan struct{} { return f.closed }
-func (f *fakeRedial) AddPeer(a torrent.PeerRemoteAddr) {
+func (f *fakeRedial) AddPeer(a torrent.PeerRemoteAddr) int {
 	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.added = append(f.added, a)
-	f.mu.Unlock()
+	if f.refuse {
+		return 0
+	}
+	return 1
 }
 func (f *fakeRedial) adds() []torrent.PeerRemoteAddr {
 	f.mu.Lock()
@@ -187,5 +191,35 @@ func TestRedialAdapterReadsTheEngineTorrent(t *testing.T) {
 		if got := tor.Stats().PendingPeers; got != 1 {
 			t.Errorf("%s: pending peers = %d after AddPeer, want 1", c.name, got)
 		}
+	}
+}
+
+// A redial the torrent did not take is neither counted nor logged, and a closed torrent
+// leaves no limit entry behind.
+func TestRedialCountsOnlyWhatTheTorrentTook(t *testing.T) {
+	redialEnv(t, true)
+	f := newFakeRedial()
+	f.refuse = true
+	before := RedialCount()
+	maybeRedial(torrent.PeerSourceTracker, f, testAddr)
+	settle()
+	if RedialCount() != before {
+		t.Fatalf("counted a redial the torrent refused")
+	}
+}
+
+func TestRedialLimitEntryIsForgottenWhenTheTorrentCloses(t *testing.T) {
+	redialEnv(t, true)
+	redialDelay = time.Hour
+	f := newFakeRedial()
+	redialAllowed(f.hash, time.Now())
+	maybeRedial(torrent.PeerSourceTracker, f, testAddr)
+	close(f.closed)
+	settle()
+	redialMu.Lock()
+	n := len(redialLast)
+	redialMu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d limit entries left after the torrent closed", n)
 	}
 }
