@@ -220,8 +220,9 @@ func (bt *BTServer) configure(ctx context.Context) {
 	bt.config.DisableIPv6 = !settings.BTsets.EnableIPv6
 	bt.config.DisableTCP = settings.BTsets.DisableTCP
 	bt.config.DisableUTP = settings.BTsets.DisableUTP
-	// WebTorrent (WebRTC peers) is off: Flodni streams from BitTorrent swarms, and the
-	// WebRTC stack (pion/dtls/v2, pion/stun) carries advisories with no fixed release.
+	// WebTorrent (WebRTC peers) is off: Flodni streams from BitTorrent swarms, and a
+	// peer transport nobody uses is attack surface. It also keeps private torrents off
+	// WebRTC, which the engine does not gate by the private flag.
 	bt.config.DisableWebtorrent = true
 	// bt.config.DisableWebseeds = false  //	NE
 	bt.config.NoDefaultPortForwarding = settings.BTsets.DisableUPNP
