@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -313,7 +314,7 @@ func markColdOpen(path string, k warmup.FileKey, headReady bool) {
 func countConfirmedPlay(path string, k warmup.FileKey, ok bool) {
 	playbackStarts.Add(1)
 	if !ok {
-		logger.Printf("[PLEX] Playback start resolved to no single file: not marked, no cold reopen counted (%s)", filepath.Base(path))
+		logger.Info(fmt.Sprintf("[PLEX] Playback start resolved to no single file: not marked, no cold reopen counted (%s)", filepath.Base(path)), "file", filepath.Base(path))
 		return
 	}
 	if v, found := sessions.Load(path); found && v.(*TTFFSession).coldEvicted.Swap(false) {

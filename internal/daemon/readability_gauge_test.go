@@ -2,8 +2,9 @@ package daemon
 
 import (
 	"errors"
+	"flodni/internal/flog"
 	"io"
-	"log"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,7 +42,7 @@ func TestCountReadabilityBuckets(t *testing.T) {
 }
 
 func TestCountReadabilityResetRowIsNeverRead(t *testing.T) {
-	db, err := metadb.New(filepath.Join(t.TempDir(), "state.db"), discardLogger{})
+	db, err := metadb.New(filepath.Join(t.TempDir(), "state.db"), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +75,7 @@ func TestReadabilityGaugeScrape(t *testing.T) {
 		t.Fatal("series present before any refresh (state database off)")
 	}
 
-	l := log.New(io.Discard, "", 0)
+	l := flog.NewText(io.Discard)
 	refreshReadabilityGauge(&fakeLister{rows: []metadb.Readability{{Hash: "o", LastSwarmRead: 1}}}, 3, l)
 	body := scrape(t).Body.String()
 	for _, want := range []string{

@@ -2,6 +2,7 @@ package library
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -62,7 +63,7 @@ func (m *Manager) scheduleRefresh(section int) {
 		m.mu.Unlock()
 
 		if err != nil {
-			m.cfg.Logger.Printf("[LibraryAPI] WARNING: library refresh failed: %v", err)
+			m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: library refresh failed: %v", err), "err", err)
 		}
 		if again {
 			m.scheduleRefresh(section)

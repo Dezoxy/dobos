@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"net/http"
 	"os"
 	"runtime"
@@ -27,7 +28,7 @@ func handlePrometheus(w http.ResponseWriter, r *http.Request) {
 	var pw promtext.Writer
 	collectProm(&pw)
 	if err := pw.Err(); err != nil {
-		logger.Printf("WARNING: metrics/prometheus not served: %v", err)
+		logger.Warn(fmt.Sprintf("WARNING: metrics/prometheus not served: %v", err), "err", err)
 		http.Error(w, "metrics unavailable", http.StatusInternalServerError)
 		return
 	}

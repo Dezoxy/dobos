@@ -2,9 +2,9 @@ package daemon
 
 import (
 	"encoding/json"
+	"flodni/internal/flog"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,7 +50,7 @@ func TestStartupEndpointAnswers503BeforeTheReport(t *testing.T) {
 func TestStartupReportAfterASimulatedStartup(t *testing.T) {
 	b, _ := pruneEnv(t)
 	t.Setenv(stateUnmountedEnv, "")
-	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), &vfsLogger{log.New(io.Discard, "", 0)})
+	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), flog.NewText(io.Discard))
 	prev := globalInodeMap
 	globalInodeMap = im
 	t.Cleanup(func() { globalInodeMap = prev })
@@ -64,7 +64,7 @@ func TestStartupReportAfterASimulatedStartup(t *testing.T) {
 	b.hasMetainfo = func(h string) bool { return h == inLibHash }
 
 	var logs lockedBuilder
-	r := &startupReporter{logf: log.New(&logs, "", 0).Printf}
+	r := &startupReporter{logf: flog.Logf(flog.NewText(&logs))}
 	r.note(func(f *startupFacts) {
 		f.stateDBEnabled, f.stateDBPath, f.stateDBMigration = true, "/state/x.db", migrationMigrated
 		f.inodeFilesLoaded = 4
@@ -134,7 +134,7 @@ func TestStartupReportAfterASimulatedStartup(t *testing.T) {
 func TestStartupReportNamesTheEmptyDirectory(t *testing.T) {
 	b, _ := pruneEnv(t)
 	t.Setenv(stateUnmountedEnv, "")
-	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), &vfsLogger{log.New(io.Discard, "", 0)})
+	im := vfs.NewInodeMap(filepath.Join(t.TempDir(), "inodes.json"), flog.NewText(io.Discard))
 	prev := globalInodeMap
 	globalInodeMap = im
 	t.Cleanup(func() { globalInodeMap = prev })
@@ -146,8 +146,8 @@ func TestStartupReportNamesTheEmptyDirectory(t *testing.T) {
 	}
 	writeStub(t, filepath.Join(b.sourcePath, "tv", "Show", "S01E01_cafe.mkv"), inLibHash, 1<<30)
 	var logs lockedBuilder
-	b.logger = log.New(&logs, "", 0)
-	r := &startupReporter{logf: log.New(&logs, "", 0).Printf}
+	b.logger = flog.NewText(&logs)
+	r := &startupReporter{logf: flog.Logf(flog.NewText(&logs))}
 	done := make(chan struct{})
 	b.onDone = func(s scanResult) { r.markScanned(s); close(done) }
 	b.Start()
@@ -290,7 +290,7 @@ func TestPathsDifferWarningIsPinned(t *testing.T) {
 
 func TestPruneAndUnstoredLinesArePinned(t *testing.T) {
 	var out strings.Builder
-	lg := log.New(&out, "", 0)
+	lg := flog.NewText(&out)
 	pruneGuard(lg, "Readability", false, 0, 1, nil)
 	if got, want := strings.TrimSpace(out.String()), "Readability prune skipped: complete=false errors=0 stubs=1"; got != want {
 		t.Errorf("got %q, want %q", got, want)
@@ -298,7 +298,7 @@ func TestPruneAndUnstoredLinesArePinned(t *testing.T) {
 
 	b, _ := pruneInodeEnv(t)
 	var logs strings.Builder
-	b.logger = log.New(&logs, "", 0)
+	b.logger = flog.NewText(&logs)
 	b.pruneInodes(true)
 	if got, want := strings.TrimSpace(logs.String()), "Startup GC: Pruned 1 ghost inodes"; got != want {
 		t.Errorf("got %q, want %q", got, want)

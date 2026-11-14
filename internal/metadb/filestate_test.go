@@ -2,6 +2,7 @@ package metadb
 
 import (
 	"database/sql"
+	"log/slog"
 	"path/filepath"
 	"testing"
 	"time"
@@ -119,7 +120,7 @@ func TestMigrationAddsFileState(t *testing.T) {
 	}
 	_ = raw.Close()
 	for i := 0; i < 2; i++ {
-		d, err := New(path, nopLogger{})
+		d, err := New(path, slog.New(slog.DiscardHandler))
 		if err != nil {
 			t.Fatalf("open %d: %v", i, err)
 		}
@@ -156,7 +157,7 @@ func TestMigrationAddsFileWarmColumns(t *testing.T) {
 	}
 	_ = raw.Close()
 	for i := 0; i < 2; i++ {
-		d, err := New(path, nopLogger{})
+		d, err := New(path, slog.New(slog.DiscardHandler))
 		if err != nil {
 			t.Fatalf("open %d: %v", i, err)
 		}
@@ -274,7 +275,7 @@ func TestMigrationAddsQueuedAt(t *testing.T) {
 	}
 	_ = raw.Close()
 	for i := 0; i < 2; i++ {
-		d, err := New(path, nopLogger{})
+		d, err := New(path, slog.New(slog.DiscardHandler))
 		if err != nil {
 			t.Fatalf("open %d: %v", i, err)
 		}

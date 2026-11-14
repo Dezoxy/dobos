@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"flodni/internal/flog"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -76,7 +77,7 @@ func newWebhookMarks() *webhookMarks {
 		now: time.Now,
 		logf: func(f string, v ...interface{}) {
 			if logger != nil {
-				logger.Printf(f, v...)
+				flog.Printf(logger, f, v...)
 			}
 		},
 	}

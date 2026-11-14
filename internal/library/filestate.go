@@ -1,6 +1,7 @@
 package library
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -150,7 +151,7 @@ func (m *Manager) FileState(hash string, fileIndex int) (*FileStateResponse, err
 	if kind == "tv" && m.cfg.Registry != nil {
 		rows, err := m.cfg.Registry.EpisodesByFilePath(stub.Path)
 		if err != nil {
-			m.cfg.Logger.Printf("[LibraryAPI] WARNING: cannot read the registry rows of %s: %v", stub.Path, err)
+			m.cfg.Logger.Warn(fmt.Sprintf("[LibraryAPI] WARNING: cannot read the registry rows of %s: %v", stub.Path, err), "path", stub.Path, "err", err)
 			return nil, errf(http.StatusServiceUnavailable, "cannot read the episode registry")
 		}
 		if len(rows) > 0 {

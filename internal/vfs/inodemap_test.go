@@ -1,14 +1,14 @@
 package vfs
 
 import (
+	"flodni/internal/flog"
 	"io"
-	"log"
 	"path/filepath"
 	"testing"
 )
 
 func TestLibraryHashCountIsDistinctAndCaseFolded(t *testing.T) {
-	im := NewInodeMap(filepath.Join(t.TempDir(), "inode.json"), log.New(io.Discard, "", 0))
+	im := NewInodeMap(filepath.Join(t.TempDir(), "inode.json"), flog.NewText(io.Discard))
 	if got := im.LibraryHashCount(); got != 0 {
 		t.Fatalf("empty map counts %d", got)
 	}

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"log/slog"
 	"path/filepath"
 	"testing"
 	"time"
@@ -13,17 +14,13 @@ func fk(h string, i int) warmup.FileKey { return warmup.FileKey{Hash: h, FileIdx
 
 func testStore(t *testing.T, path string) *metadb.DB {
 	t.Helper()
-	db, err := metadb.New(path, nopLogger{})
+	db, err := metadb.New(path, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
-
-type nopLogger struct{}
-
-func (nopLogger) Printf(string, ...interface{}) {}
 
 func TestPlayedProtectionExpiresAfterTheConfiguredDays(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)

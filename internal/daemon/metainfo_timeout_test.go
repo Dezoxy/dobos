@@ -2,8 +2,8 @@ package daemon
 
 import (
 	"encoding/json"
+	"flodni/internal/flog"
 	"io"
-	"log"
 	"net/http"
 	"testing"
 	"time"
@@ -108,7 +108,7 @@ func TestMetainfoTimeoutShowsInTorrentsHealth(t *testing.T) {
 	setClock(t, time.Unix(1_700_000_000, 0))
 	native.ReachabilityOutcome(timeoutOutcome(rHash))
 
-	h := newTorrentsHealthHandler(db, nil, log.New(io.Discard, "", 0))
+	h := newTorrentsHealthHandler(db, nil, flog.NewText(io.Discard))
 	rec := getHealth(h, http.MethodGet, "/api/torrents/health?failing=1")
 	var body struct {
 		Torrents []struct {

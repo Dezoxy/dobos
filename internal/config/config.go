@@ -2,7 +2,9 @@ package config
 
 import (
 	"encoding/json"
-	"log"
+	"flodni/internal/flog"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,7 +35,8 @@ type Config struct {
 	MetadataCacheSizeMB    int64  `json:"metadata_cache_size_mb"`   // Size of metadata LRU cache in MB (V178)
 	FuseBlockSize          int    `json:"fuse_block_size_bytes"`
 	StreamingThresholdKB   int64  `json:"streaming_threshold_kb"`
-	LogLevel               string `json:"log_level"`
+	LogLevel               string `json:"log_level"`  // DEBUG shows debug lines; anything else is INFO (WARN, ERROR reserved, behave like INFO)
+	LogFormat              string `json:"log_format"` // "text" (default) or "json"
 
 	// --- FUSE Timing ---
 	AttrTimeoutSeconds     float64 `json:"attr_timeout_seconds"`
@@ -289,6 +292,7 @@ func LoadConfig() Config {
 		StreamingThresholdKB:   128,
 		PumpOnOpen:             true,
 		LogLevel:               "INFO",
+		LogFormat:              "text",
 
 		AttrTimeoutSeconds:     1.0,
 		EntryTimeoutSeconds:    1.0,
@@ -356,10 +360,10 @@ func LoadConfig() Config {
 		cleanData := stripJSONComments(data)
 		if err := json.Unmarshal(cleanData, &cfg); err != nil {
 			ParseFailed.Store(true)
-			log.Printf(parseFailedFmt, cfg.ConfigPath, err)
+			flog.Printf(flog.Std, parseFailedFmt, cfg.ConfigPath, err)
 		} else {
 			ParseFailed.Store(false)
-			log.Printf("[Config] Loaded settings from %s", cfg.ConfigPath)
+			flog.Std.Info(fmt.Sprintf("[Config] Loaded settings from %s", cfg.ConfigPath), "config_path", cfg.ConfigPath)
 			cfg.fileAPIToken = cfg.APIToken
 			// Backward compat: if gostorm_url was not present in config, fall back to legacy torrserver_url key
 			if cfg.GoStormBaseURL == "" {
@@ -369,7 +373,7 @@ func LoadConfig() Config {
 						var s string
 						if json.Unmarshal(v, &s) == nil && s != "" {
 							cfg.GoStormBaseURL = s
-							log.Printf("[Config] Loaded GoStormBaseURL from legacy key 'torrserver_url': %s", s)
+							flog.Std.Info(fmt.Sprintf("[Config] Loaded GoStormBaseURL from legacy key 'torrserver_url': %s", s), "s", s)
 						}
 					}
 				}
@@ -439,6 +443,9 @@ func (c *Config) applyEnvOverrides() {
 	if v := os.Getenv("MKV_PROXY_LOG_LEVEL"); v != "" {
 		c.LogLevel = v
 	}
+	if v := os.Getenv("MKV_PROXY_LOG_FORMAT"); v != "" {
+		c.LogFormat = v
+	}
 	if v := os.Getenv("MKV_PROXY_UID"); v != "" {
 		if n, err := strconv.ParseUint(v, 10, 32); err == nil {
 			c.UID = uint32(n)
@@ -461,8 +468,17 @@ func firstEnv(keys ...string) string {
 }
 
 func (c *Config) finalize() {
+	switch strings.ToLower(strings.TrimSpace(c.LogFormat)) {
+	case "", "text":
+		c.LogFormat = "text"
+	case "json":
+		c.LogFormat = "json"
+	default:
+		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: log_format %q is not \"text\" or \"json\"; using \"text\"", c.LogFormat), "log_format", c.LogFormat)
+		c.LogFormat = "text"
+	}
 	if c.MediaServerType != "" && c.MediaServerType != "plex" {
-		log.Printf("[Config] WARNING: media_server_type %q: Jellyfin is no longer supported and Flodni uses Plex", c.MediaServerType)
+		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: media_server_type %q: Jellyfin is no longer supported and Flodni uses Plex", c.MediaServerType), "media_server_type", c.MediaServerType)
 	}
 
 	// At 0 the pump semaphore is unbuffered and its non-blocking send never succeeds.
@@ -497,18 +513,18 @@ func (c *Config) finalize() {
 	}
 
 	if c.PlayedProtectionDays < 0 {
-		log.Printf("[Config] WARNING: played_protection_days %d is negative; using 90", c.PlayedProtectionDays)
+		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: played_protection_days %d is negative; using 90", c.PlayedProtectionDays), "played_protection_days", c.PlayedProtectionDays)
 		c.PlayedProtectionDays = 90
 	}
 
 	if c.WarmCatchupPerHour < 0 {
-		log.Printf("[Config] WARNING: warm_catchup_per_hour %d is negative; using 20", c.WarmCatchupPerHour)
+		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: warm_catchup_per_hour %d is negative; using 20", c.WarmCatchupPerHour), "warm_catchup_per_hour", c.WarmCatchupPerHour)
 		c.WarmCatchupPerHour = 20
 	}
 
 	if c.WarmCatchupScope != "all" && c.WarmCatchupScope != "retries" {
 		if c.WarmCatchupScope != "" {
-			log.Printf("[Config] WARNING: warm_catchup_scope %q is not \"all\" or \"retries\"; using \"all\"", c.WarmCatchupScope)
+			flog.Std.Warn(fmt.Sprintf("[Config] WARNING: warm_catchup_scope %q is not \"all\" or \"retries\"; using \"all\"", c.WarmCatchupScope), "warm_catchup_scope", c.WarmCatchupScope)
 		}
 		c.WarmCatchupScope = "all"
 	}
@@ -517,50 +533,50 @@ func (c *Config) finalize() {
 	// protection off by accident.
 	if c.WarmupEvictionOrder != "written" && c.WarmupEvictionOrder != "read" {
 		if c.WarmupEvictionOrder != "" {
-			log.Printf("[Config] WARNING: warmup_eviction_order %q is not \"written\" or \"read\"; using \"written\"", c.WarmupEvictionOrder)
+			flog.Std.Warn(fmt.Sprintf("[Config] WARNING: warmup_eviction_order %q is not \"written\" or \"read\"; using \"written\"", c.WarmupEvictionOrder), "warmup_eviction_order", c.WarmupEvictionOrder)
 		}
 		c.WarmupEvictionOrder = "written"
 	}
 	if c.PlayedProtectionDays > 36500 {
-		log.Printf("[Config] WARNING: played_protection_days %d is absurd; using 0 (never expire)", c.PlayedProtectionDays)
+		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: played_protection_days %d is absurd; using 0 (never expire)", c.PlayedProtectionDays), "played_protection_days", c.PlayedProtectionDays)
 		c.PlayedProtectionDays = 0
 	}
 
 	// The margin is a measurement threshold. Above 1 TiB (1<<20 MB) it is larger than
 	// any file served here, so it is a typo, not a choice.
 	if c.UnconfirmedReadMarginMB < 0 || c.UnconfirmedReadMarginMB > 1<<20 {
-		log.Printf("[Config] WARNING: unconfirmed_read_margin_mb %d is out of range; using 64", c.UnconfirmedReadMarginMB)
+		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: unconfirmed_read_margin_mb %d is out of range; using 64", c.UnconfirmedReadMarginMB), "unconfirmed_read_margin_m_b", c.UnconfirmedReadMarginMB)
 		c.UnconfirmedReadMarginMB = 64
 	}
 	c.UnconfirmedReadMargin = c.UnconfirmedReadMarginMB * 1024 * 1024
 
 	// Above 100 years the window is a typo, not a choice. 0 stays 0: warning off.
 	if c.PlaybackWebhookWarnDays < 0 || c.PlaybackWebhookWarnDays > 36500 {
-		log.Printf("[Config] WARNING: playback_webhook_warn_days %d is out of range; using 7", c.PlaybackWebhookWarnDays)
+		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: playback_webhook_warn_days %d is out of range; using 7", c.PlaybackWebhookWarnDays), "playback_webhook_warn_days", c.PlaybackWebhookWarnDays)
 		c.PlaybackWebhookWarnDays = 7
 	}
 
 	// 0 stays 0: keep-alive off. Above a day the ceiling is a typo, not a choice.
 	if c.PlaybackKeepaliveMinutes < 0 || c.PlaybackKeepaliveMinutes > 1440 {
-		log.Printf("[Config] WARNING: playback_keepalive_minutes %d is out of range; using 15", c.PlaybackKeepaliveMinutes)
+		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: playback_keepalive_minutes %d is out of range; using 15", c.PlaybackKeepaliveMinutes), "playback_keepalive_minutes", c.PlaybackKeepaliveMinutes)
 		c.PlaybackKeepaliveMinutes = 15
 	}
 	if c.PlaybackKeepaliveMaxTorrents < 1 {
-		log.Printf("[Config] WARNING: playback_keepalive_max_torrents %d is below 1; using 4", c.PlaybackKeepaliveMaxTorrents)
+		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: playback_keepalive_max_torrents %d is below 1; using 4", c.PlaybackKeepaliveMaxTorrents), "playback_keepalive_max_torrents", c.PlaybackKeepaliveMaxTorrents)
 		c.PlaybackKeepaliveMaxTorrents = 4
 	}
 
 	// 0 stays 0: the schedule is off, a manual pass still works.
 	if c.TrackerScrapeHours < 0 || c.TrackerScrapeHours > 8760 {
-		log.Printf("[Config] WARNING: tracker_scrape_hours %d is out of range; using 24", c.TrackerScrapeHours)
+		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: tracker_scrape_hours %d is out of range; using 24", c.TrackerScrapeHours), "tracker_scrape_hours", c.TrackerScrapeHours)
 		c.TrackerScrapeHours = 24
 	}
 	if c.TrackerScrapeBatch < 1 || c.TrackerScrapeBatch > 200 {
-		log.Printf("[Config] WARNING: tracker_scrape_batch %d is outside 1 to 200; using 100", c.TrackerScrapeBatch)
+		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: tracker_scrape_batch %d is outside 1 to 200; using 100", c.TrackerScrapeBatch), "tracker_scrape_batch", c.TrackerScrapeBatch)
 		c.TrackerScrapeBatch = 100
 	}
 	if c.TrackerScrapePaceMs < 100 || c.TrackerScrapePaceMs > 60000 {
-		log.Printf("[Config] WARNING: tracker_scrape_pace_ms %d is outside 100 to 60000; using 1000", c.TrackerScrapePaceMs)
+		flog.Std.Warn(fmt.Sprintf("[Config] WARNING: tracker_scrape_pace_ms %d is outside 100 to 60000; using 1000", c.TrackerScrapePaceMs), "tracker_scrape_pace_ms", c.TrackerScrapePaceMs)
 		c.TrackerScrapePaceMs = 1000
 	}
 
@@ -577,12 +593,12 @@ func (c *Config) finalize() {
 		for _, prefix := range keys {
 			target := c.PlexPathMap[prefix]
 			if !filepath.IsAbs(prefix) || !filepath.IsAbs(target) {
-				log.Printf("[Config] WARNING: plex_path_map entry %q -> %q needs an absolute prefix and an absolute target; ignoring it", prefix, target)
+				flog.Std.Warn(fmt.Sprintf("[Config] WARNING: plex_path_map entry %q -> %q needs an absolute prefix and an absolute target; ignoring it", prefix, target), "prefix", prefix, "target", target)
 				continue
 			}
 			clean := filepath.Clean(prefix)
 			if _, dup := valid[clean]; dup {
-				log.Printf("[Config] WARNING: plex_path_map has the prefix %q twice; keeping the first", clean)
+				flog.Std.Warn(fmt.Sprintf("[Config] WARNING: plex_path_map has the prefix %q twice; keeping the first", clean), "clean", clean)
 				continue
 			}
 			valid[clean] = filepath.Clean(target)
@@ -621,23 +637,24 @@ func parseBytes(s string) (int64, error) {
 }
 
 // LogConfig logs the active configuration
-func (c *Config) LogConfig(logger *log.Logger) {
-	logger.Printf("=== Configuration ===")
-	logger.Printf("Source: %s", c.ConfigPath)
-	logger.Printf("MasterConcurrencyLimit: %d", c.MasterConcurrencyLimit)
-	logger.Printf("ReadAheadBudget: %d MB", c.ReadAheadBudgetMB)
-	logger.Printf("FUSE Block Size: %d", c.FuseBlockSize)
-	logger.Printf("StreamingThreshold: %d KB", c.StreamingThresholdKB)
-	logger.Printf("LogLevel: %s", c.LogLevel)
-	logger.Printf("GoStormBaseURL: %s", c.GoStormBaseURL)
-	logger.Printf("FUSE Timeouts (Attr/Entry/Neg): %.1f/%.1f/%.1f", c.AttrTimeoutSeconds, c.EntryTimeoutSeconds, c.NegativeTimeoutSeconds)
+func (c *Config) LogConfig(logger *slog.Logger) {
+	logger.Info("=== Configuration ===")
+	logger.Info(fmt.Sprintf("Source: %s", c.ConfigPath), "config_path", c.ConfigPath)
+	logger.Info(fmt.Sprintf("MasterConcurrencyLimit: %d", c.MasterConcurrencyLimit), "master_concurrency_limit", c.MasterConcurrencyLimit)
+	logger.Info(fmt.Sprintf("ReadAheadBudget: %d MB", c.ReadAheadBudgetMB), "read_ahead_budget_m_b", c.ReadAheadBudgetMB)
+	logger.Info(fmt.Sprintf("FUSE Block Size: %d", c.FuseBlockSize), "fuse_block_size", c.FuseBlockSize)
+	logger.Info(fmt.Sprintf("StreamingThreshold: %d KB", c.StreamingThresholdKB), "streaming_threshold_k_b", c.StreamingThresholdKB)
+	logger.Info(fmt.Sprintf("LogLevel: %s", c.LogLevel), "log_level", c.LogLevel)
+	logger.Info(fmt.Sprintf("LogFormat: %s", c.LogFormat), "log_format", c.LogFormat)
+	logger.Info(fmt.Sprintf("GoStormBaseURL: %s", c.GoStormBaseURL), "go_storm_base_u_r_l", c.GoStormBaseURL)
+	logger.Info(fmt.Sprintf("FUSE Timeouts (Attr/Entry/Neg): %.1f/%.1f/%.1f", c.AttrTimeoutSeconds, c.EntryTimeoutSeconds, c.NegativeTimeoutSeconds))
 	if c.FuseMaxInflightMB > 0 {
-		logger.Printf("FUSE MaxInflightRequestBytes: %d MB", c.FuseMaxInflightMB)
+		logger.Info(fmt.Sprintf("FUSE MaxInflightRequestBytes: %d MB", c.FuseMaxInflightMB), "fuse_max_inflight_m_b", c.FuseMaxInflightMB)
 	} else {
-		logger.Printf("FUSE MaxInflightRequestBytes: unlimited")
+		logger.Info("FUSE MaxInflightRequestBytes: unlimited")
 	}
-	logger.Printf("HTTP Retries: %d, Delay: %dms", c.MaxRetryAttempts, c.RetryDelayMS)
-	logger.Printf("Preload Engine: Workers=%d", c.PreloadWorkersCount)
-	logger.Printf("Network: MetricsPort=%d", c.MetricsPort)
-	logger.Printf("=====================")
+	logger.Info(fmt.Sprintf("HTTP Retries: %d, Delay: %dms", c.MaxRetryAttempts, c.RetryDelayMS), "max_retry_attempts", c.MaxRetryAttempts, "retry_delay_m_s", c.RetryDelayMS)
+	logger.Info(fmt.Sprintf("Preload Engine: Workers=%d", c.PreloadWorkersCount), "preload_workers_count", c.PreloadWorkersCount)
+	logger.Info(fmt.Sprintf("Network: MetricsPort=%d", c.MetricsPort), "metrics_port", c.MetricsPort)
+	logger.Info("=====================")
 }

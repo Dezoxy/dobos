@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"path/filepath"
 	"sync/atomic"
 	"syscall"
@@ -30,8 +31,8 @@ func noteWakeRefused(path, hash, where string) {
 	if len(short) > 8 {
 		short = short[:8]
 	}
-	logger.Printf("[VFS] wake refused at %s for %s (%s): the engine does not store this torrent; "+
-		"re-add it (not a dead swarm)", where, filepath.Base(path), short)
+	logger.Info(fmt.Sprintf("[VFS] wake refused at %s for %s (%s): the engine does not store this torrent; "+
+		"re-add it (not a dead swarm)", where, filepath.Base(path), short), "where", where, "file", filepath.Base(path), "short", short)
 	if native.ReachabilityOutcome != nil && hash != "" {
 		native.ReachabilityOutcome(native.Outcome{
 			Hash: hash, Kind: native.OutcomeNotStored, Source: failSourceMount,

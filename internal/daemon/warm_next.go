@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"flodni/internal/flog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -76,7 +77,7 @@ func warmNextEnabled() (enabled, sameTorrent bool) {
 	}
 	if !warmOnAddActive() {
 		warnWarmNextNoWarmOnAdd.Do(func() {
-			logger.Printf("WARNING: warm_next_episode is set but warm_on_add and warmup_dir are not both set: the next episode is not warmed")
+			logger.Warn("WARNING: warm_next_episode is set but warm_on_add and warmup_dir are not both set: the next episode is not warmed")
 		})
 		return false, false
 	}
@@ -98,7 +99,7 @@ func startWarmNext(m *library.Manager) {
 		return res.AlreadyWarm, err
 	}
 	n.add = func(hash string, f warmer.File, done func()) bool { return addWarmer.AddNext(hash, f, done) }
-	n.logf = logger.Printf
+	n.logf = flog.Logf(logger)
 	warmNext = n
 }
 

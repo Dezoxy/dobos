@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -122,10 +123,10 @@ const sessionLogPrefix = "[Session] "
 func logSessionRecord(rec sessionRecord) {
 	line, err := json.Marshal(rec)
 	if err != nil {
-		logger.Printf("WARNING: session log line for %s not written: %v", rec.Path, err)
+		logger.Warn(fmt.Sprintf("WARNING: session log line for %s not written: %v", rec.Path, err), "path", rec.Path, "err", err)
 		return
 	}
-	logger.Printf("%s%s", sessionLogPrefix, line)
+	logger.Info(fmt.Sprintf("%s%s", sessionLogPrefix, line))
 }
 
 // sessionRing keeps the most recent closed sessions, overwriting the oldest.

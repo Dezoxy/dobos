@@ -2,8 +2,8 @@ package daemon
 
 import (
 	"encoding/json"
+	"flodni/internal/flog"
 	"io"
-	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -36,7 +36,7 @@ type healthSwarm struct {
 
 func getHealthSwarm(t *testing.T, store readabilityLister) (map[string]*swarmHealth, string) {
 	t.Helper()
-	h := newTorrentsHealthHandler(store, nil, log.New(io.Discard, "", 0))
+	h := newTorrentsHealthHandler(store, nil, flog.NewText(io.Discard))
 	rec := getHealth(h, http.MethodGet, "/api/torrents/health")
 	if rec.Code != 200 {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
