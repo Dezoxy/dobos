@@ -27,6 +27,7 @@ and no support.
 | [docs/ideas.md](docs/ideas.md) | What could be improved, not yet planned. |
 | [docs/architecture/README.md](docs/architecture/README.md) | The C4 model, its views and the decisions. |
 | [README.upstream.md](README.upstream.md) | Tiramisu's user guide as inherited: install, configuration, API. |
+| [docs/deploy/least-privilege.md](docs/deploy/least-privilege.md) | A narrower container profile than `SYS_ADMIN` with AppArmor unconfined. Designed, not verified on a host. |
 | [SECURITY.md](SECURITY.md) | How to report a vulnerability. |
 
 ## Building
@@ -306,8 +307,8 @@ line below is the one log format that is).
 | `consecutive_failures` | Sessions in a row that ended with a failed read and nothing served by the swarm. A session counts once, and only if it lasted 25 s. |
 | `first_failure_at` | Start of the current run of failures; `null` when the count is 0. |
 | `last_failure_at` | Last recorded failure; kept after a reset. |
-| `last_failure_reason` | `no_peers`, `timeout` (peers connected, the read gave up), `not_active` (the engine did not have the torrent running), `unknown` (the engine did not answer in time), `not_stored` (the engine refused to wake the torrent because it keeps no record of it; not a failed read, see below); `null` for older records. |
-| `last_failure_source` | `mount`: a reader through the FUSE mount. |
+| `last_failure_reason` | `no_peers`, `timeout` (peers connected, the read gave up), `not_active` (the engine did not have the torrent running), `unknown` (the engine did not answer in time), `metainfo_timeout` (the metainfo did not arrive within a wake's 45 s wait, see below), `not_stored` (the engine refused to wake the torrent because it keeps no record of it; not a failed read, see below); `null` for older records. |
+| `last_failure_source` | `mount`: a reader through the FUSE mount. `wake`: a wake whose metainfo never arrived (an open through the mount, or a warm-up). |
 | `last_swarm_read_at` | Close time of the last session in which the swarm served a read, or the delivery time of a warm-on-add fill that completed a file's windows from the swarm; `null` if none was recorded. |
 
 `?failing=1` keeps torrents with at least one consecutive failure,
@@ -329,8 +330,17 @@ line below is the one log format that is).
   evidence.
 - A wake that had to fetch the metainfo from the swarm resets the count
   without setting `last_swarm_read_at`.
-- A metainfo that never arrives is not counted: the open fails before a
-  session exists. A cancelled read, a read Flodni refuses for the reader
+- `metainfo_timeout` is a swarm-side failure: the wake waited 45 s and the
+  swarm could not deliver the metainfo (a private torrent with no peers looks
+  like this). The open fails with EIO before a session exists, so it is
+  recorded by the wake, with `last_failure_source` `wake`. It adds one to
+  `consecutive_failures` (and starts `first_failure_at`), but at most once per
+  torrent per 10 minutes: a player's retries, each a 45 s wait, are one
+  occasion, so a burst cannot reach a threshold. A metainfo that arrives, or a
+  swarm read, ends the streak. The check discovers no peers and never
+  contacts one: it only reports a wait that already ran. A cancelled open or
+  a torrent closed during the wait is not recorded.
+- A cancelled read, a read Flodni refuses for the reader
   budget, and an open that fails before any read are not recorded either.
 - Times are UTC and are taken when the session closes, up to two minutes
   after its last read.
@@ -355,10 +365,10 @@ line below is the one log format that is).
 ### Per-file records (experimental)
 
 Each torrent object carries a `files` array, always present (`[]` when empty)
-and always the last key. It is **experimental**: it is outside the contract
-sentence above and the stable-names promise, and its names may change until
-its first consumer runs against it. It is served only with the state database
-on. Three things write it. In index mode (`warmup_dir` set), a read through
+and followed only by `swarm` (below). It is **experimental**: it is outside
+the contract sentence above and the stable-names promise, and its names may
+change until its first consumer runs against it. It is served only with the
+state database on. Three things write it. In index mode (`warmup_dir` set), a read through
 the mount that leaves a file's head and tail windows both complete records the
 file. In any cache mode, a quota eviction records `cache: evicted`, also for a
 file with no earlier record. With `warm_on_add` set, the warmer records every
@@ -390,6 +400,31 @@ set; those keep their per-torrent meaning.
 - The series `flodni_warm_fills_total{trigger="mount",outcome}` counts the
   records the mount path wrote (`warmed`, or `cached` when no stamp exists);
   `trigger="add"` is warm on add.
+
+### Swarm signal (experimental)
+
+Each torrent object also carries a `swarm` key, always present and always the
+last key. It is **experimental**, outside the contract sentence above and the
+stable-names promise, like `files`. It is `null` for a torrent the engine does
+not have open: Flodni never wakes a closed torrent to fill it, and a torrent
+with no record is not listed here at all.
+
+| Field | Meaning |
+|---|---|
+| `awake` | Always `true` when the object is present. |
+| `peers` | Peers connected to the engine now. |
+| `seeders` | Connected peers that have every piece; `null` until the metainfo is in. |
+| `last_piece_at` | RFC 3339 UTC time the engine last completed a piece of this torrent; `null` if none since it opened (the stamp is not kept across a close). |
+| `rate_bps` | Download rate in bytes per second as the engine's one-second ticker last measured it. |
+
+- The values come from a snapshot the daemon rebuilds every 15 s from the
+  engine's existing stats; a request reads the snapshot and does not touch the
+  engine. A torrent opened or closed since the last snapshot shows the old
+  state for up to 15 s, and nothing is served before the first snapshot.
+- `flodni_swarm_awake_torrents` (gauge) is the number of torrents in that
+  snapshot.
+- Not a verdict: zero peers on an awake torrent is a fact about now, not a
+  dead swarm. Tested against a fake engine only; not run against a real swarm.
 
 ## Session log
 
@@ -758,6 +793,35 @@ left alone. The call reads each stub under both folders. A stub with no
 readable hash is skipped and logged once per call. The torrent is dropped once
 no stub links to it.
 
+## Auditing stubs against the engine's file list
+
+`GET /api/library/audit` (control port, behind `api_token` like the other
+routes) checks every stub's `index` against the file list saved with its
+torrent's record, using the engine's own ids. It reads the stubs the list
+route reads and the records without waking any torrent; it changes no stub,
+record or state, and it runs only when asked, never at start.
+
+```json
+{"checked": 120, "mismatched_total": 1, "truncated": false,
+ "mismatched": [{"path": "...", "hash": "...", "index": 3, "stub_size": 200,
+                 "engine_length": 100, "reason": "length_differs"}],
+ "no_file_list": {"stubs": 2, "torrents": 1, "hashes": ["..."]},
+ "unreadable": 0}
+```
+
+| Field | Meaning |
+|---|---|
+| `checked` | Stubs compared against a stored file list. |
+| `reason` `no_such_file` | The index names no file in the list (`engine_length` is `null`). |
+| `reason` `length_differs` | The index names a file of another length than the stub's `size`. |
+| `no_file_list` | Stubs whose record holds no file list (saved before the metainfo arrived). They cannot be checked until one wake stores the list; the audit does not wake them. |
+| `unreadable` | Stubs with no readable hash. |
+
+`mismatched` and `no_file_list.hashes` hold at most 200 entries each;
+`mismatched_total` and `truncated` give the full count. Repair a reported
+stub with `POST /api/library/remove` for its hash, then `POST /api/library/add`
+again, which writes the stub from the engine's current list.
+
 ## Warm on add
 
 **Experimental, off by default.** With `warm_on_add` set (and `warmup_dir`
@@ -1071,7 +1135,7 @@ scraper on the same host or Docker network.
 | `flodni_read_duration_seconds` | histogram | `source` | Duration of each served read. Its `_count` is the number of reads each path answered. |
 | `flodni_read_bytes_total` | counter | `source` | Bytes handed to the kernel. |
 | `flodni_sessions_closed_total` | counter | `outcome` | Closed sessions: `served`, `probe`, `unserved`, `dead_swarm`. |
-| `flodni_dead_swarm_verdicts_total` | counter | `reason`, `source` | Dead-swarm verdicts; `reason` as `last_failure_reason`, `source` is `mount`. |
+| `flodni_dead_swarm_verdicts_total` | counter | `reason`, `source` | Dead-swarm verdicts; `reason` as `last_failure_reason`, `source` is `mount`, or `wake` for `metainfo_timeout`. |
 | `flodni_warmup_cache_bytes` | gauge | none | Approximate size of the warmup cache; only with the cache enabled. |
 | `flodni_warmup_cache_quota_bytes` | gauge | none | Its size limit; only with the cache enabled. |
 | `flodni_warmup_evictions_total` | counter | `window` | Files removed by quota eviction, `head` or `tail`. |
