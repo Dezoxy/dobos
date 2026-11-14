@@ -169,3 +169,57 @@ func TestWakeOfAStoredPrivateTorrentKeepsOnlyItsOwnTrackers(t *testing.T) {
 		}
 	}
 }
+
+// Hard rule 3 for the tracker scrape: a private torrent's scrape targets only
+// its own announce hosts, whatever the retracker mode added at the add and
+// whatever an older record carries. A torrent whose metadata is not known yet
+// is treated the same way; a public torrent keeps its stored trackers.
+func TestScrapeTargetsKeepPrivateTorrentsOnTheirOwnTrackers(t *testing.T) {
+	yes, no := true, false
+	own := "http://seeder.example/test-key-not-real/announce?auth=test-auth-not-real"
+	public := []string{"udp://public.example:1337/announce", "udp://file.example:80/announce"}
+	def := func() []string { return public[:1] }
+	file := func() []string { return public[1:] }
+
+	record := func(info []byte, mode int, stored [][]string) *sets.TorrentDB {
+		spec := &torrent.TorrentSpec{InfoBytes: info, Trackers: append([][]string(nil), stored...)}
+		spec.InfoHash[0] = 0xab
+		retrackSpec(spec, mode, def, file)
+		return &sets.TorrentDB{TorrentSpec: spec}
+	}
+	ownTier := [][]string{{own}}
+	// an older record that was saved with the public lists in it
+	legacy := [][]string{{own}, {public[0], public[1]}}
+
+	cases := []struct {
+		name string
+		db   *sets.TorrentDB
+		want []string
+	}{
+		{"private, retracker mode 1", record(testInfoBytes(t, &yes), 1, ownTier), []string{own}},
+		{"private, retracker mode 3", record(testInfoBytes(t, &yes), 3, ownTier), []string{own}},
+		{"private, older record holding public lists", record(testInfoBytes(t, &yes), 0, legacy), []string{own}},
+		{"metadata not known, older record", record(nil, 0, legacy), []string{own}},
+		{"public, mode 1", record(testInfoBytes(t, &no), 1, ownTier), []string{own, public[0], public[1]}},
+		// a tier of an older, rotated list: one entry no longer in any list, one still
+		// there; the whole tier goes
+		{"private, tier with a rotated-out entry", record(testInfoBytes(t, &yes), 0,
+			[][]string{{own}, {"udp://rotated-out.example:6969/announce", public[0]}}), []string{own}},
+		// the same host spelled another way: scheme, case, path, port
+		{"private, host variants", record(testInfoBytes(t, &yes), 0, [][]string{
+			{own},
+			{"HTTP://Public.EXAMPLE:8080/other/path"},
+			{"udp://FILE.example:81/announce"},
+		}), []string{own}},
+		{"metadata not known, host variant", record(nil, 0, [][]string{{own}, {"https://Public.Example/announce"}}), []string{own}},
+	}
+	for _, c := range cases {
+		got := scrapeTargetsOf([]*sets.TorrentDB{c.db}, func() []string { return public })
+		if len(got) != 1 || !reflect.DeepEqual(got[0].Trackers, c.want) {
+			t.Errorf("%s: targets = %+v, want trackers %v", c.name, got, c.want)
+		}
+	}
+	if got := scrapeTargetsOf([]*sets.TorrentDB{nil, {}}, func() []string { return nil }); len(got) != 0 {
+		t.Errorf("empty records give targets: %+v", got)
+	}
+}
