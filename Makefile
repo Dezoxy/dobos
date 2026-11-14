@@ -8,12 +8,16 @@
 # The Structurizr image your viewer runs. Keep it identical to the server's pin
 # so the parser here is the parser there. The PNG/SVG export uses its
 # -playwright tag.
-STRUCTURIZR_IMAGE ?= structurizr/structurizr:2026.09.19
+STRUCTURIZR_IMAGE ?= structurizr/structurizr:2026.10.26
 # Pandoc with LaTeX and the Eisvogel template, for `make pdf` (~2 GB).
 PANDOC_IMAGE      ?= pandoc/extra:3.11.0.0-debian
 # Mermaid CLI, for `make mermaid-render` and `make pdf`: draws Mermaid blocks
 # as PNG. The mature 11.x line; runs as your user (~630 MB).
 MERMAID_IMAGE     ?= minlag/mermaid-cli:12.0.1
+# promtool, for the metrics check in `make e2e`: `promtool check metrics` reads the
+# scrape. Pinned by digest; the tag is for the reader.
+# renovate: datasource=docker depName=prom/prometheus
+PROMTOOL_IMAGE    ?= prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
 
 # ── paths ────────────────────────────────────────────────────────────────────
 ARCH_DIR  ?= docs/architecture
@@ -57,7 +61,7 @@ go-test:
 e2e:
 	docker build -f docker/Dockerfile -t flodni:ci .
 	docker build -f docker/Dockerfile --target e2e-seeder -t flodni-e2e-seeder:ci .
-	bash tests/e2e/run.sh flodni:ci flodni-e2e-seeder:ci
+	PROMTOOL_IMAGE=$(PROMTOOL_IMAGE) bash tests/e2e/run.sh flodni:ci flodni-e2e-seeder:ci
 
 ## validate        parse the workspace with the pinned Structurizr image
 validate:

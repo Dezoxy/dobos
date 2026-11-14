@@ -295,7 +295,7 @@ CREATE TABLE IF NOT EXISTS metadata_failures (
 
 	// Schema 15, additive: daemon-level times, one row per name, Unix seconds. Today:
 	// the last play webhook that matched a file, the last that did not, and the last
-	// unconfirmed reader session (webhook_status.go).
+	// unconfirmed reader session (internal/daemon/webhook_status.go).
 	if _, err := d.db.Exec(`
 		CREATE TABLE IF NOT EXISTS daemon_marks (
 		    name TEXT PRIMARY KEY,
