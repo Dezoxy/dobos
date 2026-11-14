@@ -125,6 +125,40 @@ it never changes `status` or the HTTP code, so a deployment without a play
 webhook stays healthy. The array is computed from memory, without a check.
 See "Play webhook" below for what raises it.
 
+## Startup report
+
+Once the FUSE mount is up and the startup walk with its prunes has finished, the
+daemon logs one line, `[Startup] report {json}`, and serves the same object at
+`GET /api/startup` on the control port. It needs the token like every route but
+the panel page and `/api/health`, and answers 503 until the report exists.
+It is built once and does not change afterwards. A pre-upgrade rehearsal can
+read it instead of grepping the startup lines; those lines keep their text for
+now (a test pins them), and the report is the interface that will stay stable
+when logging changes.
+
+`schema` is 1. A new field keeps it; a rename, a removal or a changed meaning
+raises it.
+
+| Field | Meaning |
+| --- | --- |
+| `version`, `config_path` | The build and the config file it read. |
+| `warmup` | `active`, `dir`, `initial_size_bytes`, `dropped_stale`, `residues_dropped`: the `[DiskWarmup]` start lines. Not active: zeros and an empty `dir`. |
+| `state_db` | `active`, `path`, `migration`: `already_completed`, `migrated`, `failed` (the open or the migration failed; the daemon runs on JSON) or `disabled`. |
+| `inode_map.files_loaded` | Files in the inode map before the startup walk. |
+| `fuse` | `mount_path`, `mounted`. |
+| `library_unstored` | `n` of `of`: library torrents with no stored engine record with metainfo. `null` when no stub was found to count. |
+| `prunes` | `readability`, `file_state`, `inodes`, each `status` (`ran`, `skipped` or `failed`), a `reason` when not `ran`, and `rows_pruned`. A guarded skip carries the walk's `complete`, `errors` and `stubs`. |
+| `invalid_stubs` | Stubs that parse but declare a size out of range. |
+| `alarms` | Ids of the alarm conditions that fired, `[]` when none. |
+
+Alarm ids: `config_parse_failed`, `config_paths_differ`, `settings_migrated`,
+`settings_corrupt`, `torrents_migrated` (a legacy `torrserver.db` was carried
+over), `head_density_check` (the one-shot head check ran; see Cache disk),
+`corrupt_cache`, `statedb_migrated`, `statedb_open_failed`,
+`statedb_migration_failed`, `prune_skipped`, `ghost_inodes_pruned` and
+`state_not_on_mounted_volume` (the container entrypoint's warning). The report
+is taken once, so a `corrupt_cache` removal after it is not in it.
+
 ## Play webhook
 
 Some features act on a play that the media server reports by webhook, and do
@@ -291,6 +325,51 @@ play is confirmed.
   and by the end-to-end `keep-alive` variant (a confirmed torrent is held
   through two idle windows and released by a stop webhook); the ceiling is
   unit-tested only.
+
+## Engine stall gaps
+
+Two gaps in the vendored engine could leave a reader waiting. Both are
+implemented and tested with stand-ins; neither was shown to remove a stall on
+a real swarm in this repository's end-to-end test, which no longer stalls at
+the places they were first seen (the stale cache priorities, now dropped).
+
+- **An idle peer is not woken by an order-only change (always on).** The
+  engine asks its peers to update their requests when a priority change alters
+  the set of pieces it wants, but not when the change only reorders them. A
+  peer with nothing in flight then sits idle until the next chunk, keepalive
+  or announce. The cache that sets the priorities (`torrstor`) now asks every
+  peer of the torrent to update its requests after a priority change it
+  makes, through the engine's existing public `AllowDataUpload` (Flodni never
+  disallows uploads, which a test pins by scanning the source for
+  `DisallowDataUpload`; so its only effect is that update). The engine itself
+  is not changed. The engine package pins both halves in `peer_wake_test.go`:
+  an order-only change wakes no peer, and `AllowDataUpload` wakes every one.
+  The wake fires only when a priority differs from what the cache set before
+  (a repeated identical set wakes nobody), and wakes within 20 ms of each
+  other are merged into one, run after the last of them. It wakes every peer,
+  including choked ones the engine's own wake would skip; the cost on a large
+  public swarm is not measured. It is a fix and has no switch.
+- **`redial_dropped_peer`** in `config.json` (default `false`, read when a
+  peer drops). The engine does not keep a dropped peer to redial, and floors a
+  tracker's announce interval at one minute, so a private torrent whose only
+  peer drops waits up to a minute to hear of it again. With the switch on, when
+  a connection that this torrent dialed from its own tracker drops, and
+  3 s later the torrent is private, still missing data and has no connected
+  peer, that address is added back to the same torrent once. Nothing else is
+  involved: no DHT, no PEX, no public tracker, no address from anywhere but
+  the dropped connection; connections from any other source (DHT, PEX,
+  incoming, hole-punch, direct) are never redialed, nor is a torrent that
+  is not private. A torrent is redialed at most once a minute, so a seeder that
+  drops again at once is not called in a loop (the engine's own dial limits
+  still apply). The 3 s and the 1 minute are constants. The series
+  `flodni_engine_peer_redials_total` counts the redials. The privacy cases are
+  pinned in `internal/gostorm/torr/redial_test.go`. Not covered: an incoming
+  connection that drops (its remote port is not a listening one), a peer
+  restored from the stored torrent record when a closed torrent wakes (the
+  engine tags those as direct, so the redial skips them, and the main
+  single-seeder case after a wake is therefore not covered), and two peers
+  dropping together (one address is redialed, not both). A redial the torrent
+  did not take (an address it already knows) is not counted.
 
 ## Readability record
 
@@ -626,8 +705,9 @@ switch off it never refuses or slows a read.
 - **The counter** `flodni_unconfirmed_read_bytes_total` is the bytes the
   reader took past the windows, whichever path served them. It is not bytes
   downloaded: with the pump on (the default), the engine fill happened
-  earlier through the pump or a prefetch, and attributing that fill to the
-  reader is not built; it is revisited after Reliability step 6.
+  earlier through the pump or a prefetch. What the pump and the prefetches
+  fill is counted separately, per session, and can be made part of the
+  margin (see "Fill attribution" below).
 - **`unconfirmed_read_margin_mb`** in `config.json` (default 64, 0 logs at the
   first byte past the windows; a negative or absurd value is replaced by 64).
   When a session's counted bytes reach the margin, one `[ReaderBudget]` line
@@ -715,6 +795,45 @@ switch off it never refuses or slows a read.
     a little short of the cut (once 128 KiB, 19.875 MiB here), by at most the
     read-ahead window. The end-to-end test checks the counted bytes against
     the margin and gives the reader's bytes that slack.
+    The head-window part is counted and can be clamped, see
+    the next two bullets.
+  - **Read-ahead overshoot (counted always, clamp opt-in).** Implemented,
+    tested against the fake engine. A miss inside the head window is never
+    refused, and its read-ahead can run past the window edge into the middle.
+    `flodni_reader_budget_readahead_overshoot_bytes_total` counts the bytes
+    the engine was asked to fetch past the edge for such a read, on a file
+    with no confirmed playback: what was asked for, not what was downloaded,
+    and only for reads that started inside the head window (a miss in the
+    middle is the budget's own business). It only counts. Whether the number
+    is worth a clamp is for the owner to read off a few weeks of it.
+    **`unconfirmed_readahead_clamp`** in `config.json` (default `false`, read
+    at each read): when on, the read-ahead of a read that starts inside the
+    head window of a file with no confirmed playback stops at the window edge,
+    and never short of the bytes the read itself asked for. The next read,
+    at the edge, is an ordinary miss for the budget to judge. The cost is
+    a smaller read-ahead there: a play that is not yet confirmed fetches the
+    bytes past the edge one request later. It changes no refusal and works
+    with `refuse_unconfirmed_reads` on or off. With it on the counter stays
+    at 0. A file with a confirmed playback is never clamped or counted. Not
+    measured on a real swarm, and not part of `make e2e`.
+  - **Fill attribution (counted always, margin opt-in).** Implemented,
+    tested against the fake engine. The pump and the prefetches (the two
+    warm-landing fetches and the two predictive ones) fill the read-ahead
+    cache ahead of the reader, and until now only the bytes the reader
+    later read counted toward its margin. Each such fill past the two windows,
+    for a file that has a session and no confirmed playback, is now added to
+    the session's fill tally and to
+    `flodni_reader_budget_attributed_fill_bytes_total`; the `[ReaderBudget]`
+    lines carry it as `fill_bytes` when it is not 0. That counting changes
+    nothing and is always on. **`attribute_fills_to_reader`** in `config.json`
+    (default `false`, read at each call) makes the margin compare the larger
+    of the served tally and the fill tally, not their sum, since a filled
+    byte the reader then reads is one byte of cost seen from both ends. It is
+    off by default because it moves when the margin is crossed: sooner for a
+    reader with a pump or a prefetch running, so refusal starts sooner, and
+    `over_margin` is logged sooner. The fill is attributed to the session of
+    the file, not to one handle: two readers of one file share it. The
+    read-ahead of a miss (the overshoot above) is not part of it.
   - **Limits, check before turning it on.** A webhook later than 15 s, lost,
     or matched to the wrong file breaks that play shortly after the margin
     (a resume on a recently played file with a lost webhook is refused too:
@@ -786,6 +905,19 @@ internal and not served, and only the aggregates below are exported
 off by default (`warmup_eviction_order`, below). Warm on add and its catch-up,
 which fill windows on their own, are described in their own section below; both
 are off by default.
+
+The quota counts allocated blocks, not apparent sizes: a sparse file (a tail
+written in pieces, a head with holes) counts what it holds on disk, as the
+start-up walk, the eviction walk, writes and removals all do. Where a platform
+reports no block count for a non-empty file, its apparent size stands in. The
+cache keeps a ledger of what each file has contributed to the total, so a
+removal gives back exactly that, and every change to the total happens under
+one lock. Where a filesystem reports blocks late (ZFS within a transaction
+group), a write counts at least the bytes it wrote: the total never reads low
+because of the lag, and the next eviction walk corrects the rest. The window
+lengths and the coverage the cache serves still follow the logical length of
+the files. An eviction walk holds that lock while it reads the directory, and
+a head write waits for it; the daemon logs a walk that takes more than 50 ms.
 
 - **Eviction order (built, off by default).** `warmup_eviction_order` is
   `"written"` (the default, the order above) or `"read"`: inside each class
@@ -999,6 +1131,121 @@ record or state, and it runs only when asked, never at start.
 `mismatched_total` and `truncated` give the full count. Repair a reported
 stub with `POST /api/library/remove` for its hash, then `POST /api/library/add`
 again, which writes the stub from the engine's current list.
+
+## File lifecycle API
+
+Four additions to the library routes on the control port, decided in
+[ADR 3](docs/architecture/decisions/0003-file-lifecycle-api.md). They ride on
+the existing `api_token` bearer gate; `remove`, `list`, `inspect` and `audit`
+are unchanged.
+
+**A request with none of the new fields behaves as it did.** An add without
+`replace` or `dry_run` returns the same body as v0.1.0: `hash`, `title`,
+`type`, `files`, `already_present`, nothing else (a golden test pins it).
+
+### Replace policy
+
+`POST /api/library/add` takes `replace`:
+
+| `replace` | When the registry already holds a different release of the episode |
+|---|---|
+| omitted, `always` | Replace it, after the readability read below. This is what an add did before. |
+| `never` | Keep it; answer `kept`. |
+| `if-better` | Replace only when the request's `quality_score` is greater than the stored one. A score of 0 is never better, so a caller that sends none cannot replace by accident. |
+
+Flodni compares that one number and nothing else; which release is better
+stays with the caller. A movie never replaces: a second release is a second
+stub, whatever `replace` says. An unknown value is a 400.
+
+The readability gate is not a policy: a replacing release that delivers no
+data is a 422 under `always` and `if-better`, and the old files stay.
+
+A single episode is decided under its episode lock before the engine is
+contacted: a refused add makes no upload, no add, no metadata wait and no read,
+so it never announces a private torrent. A season pack is decided per episode
+once the torrent's file list is known, so a refused pack has paid the metadata
+wait; it writes the allowed episodes and lists the refused ones.
+
+A request that names `replace` or `dry_run` also gets:
+
+| Field | Meaning |
+|---|---|
+| `decision` | `added`, `already_present`, `replaced` or `kept`. |
+| `replaced` | The stubs this add replaced (or, in a dry run, would): `path`, `hash`, `file_index`. Omitted when empty. |
+| `skipped` | Episodes the policy refused: `season`, `episode`, `reason`. Omitted when empty. |
+
+**`files` lists only what this request wrote** (for `already_present`, what was
+already there, as before): callers link every entry that has a `fuse_path`. A
+refused episode is in `skipped`, never in `files`; a `kept` answer is 200 with
+`"files": []`; a pack with every episode refused is the same. An empty `files`
+means nothing was filed by this request. Status is 201 only when something was
+written; `already_present`, `kept` and a dry run are 200.
+
+### Dry run
+
+`dry_run: true` answers the decision from the stubs on disk and the registry
+and does nothing else: no engine call at all (no `.torrent` upload, no add, no
+metadata wait, no read), no stub or registry row written, no warm on add, no
+media-server scan. The answer carries `"dry_run": true` and
+`"readability": "unchecked"`, because it never asks the swarm, so a plan can
+still fail the real add's readability gate. No `files` entry has a `fuse_path`;
+each names the path the stub would get, with the request's `file_index` and a
+size of 0. It works for a single episode or a movie; a season pack is a 400,
+because its episodes are known only from the torrent's file list.
+
+### State of a file
+
+`GET /api/library/file?hash=&file_index=` reads one file. It is a projection of
+records that exist (the stub, the registry row, the daemon's file state); there
+is no new store.
+
+```json
+{"hash": "...", "file_index": 3, "state": "played",
+ "stub": {"path": "...", "fuse_path": "...", "size": 1234, "type": "tv",
+          "season": 1, "episode": 2},
+ "registry": {"episode_key": "...", "quality_score": 42, "source": "api"},
+ "warm": {"readability": "warmed", "cache": "cached", "queued": false,
+          "failed_attempts": 0},
+ "played_at": "2026-11-14T08:00:00Z", "protected": true,
+ "evicted": false, "confirmed": false}
+```
+
+The facts are independent (a file is warm and played at once); `state` is one
+word for the first that applies: `confirmed` (a session is open on the file and
+a webhook confirmed it), `evicted` (the windows were evicted), `played` (a play
+inside the protection window), `warm` (readability `warmed` or `present` and
+cache `cached`), `warming` (queued, no outcome yet), `added`. `registry` is
+`null` for a movie. A file no stub links to is a 404: replaced and removed
+files are not kept, their rows go with their torrent. The state reads three
+stores written at different times, so a file can be `added` a moment before it
+is `warm`.
+
+### Confirming a play
+
+`POST /api/library/confirm` with `{"hash": "...", "file_index": 3}` records a
+play of the file by hand: it clears the file's eviction mark and writes the same
+played mark a play webhook writes, so the file is protected from the first
+rounds of quota eviction for `played_protection_days`. It answers with the
+file's state. A repeat is a 200 and renews the played time. An unknown file is a 404.
+
+It records the play and nothing else: it confirms no session and counts no
+playback start, so the reader budget's hold on an unconfirmed session is not
+lifted (only a webhook does that). `flodni_played_marks_total{source}` counts it
+as `manual`, the webhook's marks as `webhook`.
+
+**It fails closed.** With `api_token` unset the control port is open to anyone
+who can reach it, and a play mark changes what eviction protects, so the route
+answers 403 and records nothing. With a token, anyone holding it can protect
+any file. (`remove` and the other routes keep working without a token.)
+
+The gate is the token the control server was started with, the same value the
+bearer middleware enforces, including the `FLODNI_API_TOKEN` override: never the
+live config. This matters in the open mode: with no token at start,
+`POST /api/config` is unauthenticated like every route and can write an
+`api_token`, but nothing enforces it until the daemon restarts, and confirm
+stays 403 until then too. `POST /api/config` itself is unchanged by this API;
+that it works without a token on an open port is a property of that mode, so
+set `api_token` before exposing the port.
 
 ## Warm on add
 
@@ -1338,7 +1585,7 @@ file of that length (by name if several); else the open fails with `EIO`.
   on add and catch-up refuse a file whose engine length differs from the
   stub's size (outcome `index_mismatch`). Not guarded: a torrent with no
   stored list whose stale stub shares its index with another file's warm head
-  of a plausible length (`docs/ideas.md`).
+  of a plausible length; `GET /api/library/audit` lists such stubs.
 
 ## Metrics
 
@@ -1377,7 +1624,7 @@ scraper on the same host or Docker network.
 | `flodni_warmup_cache_bytes` | gauge | none | Approximate size of the warmup cache; only with the cache enabled. |
 | `flodni_warmup_cache_quota_bytes` | gauge | none | Its size limit; only with the cache enabled. |
 | `flodni_warmup_evictions_total` | counter | `window` | Files removed by quota eviction, `head` or `tail`. |
-| `flodni_warmup_evicted_bytes_total` | counter | `window` | Their apparent size in bytes. |
+| `flodni_warmup_evicted_bytes_total` | counter | `window` | Their allocated size in bytes. |
 | `flodni_warm_fills_total` | counter | `trigger`, `outcome` | Warm fills. `trigger="mount"`: per-file records the mount path wrote, `outcome` `warmed` (the engine holds a swarm delivery stamp) or `cached` (it does not); needs the state database and index mode. `trigger="add"`, `trigger="catchup"` and `trigger="next"`: warm on add, catch-up and next-episode attempts, `outcome` as in "Warm on add", every value present from 0. |
 | `flodni_warm_next_episode_total` | counter | `outcome` | Confirmed plays of a library episode seen with `warm_next_episode` on: `queued`, `no_next`, `same_torrent`, `no_room`, `already_warm`, `in_flight`, `error`; every value present from 0. See "Warm the next episode". |
 | `flodni_warm_fill_bytes_total` | counter | `trigger`, `window` | Bytes warm on add and catch-up wrote, `window` `head` or `tail`, also by fills that did not finish. |
@@ -1388,6 +1635,7 @@ scraper on the same host or Docker network.
 | `flodni_warm_catchup_scope` | gauge | `scope` | The `warm_catchup_scope` the last catch-up pass ran with: 1 for `all` or `retries`, 0 for the other; both 0 before the first pass. |
 | `flodni_warmup_files` | gauge | `window` | Media files with a warm window on disk now: `head` counts heads at or above the 1 MiB ready floor, `tail` counts tails fully covered. Only with the cache enabled. |
 | `flodni_playback_starts_total` | counter | none | Playbacks the media server webhook confirmed (not playing to playing). |
+| `flodni_played_marks_total` | counter | `source` | Plays recorded on a file, the mark that protects it from eviction: `webhook` (a play resolved to one file) or `manual` (`POST /api/library/confirm`). Both present from 0. |
 | `flodni_torrent_idle_closes_total` | counter | `confirmed` | Torrents the engine closed because no reader had them for the idle timeout. `confirmed` is `true` when a file of the torrent had a webhook-confirmed playback; the label is refreshed once a second. Both values present from 0. With the keep-alive on, a torrent it holds is not counted; see Keep-alive. |
 | `flodni_torrent_reopens_total` | counter | `confirmed` | Closed torrents a read on an open handle woke again; the wake at open is not counted. `confirmed` as above. |
 | `flodni_wake_refused_total` | counter | none | Wakes the engine refused because it keeps no record of the torrent: one per handle at a read, one per open. Not a failed read and not a dead swarm. 0 from start. See "A stub the engine does not store". |
@@ -1405,6 +1653,8 @@ scraper on the same host or Docker network.
 | `flodni_unconfirmed_read_refused_reads_total` | counter | none | Reads the reader budget refused with EIO. Moves only with `refuse_unconfirmed_reads` on. See Reader budget. |
 | `flodni_unconfirmed_read_holds_total` | counter | `result` | Holds of a refused handle, when they end: `lifted` by a confirmation (or the switch going off), `refused` when the time ran out. Moves only with `refuse_unconfirmed_reads` on. |
 | `flodni_unconfirmed_read_confirmed_after_refusal_total` | counter | none | Sessions with a refused read that a webhook then confirmed, once each (plays the budget would have broken). Moves only with `refuse_unconfirmed_reads` on. |
+| `flodni_reader_budget_readahead_overshoot_bytes_total` | counter | none | Bytes the engine was asked to fetch as read-ahead past the head window edge, for a read that started inside the window of a file with no confirmed playback. Asked for, not downloaded. Stays 0 with `unconfirmed_readahead_clamp` on. See Reader budget. |
+| `flodni_reader_budget_attributed_fill_bytes_total` | counter | none | Bytes the pump and the prefetches filled past the head and tail windows of a file with a session and no confirmed playback. Count toward the margin only with `attribute_fills_to_reader` on. |
 | `flodni_warmup_cold_reopen_total` | counter | `previously_played` | Confirmed plays that opened cold on a file quota eviction had removed, `true` or `false` by whether it had been played before. |
 | `flodni_warmup_unverified_drops_total` | counter | none | Warmup blocks, head or tail, never written because their pieces did not verify in time. |
 | `flodni_warmup_write_queue_drops_total` | counter | none | Head chunks dropped because the warmup write queue was full. |
@@ -1424,6 +1674,7 @@ scraper on the same host or Docker network.
 | `flodni_fetch_dedup_total` | counter | none | Concurrent fetches of one chunk that shared a single fetch. |
 | `flodni_engine_short_reads_total` | counter | `path` | Engine reads that ended short and were reported as success: `stream` (the sequential reader) or `fetch` (the stateless block fetch behind the FUSE fallback). 0 from start. |
 | `flodni_engine_short_read_repairs_total` | counter | `result` | Outcome of the stream reader's refill loop, per read that needed it: `repaired` after a reconnect, `unfilled` when a gap stayed. |
+| `flodni_engine_peer_redials_total` | counter | none | Peers the opt-in redial (`redial_dropped_peer`) added back to a private torrent after its only connected peer dropped. 0 with the switch off. See Engine stall gaps. |
 | `flodni_sessions_open` | gauge | none | Sessions open now, the length of the `open` list of `/api/sessions`. |
 | `go_goroutines` | gauge | none | Goroutines that currently exist. |
 | `go_memstats_heap_inuse_bytes` | gauge | none | Bytes in in-use heap spans. |
@@ -1452,8 +1703,10 @@ to be stable; buckets and help text are not.
   a session closed and reads with no session, so it differs from the
   `[Session]` lines.
 - `flodni_warmup_cache_bytes` is a running total, resynced from the disk on
-  each eviction walk. It can drift in between; the known causes are in
-  `docs/ideas.md`.
+  each eviction walk. Writes and removals through the cache keep it in step
+  (counted in allocated blocks, see the eviction section); it can still
+  differ from the disk by files changed behind the cache's back, until the
+  next walk.
 - `flodni_warmup_files` reads the cache's in-memory index. A head removed
   behind the cache's back shows until the next lookup of it, a tail until
   the next restart. Warm bytes are `flodni_warmup_cache_bytes`. The series is a count of files, not of
@@ -1465,8 +1718,9 @@ to be stable; buckets and help text are not.
   there. Records of torrents that left the library are not subtracted (a
   startup prune removes them), and `never_read` stops at 0 rather than
   going negative.
-- Engine and peer counters, read-ahead evictions and Go runtime metrics are
-  not exported yet (`docs/ideas.md`).
+- Engine and peer counters (hedge, eject, churn), read-ahead evictions and the
+  head-fill duration as a Prometheus histogram are not exported yet (roadmap,
+  Ideas round, step 5).
 
 ## Viewing the model
 

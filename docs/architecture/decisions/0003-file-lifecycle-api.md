@@ -4,11 +4,13 @@ Date: 2026-11-14
 
 ## Status
 
-Proposed
+Accepted on 2026-11-14.
 
-Designed, not built. Nothing in this record is implemented; the code described
-as "today" is what the tree does now, the rest is a proposal for the owner to
-accept, change or reject.
+The owner accepted the decision with the answers under "Answers to the open
+questions". Migration steps 1 to 5 are implemented and tested; the end-to-end
+variant of step 6 (a refused add and a dry run on a running host) is not built.
+Where the build departs from the proposal the text below says so, under
+"Built as".
 
 ## Context
 
@@ -20,7 +22,7 @@ others, or wants to know what will happen before it asks, has no way to say so.
 Roadmap step 19 asks for add, replace with a policy, confirm and remove as
 explicit operations.
 
-### Today's lifecycle (observed in the tree)
+### Today's lifecycle (observed in the tree, before this record was built)
 
 Every place a file's state changes, with the reason it counts as implicit:
 
@@ -102,7 +104,7 @@ namespace: `GET /api/library/file?hash=&file_index=` for state and
 
 ## Decision
 
-Proposed: option A. Keep the existing routes as the API; make the implicit
+Accepted: option A. Keep the existing routes as the API; make the implicit
 effects explicit by parameters and two additions. Reasons: it is the only
 option that ships in small steps with no second API to carry, and the
 homelab's callers already use these routes. B is the better model if Flodni
@@ -110,8 +112,6 @@ ever gets a second kind of client; this record does not need it. The add and
 replace verbs are one operation with a policy because they share the same
 steps (engine add, metadata, readability gate, write); a separate `replace`
 route would be a second name for `add` with `replace: "always"`.
-
-Everything below is designed, not built.
 
 ### Operations
 
@@ -143,11 +143,10 @@ separate route in this proposal.
 
 **Confirm** (`POST /api/library/confirm`, body `{hash, file_index}`): the manual
 equivalent of the played-mark half of a play webhook: clears the file's
-eviction mark and records the play, so the 90-day protection applies. If a
-reader session is open on that file it also confirms the session as the
-webhook does; with none open it only records the play. It does not touch
-webhook counters (a separate `source` label on the play counter). Idempotent in
-state: a repeat renews the played time, as a second play does.
+eviction mark and records the play, so the 90-day protection applies. It
+confirms no session (answer 6 below), whether or not one is open. It does not
+touch webhook counters (a separate `source` label on the play counter).
+Idempotent in state: a repeat renews the played time, as a second play does.
 
 **Remove** (`POST /api/library/remove`): unchanged. The unlink through the
 mount stays a thin call to it.
@@ -176,7 +175,7 @@ proposal.
 | Case | Result |
 |---|---|
 | Add of a release already filed | 200 `already_present`, as today |
-| Add refused by `replace` | 200 with `"decision": "kept"`; `files` is empty; nothing written, no engine contact |
+| Add refused by `replace` | 200 with `"decision": "kept"`; `files` is empty; nothing written; a single episode makes no engine contact, a pack has already fetched its metadata |
 | Replacement delivers no data | 422, as today; existing files kept |
 | Confirm of an unknown `(hash, index)` | 404 |
 | Confirm repeated | 200, state unchanged except the played time |
@@ -229,8 +228,10 @@ An empty `files` therefore always means "nothing filed by this request".
 Positive:
 
 - A caller can refuse, preview and confirm without scraping logs.
-- `never` and `if-better` refusals contact no swarm, so they cannot leak a
-  private torrent's tracker contact.
+- `never` and `if-better` refusals of a single episode contact no swarm, so
+  they cannot leak a private torrent's tracker contact. A pack fetches its
+  metadata once before its per-episode verdicts, even if every episode is then
+  refused; that path is the add's own and changes nothing in peer discovery.
 - No second API to maintain; existing callers are untouched.
 
 Negative / accepted trade-offs:
@@ -247,8 +248,10 @@ Negative / accepted trade-offs:
 
 - **Private torrents.** `add` starts a torrent and keeps today's magnet and
   tracker handling. `dry_run` starts nothing: no engine call, so no announce
-  at all, private or public. A refused add (`never`, `if-better`, `kept`)
-  makes no engine call either. Tests below pin both with a recording fake.
+  at all, private or public. A refused single-episode add (`never`,
+  `if-better`, `kept`) makes no engine call either; a pack fetches its metadata
+  before its verdicts, so a refused pack has already contacted the engine (the
+  add's own handling, unchanged). Tests below pin both with a recording fake.
 - **Concurrent adds.** Two adds for the same episode with different policies
   race on the registry key today and are serialised by the per-episode lock
   (`hashLocks`, `showLocks`). The policy check must run under that lock.
@@ -259,7 +262,8 @@ Negative / accepted trade-offs:
 ## Migration: small pull requests
 
 Each step is one PR off `main`, behaviour-preserving until its own feature,
-with its tests. All are designed, not built.
+with its tests. Steps 1 to 5 were built in one branch, one commit per step;
+step 6 is the documentation, plus the end-to-end variant, which is not built.
 
 1. **Pin today's lifecycle.** Characterization tests only, no code change:
    add calls `OnAdded` once and writes the registry row; replace keeps the old
@@ -293,8 +297,8 @@ with its tests. All are designed, not built.
 5. **Confirm.** Split the session-independent part of `countConfirmedPlay`
    from the webhook; add `POST /api/library/confirm`. Tests: marks played and
    protects, clears the eviction mark, repeat is idempotent, unknown file 404,
-   open session confirmed and none open tolerated, webhook tests unchanged and
-   green, the play counter carries its source label.
+   no session confirmed, webhook tests unchanged and green, the play counter
+   carries its source label.
 6. **Docs and gate.** README API sections, this ADR to Accepted, the roadmap
    entry (done by the owner's process, not here), and the e2e variant that
    refuses an add with `never` and previews one with `dry_run`. Run on the
@@ -322,6 +326,46 @@ Proposed by the maintainer and agreed by the main API consumer on
 9. Only the new `confirm` needs a token, and it fails closed (403) when
    `api_token` is unset; `remove` is unchanged.
 
+## Built as
+
+What the code does where this record left room or was loose:
+
+- **Opt-in answer fields.** `decision`, `replaced` and `skipped` are answered
+  only to a request that names `replace` or `dry_run`; any other request gets
+  the v0.1.0 body, key for key (a golden test pins it). `quality_score` alone
+  is not an opt-in: it was always accepted and stored.
+- **`replaced` and `skipped` are omitted when empty.** `files` is always a
+  list, `[]` for a kept add.
+- **Status codes.** An add answers 201 only when it wrote something; an
+  `already_present`, a kept add and a dry run are 200.
+- **A dry run of a season pack is 400.** A pack's episodes are known only from
+  the torrent's file list, which a dry run never fetches. A single episode or a
+  movie is previewed; the planned `files` carry the stub paths and the
+  request's `file_index`, with size 0 and no `fuse_path`.
+- **A pack the policy refuses entirely** has already paid the metadata wait
+  (its episodes are unknown before it): it answers `kept`, writes nothing, calls
+  no `OnAdded` and drops the torrent unless another stub uses it.
+- **Confirm.** It records the play only (answer 6): the operations text above
+  said it also confirmed an open session, which contradicted the answer and was
+  not built. The play counter is a new family,
+  `flodni_played_marks_total{source="webhook"|"manual"}`;
+  `flodni_playback_starts_total` is unchanged.
+- **The fail-closed gate** is the token the control server started with, the
+  value the bearer middleware enforces, not the live config: a token written
+  through the open `POST /api/config` after start enforces nothing until a
+  restart, so it must not open confirm either.
+- **The `tv_episodes` invariant.** Adds are the only writers that upsert
+  `tv_episodes` (an add's own rollback, which restores a prior row, is part of
+  the add); every other writer (remove, unlink, the registry's cleanup) only
+  deletes. The replace policy reads a row, and the write
+  loop re-reads it under the same `ep:` and show locks; that re-read is safe
+  only because of this invariant. A future writer that upserts outside those
+  locks would turn the gate read into a policy bypass, so any new writer of
+  that table must take the same locks or must not upsert.
+- **State summary order** when several facts hold: `confirmed`, `evicted`,
+  `played`, `warm`, `warming`, `added`. `played` means a play inside the
+  protection window; the facts are reported apart as well.
+
 ## Related
 
 - Requirements: none recorded.
@@ -330,4 +374,4 @@ Proposed by the maintainer and agreed by the main API consumer on
   which sets the line this record keeps: Flodni records evidence, the caller
   chooses releases.
 - Roadmap: step 19, [roadmap](../../roadmap.md) ("A proper file-lifecycle
-  API", designed, not built).
+  API").

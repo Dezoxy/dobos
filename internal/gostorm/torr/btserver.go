@@ -276,6 +276,8 @@ func (bt *BTServer) configure(ctx context.Context) {
 	bt.config.TorrentPeersHighWater = 200 // V266: Was 40
 	bt.config.TorrentPeersLowWater = 50   // V266: Was 25
 	bt.config.DropMutuallyCompletePeers = true
+	// Opt-in (redial_dropped_peer, redial.go): without the switch the callback does nothing.
+	bt.config.Callbacks.PeerConnClosed = onPeerConnClosed
 
 	// V93-Aggressive-Discovery: Reduce timeouts to filter slow peers quickly
 	bt.config.NominalDialTimeout = 6 * time.Second // Balance: 3s -> 6s (Stability)

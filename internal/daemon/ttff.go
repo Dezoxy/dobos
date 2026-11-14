@@ -201,6 +201,7 @@ type TTFFSession struct {
 	// unixNano); confirmedLateAt is when a playback webhook then confirmed the file.
 	unconfirmedSwarm atomic.Int64
 	unconfirmedCache atomic.Int64
+	unconfirmedFill  atomic.Int64 // pump and prefetch fills past the windows (noteFillAttributed)
 	overMarginAt     atomic.Int64
 	confirmedLateAt  atomic.Int64
 	budgetResolved   atomic.Bool            // sessions_total counted (CAS-once)
@@ -212,7 +213,8 @@ type TTFFSession struct {
 	// from there, so a stopped play does not leave the next reader pre-spent.
 	// refusedReads is how many reads the gate refused; confirmedAfterRefusal makes the
 	// confirmed-after-refusal counter once per session.
-	budgetFloor           atomic.Int64
+	budgetFloor           atomic.Int64 // the served tally at that moment
+	fillFloor             atomic.Int64 // the fill tally at that moment; kept apart so a live toggle of attribute_fills_to_reader is safe
 	refusedReads          atomic.Int64
 	confirmedAfterRefusal atomic.Bool
 

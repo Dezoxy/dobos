@@ -647,6 +647,7 @@ func (h *MkvHandle) nativePumpChunk(r streamReader, offset, chunkSize, playerOff
 	n, err := r.ReadAt((*bufPtr)[:end-offset], offset)
 	if n > 0 {
 		raCache.Put(h.path, offset, offset+int64(n)-1, (*bufPtr)[:n])
+		noteFillAttributed(h.path, offset, int64(n), h.size)
 		if h.usesWarmup && warmup.DiskWarmup != nil && h.hash != "" && offset <= warmup.FileSize {
 			warmup.DiskWarmup.WriteChunk(h.hash, h.fileID, (*bufPtr)[:n], offset)
 		}
