@@ -337,8 +337,13 @@ line below is the one log format that is).
   library API. A session still open on that torrent writes the entry back
   when it closes, and a stub deleted another way leaves it in place. Such
   entries stay until a startup prunes them. The prune runs only after a
-  complete scan: both `movies` and `tv` exist and every stub was read. It
-  is skipped otherwise, and the log says so.
+  complete scan: both `movies` and `tv` exist, at least one stub was found
+  and no read failed. It is skipped otherwise, and the log says so. A stub
+  that parses but declares a size outside the valid range is logged with
+  its path and counted separately (the start-up summary line); it does not
+  block the prune and its torrent's rows stay. An unreadable directory
+  or file, or a stub that does not parse, still blocks it. The periodic
+  inode prune applies the same test to its own walk.
 - Join from `GET /api/library/list`: an entry whose hash that list does
   not carry belongs to a torrent that left the library. Ignore it.
 - New reason and source values may appear; ignore the ones you do not
@@ -898,11 +903,17 @@ closed torrent and reports the engine's state for it before the pass).
     or it carries an eviction mark or time, including a file evicted before
     schema 14: eviction is left to its next play. A file that failed 4 times
     is given up on; only a read through the mount that the swarm serves, or an
-    add again, makes it eligible. A file attempted under 20 hours ago waits,
-    and so does its whole title when any file of it failed under 20 hours ago
-    (a no-peers failure skips the rest of a pack without a record). A title the
-    engine refused to wake (`not_stored`, for example a stub the engine never
-    stored) waits for a play. Everything else is a candidate: no record,
+    add again, makes it eligible. Once one file of a title has given up through
+    failed swarm reads (`lost` and `write_failed` do not count, nor `not_stored`),
+    the title's other files are given up too, so a dead pack costs one wake a
+    day for four days, not for four days per file; any swarm delivery for a
+    file of the title after that give-up makes them eligible again. Warm on add
+    of a new file is not affected: an add still tries once. A file attempted
+    under 20 hours ago waits, and so does its whole title when any file of
+    it failed under 20 hours ago (a no-peers failure skips the rest of a pack
+    without a record). A title the engine refused to wake (`not_stored`, for
+    example a stub the engine never stored) waits for a play. Everything
+    else is a candidate: no record,
     `dropped_quota`, `dropped_no_evidence`, `lost`, `write_failed`, and a
     record that says `cached` while the disk does not.
   - **Never evicts.** It checks for room before it wakes anything. At a full
@@ -926,8 +937,9 @@ closed torrent and reports the engine's state for it before the pass).
   `flodni_warm_cache_failures_total{reason}`, `flodni_warm_queue_files`,
   `flodni_warm_paused` and `flodni_warm_catchup_files{state}`, the backlog as
   of the last pass: `pending` (also what a pass left because it was stopped, the
-  pace was set to 0 or its disk failed), `retry_wait`, `gave_up`, `evicted`,
-  `not_stored`, `out_of_scope` (scope `retries` only) and `left_no_room`.
+  pace was set to 0 or its disk failed), `retry_wait`, `gave_up` (a file's own
+  4 failed attempts, or a pack-level give-up), `evicted`, `not_stored`,
+  `out_of_scope` (scope `retries` only) and `left_no_room`.
   Already warm files and files a pass found no longer candidates are not
   counted. `flodni_warm_catchup_scope{scope}` says which scope the last pass
   ran.
@@ -1101,6 +1113,14 @@ scraper on the same host or Docker network.
 | `flodni_fuse_short_reads_total` | counter | none | Reads served with fewer bytes than requested away from EOF. |
 | `flodni_fuse_short_read_results_total` | counter | `result` | Outcome of the refill: `repaired` or `failed`. |
 | `flodni_fetch_dedup_total` | counter | none | Concurrent fetches of one chunk that shared a single fetch. |
+| `flodni_engine_short_reads_total` | counter | `path` | Engine reads that ended short and were reported as success: `stream` (the sequential reader) or `fetch` (the stateless block fetch behind the FUSE fallback). 0 from start. |
+| `flodni_engine_short_read_repairs_total` | counter | `result` | Outcome of the stream reader's refill loop, per read that needed it: `repaired` after a reconnect, `unfilled` when a gap stayed. |
+| `flodni_sessions_open` | gauge | none | Sessions open now, the length of the `open` list of `/api/sessions`. |
+| `go_goroutines` | gauge | none | Goroutines that currently exist. |
+| `go_memstats_heap_inuse_bytes` | gauge | none | Bytes in in-use heap spans. |
+| `go_memstats_sys_bytes` | gauge | none | Bytes the Go runtime obtained from the system. |
+| `go_gc_cycles_total` | counter | none | Completed garbage collection cycles. |
+| `process_open_fds` | gauge | none | Open file descriptors, counted from `/proc/self/fd`. Not exported where there is no `/proc`. |
 
 `source` is `warmup_head`, `warmup_tail`, `racache_hit` or `fetch_block`.
 Every label value is exported at 0 from the start. Durations are in seconds
