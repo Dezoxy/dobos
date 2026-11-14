@@ -1578,7 +1578,7 @@ file of that length (by name if several); else the open fails with `EIO`.
   on add and catch-up refuse a file whose engine length differs from the
   stub's size (outcome `index_mismatch`). Not guarded: a torrent with no
   stored list whose stale stub shares its index with another file's warm head
-  of a plausible length (`docs/ideas.md`).
+  of a plausible length; `GET /api/library/audit` lists such stubs.
 
 ## Logging
 
@@ -1759,8 +1759,9 @@ to be stable; buckets and help text are not.
   there. Records of torrents that left the library are not subtracted (a
   startup prune removes them), and `never_read` stops at 0 rather than
   going negative.
-- Engine and peer counters, read-ahead evictions and Go runtime metrics are
-  not exported yet (`docs/ideas.md`).
+- Engine and peer counters (hedge, eject, churn), read-ahead evictions and the
+  head-fill duration as a Prometheus histogram are not exported yet (roadmap,
+  Ideas round, step 5).
 
 ## Viewing the model
 

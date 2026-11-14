@@ -10,4 +10,4 @@ Flodni is maintained by one person for their own use.
   issue.
 
 What the project is for, and what it will not grow into, is in the
-[README](README.md) and [docs/ideas.md](docs/ideas.md).
+[README](README.md) and the [roadmap](docs/roadmap.md).

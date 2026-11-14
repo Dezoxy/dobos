@@ -354,6 +354,14 @@ What the code does where this record left room or was loose:
   value the bearer middleware enforces, not the live config: a token written
   through the open `POST /api/config` after start enforces nothing until a
   restart, so it must not open confirm either.
+- **The `tv_episodes` invariant.** Adds are the only writers that upsert
+  `tv_episodes` (an add's own rollback, which restores a prior row, is part of
+  the add); every other writer (remove, unlink, the registry's cleanup) only
+  deletes. The replace policy reads a row, and the write
+  loop re-reads it under the same `ep:` and show locks; that re-read is safe
+  only because of this invariant. A future writer that upserts outside those
+  locks would turn the gate read into a policy bypass, so any new writer of
+  that table must take the same locks or must not upsert.
 - **State summary order** when several facts hold: `confirmed`, `evicted`,
   `played`, `warm`, `warming`, `added`. `played` means a play inside the
   protection window; the facts are reported apart as well.
