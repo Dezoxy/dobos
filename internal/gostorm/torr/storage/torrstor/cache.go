@@ -598,6 +598,7 @@ func (c *Cache) setLoadPriority(ranges []Range) {
 		// that nothing clears. Lock order: muReaders, muPriority, then the engine's client lock.
 		if len(batch) > 0 {
 			c.torrent.SetPiecePriorities(batch)
+			wakePeers(c.torrent)
 		}
 		c.muPriority.Unlock()
 	}
@@ -621,7 +622,18 @@ func (c *Cache) dropPriority(id int) {
 	// DownloadPieces without this cache knowing, and only RAM eviction would clear that.
 	delete(c.localPriority, id)
 	torr.Piece(id).SetPriority(torrent.PiecePriorityNone)
+	wakePeers(torr)
 }
+
+// wakePeers asks every peer of the torrent to recompute its requests. The engine does so
+// when a priority change alters the set of pieces it wants, but not when it only changes
+// their order: a priority or request-order change that leaves the wanted set as it was
+// triggers no request update, so a peer with nothing in flight stays idle until the next
+// chunk, keepalive or announce. Every priority change this cache makes can be such a
+// change, so each ends here. AllowDataUpload is the engine's existing public call that
+// does it: Flodni never disallows uploads, so its only effect is the update on each peer.
+// A var so tests can see the calls.
+var wakePeers = func(t *torrent.Torrent) { t.AllowDataUpload() }
 
 func (c *Cache) isIdInFileBE(ranges []Range, id int) bool {
 	// keep 8/16 MB
@@ -710,11 +722,16 @@ func (c *Cache) clearPriority() {
 	// Eliminates O(N_cached) PieceState(rLock) calls. localPriority is our authoritative
 	// record of which pieces have non-None priority, so no PieceState() query needed.
 	c.muPriority.Lock()
+	dropped := false
 	for id := range c.localPriority {
 		if len(ranges) == 0 || !inRanges(ranges, id) {
 			c.torrent.Piece(id).SetPriority(torrent.PiecePriorityNone)
 			delete(c.localPriority, id)
+			dropped = true
 		}
+	}
+	if dropped {
+		wakePeers(c.torrent)
 	}
 	c.muPriority.Unlock()
 }

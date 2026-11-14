@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"flodni/internal/gostorm/native"
+	"flodni/internal/gostorm/torr"
 	"flodni/internal/promtext"
 	"flodni/internal/warmup"
 )
@@ -266,6 +267,12 @@ func collectReaderBudgetProm(w *promtext.Writer) {
 	w.Counter("flodni_unconfirmed_read_confirmed_after_refusal_total",
 		"Sessions that had a read refused and were then confirmed by a playback webhook, counted once each (plays the budget broke).",
 		promSample(unconfirmedConfirmedAfterRefusal.Load()))
+	w.Counter("flodni_reader_budget_readahead_overshoot_bytes_total",
+		"Bytes the engine was asked to fetch as read-ahead past the head window edge, for a read that started inside the window of a file with no confirmed playback. Asked for, not downloaded. With unconfirmed_readahead_clamp on it stays at 0.",
+		promSample(readaheadOvershootBytes.Load()))
+	w.Counter("flodni_reader_budget_attributed_fill_bytes_total",
+		"Bytes the pump and the prefetches filled past the head and tail windows of a file with a session and no confirmed playback. They count toward the margin only with attribute_fills_to_reader on.",
+		promSample(attributedFillBytes.Load()))
 	w.Counter("flodni_playback_webhooks_received_total",
 		"Playback start and resume webhooks for a movie or an episode, matched to one file or not.",
 		promSample(playbackWebhooksMatched.Load(), lbl("matched", "true")),
@@ -308,6 +315,9 @@ func collectEngineReadsProm(w *promtext.Writer) {
 		"Engine reads that ended short and were reported as success, by path: stream is the sequential reader, fetch the stateless block fetch behind the FUSE fallback.",
 		promSample(stream, lbl("path", "stream")),
 		promSample(fetch, lbl("path", "fetch")))
+	w.Counter("flodni_engine_peer_redials_total",
+		"Peers the opt-in redial (redial_dropped_peer) added back to a private torrent after its only connected peer dropped. 0 with the switch off.",
+		promSample(torr.RedialCount()))
 	repaired, unfilled := native.ShortReadRepairCounts()
 	w.Counter("flodni_engine_short_read_repairs_total",
 		"Outcome of the stream reader's refill loop, per read that needed it: repaired after a reconnect, or unfilled and left a gap.",

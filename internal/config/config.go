@@ -134,6 +134,29 @@ type Config struct {
 	// refused or slowed.
 	RefuseUnconfirmedReads bool `json:"refuse_unconfirmed_reads"`
 
+	// UnconfirmedReadaheadClamp is an opt-in switch: a read that misses inside the head
+	// window of a file with no confirmed playback gets read-ahead only up to the window
+	// edge, never into the middle the budget protects (reader_budget.go). Off unless the
+	// owner turns it on; read at every read. With it off the read-ahead is as it always
+	// was, and flodni_reader_budget_readahead_overshoot_bytes_total counts what it takes
+	// past the edge.
+	UnconfirmedReadaheadClamp bool `json:"unconfirmed_readahead_clamp"`
+
+	// AttributeFillsToReader is an opt-in switch: bytes that the pump and the prefetches
+	// fetch past the windows of a file with no confirmed playback count toward the
+	// session's margin, not only the bytes the reader later reads (reader_budget.go). It
+	// moves when the margin is crossed, so it can move when refusal starts; off unless
+	// the owner turns it on. The attributed bytes are counted either way, in
+	// flodni_reader_budget_attributed_fill_bytes_total.
+	AttributeFillsToReader bool `json:"attribute_fills_to_reader"`
+
+	// RedialDroppedPeer is an opt-in switch: when the only connected peer of a private
+	// torrent drops and that peer's address came from the torrent's own tracker, the
+	// address is added to the torrent once, a few seconds later, instead of waiting for
+	// the next announce (internal/gostorm/torr/redial.go). No DHT, PEX or public tracker
+	// is involved. Off unless the owner turns it on; read when a peer drops.
+	RedialDroppedPeer bool `json:"redial_dropped_peer"`
+
 	// PlaybackWebhookWarnDays is the window of the "no play webhook" warning
 	// (internal/daemon/webhook_status.go): it is raised when a reader session closed unconfirmed in the
 	// last N days and no play webhook matched a file in that time. 0 turns the warning

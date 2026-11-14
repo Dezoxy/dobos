@@ -43,7 +43,8 @@ A change that violates one is wrong even if it works.
 3. **A private torrent stays private.** No DHT, PEX or public-tracker
    fallback for a torrent flagged private (BEP 27). Tests pin it in
    `internal/library/privacy_test.go`, `internal/gostorm/torr/retrack_test.go`,
-   `internal/gostorm/native/wakestored_test.go` and
+   `internal/gostorm/native/wakestored_test.go`,
+   `internal/gostorm/torr/redial_test.go` and
    `internal/anacrolix-torrent/private_guard_test.go`; a change near peer
    discovery or tracker handling extends them.
 4. **The vendored engine is not ours to tidy.**
