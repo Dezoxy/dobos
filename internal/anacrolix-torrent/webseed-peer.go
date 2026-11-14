@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RoaringBitmap/roaring"
+	"github.com/RoaringBitmap/roaring/v2"
 	"github.com/anacrolix/log"
 
 	"github.com/anacrolix/torrent/metainfo"
